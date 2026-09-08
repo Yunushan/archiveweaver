@@ -43,6 +43,7 @@ ArchiveWeaver adapter facts for planning, checking and repair. Product behavior 
 | k0s | portable | supported | not-recommended | supported | supported |
 | Docker Swarm | portable | supported | not-recommended | supported | supported |
 | MicroK8s | portable | supported | not-recommended | supported | supported |
+| Ansible orchestration adapter | portable | supported | supported | supported | supported |
 
 `native` and `validated` refer to an upstream or repository-backed path. `portable` means ArchiveWeaver can render and check the runtime pattern, but the product's own HA guarantees and state model must be validated. `conditional` requires an explicit design review. `not-recommended` is intentionally blocked by the planner unless an exception is documented.
 

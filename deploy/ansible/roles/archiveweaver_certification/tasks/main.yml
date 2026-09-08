@@ -1,0 +1,143 @@
+---
+- name: Validate the product-certification boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_certification_environment in ['staging', 'restore', 'dr']
+      - archiveweaver_certification_change_id is string
+      - archiveweaver_certification_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_certification_change_id is not search('(?i)(?:replace|todo|tbd)')
+      - archiveweaver_certification_release is string
+      - archiveweaver_release is string
+      - archiveweaver_certification_operator is string
+      - archiveweaver_certification_fixture_set is string
+      - archiveweaver_certification_evidence_dir is string
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_certification_evidence_dir is match('^' ~ (archiveweaver_evidence_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_certification_evidence_dir is not search('\\.\\.')
+      - archiveweaver_certification_evidence_dir is not search('["\s\r\n]')
+      - archiveweaver_certification_tests is sequence
+      - archiveweaver_certification_tests is not string
+    fail_msg: "Product certification requires an isolated environment, pinned release, operator, fixture set, and safe evidence path."
+  tags: [certification]
+
+- name: Refuse to execute certification hooks in check mode
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode | bool
+    fail_msg: "Applied certification hooks cannot run with --check; use the non-applied preview or an approved real run."
+  when:
+    - archiveweaver_certification_apply | bool
+    - ansible_check_mode | bool
+  no_log: true
+  tags: [certification]
+
+- name: Require real certification identity for an applied matrix
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_certification_release is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_certification_release | length > 0
+      - archiveweaver_certification_release == archiveweaver_release
+      - archiveweaver_certification_operator | length > 0
+      - archiveweaver_certification_fixture_set | length > 0
+    fail_msg: "An applied certification requires a pinned release, operator, and fixture-set identifier."
+  when: archiveweaver_certification_apply | bool
+  no_log: true
+  tags: [certification]
+
+- name: Require the complete reviewed product test matrix
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_certification_tests | length == 5
+      - (archiveweaver_certification_tests | map(attribute='name') | list | sort) == ['api', 'dependencies', 'formats', 'migration', 'smoke']
+      - item is mapping
+      - item.name is string
+      - item.name is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - item.command is sequence
+      - item.command is not string
+      - item.command | length > 0
+    fail_msg: "The certification matrix must contain exactly five named reviewed argv hooks: dependencies, smoke, migration, formats, and api."
+  loop: "{{ archiveweaver_certification_tests }}"
+  when: archiveweaver_certification_apply | bool
+  no_log: true
+  tags: [certification]
+
+- name: Announce plan-only product certification posture
+  ansible.builtin.debug:
+    msg: "Product certification hooks are not executed. Set archiveweaver_certification_apply=true only for an approved isolated test environment."
+  when: not archiveweaver_certification_apply | bool
+  tags: [certification]
+
+- name: Run the reviewed product certification hooks
+  ansible.builtin.command:
+    argv: "{{ item.command }}"
+    expand_argument_vars: false
+  loop: "{{ archiveweaver_certification_tests }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_certification_results
+  changed_when: true
+  failed_when: false
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  no_log: true
+  tags: [certification]
+
+- name: Require every product certification hook to pass
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: "A product certification hook failed; do not promote this release."
+  loop: "{{ archiveweaver_certification_results.results | default([]) }}"
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  no_log: true
+  tags: [certification]
+
+- name: Create the product-certification evidence directory on the controller
+  ansible.builtin.file:
+    path: "{{ archiveweaver_certification_evidence_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  tags: [certification]
+
+- name: Write redacted product-certification evidence
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_certification_evidence_dir }}/{{ item.item.name }}.json"
+    content: >-
+      {{ {
+        'name': item.item.name,
+        'status': 'pass' if item.rc == 0 else 'fail',
+        'solution': archiveweaver_solution_id,
+        'runtime': 'ansible',
+        'underlying_runtime': archiveweaver_runtime,
+        'os_id': archiveweaver_os_id,
+        'release': archiveweaver_certification_release,
+        'environment': archiveweaver_evidence_environment,
+        'execution_environment': archiveweaver_certification_environment,
+        'execution_environment_digest': archiveweaver_execution_environment_digest,
+        'recorded_at': ansible_date_time.iso8601,
+        'operator': archiveweaver_certification_operator,
+        'fixture_set': archiveweaver_certification_fixture_set,
+        'returncode': item.rc
+      } | to_nice_json }}
+    mode: '0600'
+  loop: "{{ archiveweaver_certification_results.results | default([]) }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  tags: [certification]

@@ -1,0 +1,94 @@
+---
+# Operator-owned deployment inputs. Replace the values marked REPLACE before
+# any check-mode apply or real apply. Keep secrets in vault.yml or an external
+# secret manager; do not put them in this file or on the command line.
+archiveweaver_solution_id: paperless-ngx
+archiveweaver_runtime: rke2
+archiveweaver_os_id: ubuntu-24.04
+archiveweaver_environment: production
+# The environment being certified by evidence. Isolated certification and
+# restore/failure drills may execute in staging/restore infrastructure while
+# proving the exact production release.
+archiveweaver_evidence_environment: production
+archiveweaver_nodes: "3"
+archiveweaver_ansible_core_version: "2.21.0"
+archiveweaver_execution_environment_digest: ""
+archiveweaver_namespace: archiveweaver
+archiveweaver_app_port: 8080
+archiveweaver_release: REPLACE_WITH_PINNED_RELEASE
+archiveweaver_change_id: CHG-REPLACE
+
+# Safety gates. The default is plan-only and must remain false in shared
+# branches. Ansible --check is still recommended for the mutation preview.
+archiveweaver_apply: false
+archiveweaver_run_verification: false
+archiveweaver_repair_apply: false
+archiveweaver_rollback_apply: false
+archiveweaver_rollback_release_manifest_verified: false
+archiveweaver_rollback_product_stack_ready: false
+archiveweaver_rollback_verify_command: []
+archiveweaver_staging_preview: false
+archiveweaver_allow_fencing_actions: false
+archiveweaver_topology_design_approved: false
+archiveweaver_single_node_production_approved: false
+
+archiveweaver_approval_ticket: ""
+archiveweaver_backup_verified: false
+archiveweaver_release_manifest_verified: false
+archiveweaver_product_stack_ready: false
+archiveweaver_stonith_ready: false
+archiveweaver_qdevice_ready: false
+archiveweaver_external_consensus_ready: false
+# Anchor controller-local artifacts to the checked-in Ansible bundle, not to
+# the directory containing a generated entry point.
+archiveweaver_bundle_root: "{{ (ansible_config_file | default(playbook_dir ~ '/ansible.cfg', true)) | regex_replace('/[^/]+$', '') }}"
+archiveweaver_readiness_manifest_path: "{{ archiveweaver_bundle_root }}/release-manifest.json"
+archiveweaver_readiness_python: python3
+archiveweaver_readiness_pythonpath: "{{ archiveweaver_bundle_root }}/../../src"
+archiveweaver_operator: ""
+archiveweaver_fixture_set: ""
+
+# Provider-specific values. Raw and Quadlet require an explicit command or
+# immutable image. Docker/Swarm/Kubernetes also require a reviewed provider
+# bundle and the official product dependencies to be staged separately. The
+# SHA-256 values bind the remote content to the reviewed release record.
+archiveweaver_exec_start: ""
+archiveweaver_image: ""
+archiveweaver_provider_bundle_sha256: ""
+archiveweaver_compose_path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/compose.yml"
+archiveweaver_product_stack_sha256: ""
+archiveweaver_kustomize_path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/kustomize"
+archiveweaver_kustomize_bundle_sha256: ""
+archiveweaver_kubeconfig: ""
+archiveweaver_resource_name: "{{ archiveweaver_solution_id }}"
+
+archiveweaver_service_name: "{{ archiveweaver_solution_id }}"
+archiveweaver_data_root: "/srv/archiveweaver/{{ archiveweaver_solution_id }}"
+archiveweaver_log_root: "/var/log/archiveweaver/{{ archiveweaver_solution_id }}"
+archiveweaver_release_record: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/release.yml"
+archiveweaver_evidence_root: "{{ archiveweaver_bundle_root }}/evidence"
+archiveweaver_evidence_dir: "{{ archiveweaver_evidence_root }}/{{ archiveweaver_change_id }}"
+archiveweaver_evidence_publish_enabled: false
+archiveweaver_evidence_publish_command: []
+archiveweaver_evidence_verify_command: []
+archiveweaver_evidence_retention_days: 0
+archiveweaver_evidence_immutable: false
+archiveweaver_evidence_access_logged: false
+archiveweaver_health_url: ""
+archiveweaver_health_validate_certs: true
+archiveweaver_serial: 1
+archiveweaver_manage_packages: true
+archiveweaver_observe_enabled: false
+archiveweaver_check_command: /usr/local/bin/archiveweaver
+archiveweaver_check_interval: 5min
+
+archiveweaver_packages_debian:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - openssl
+  - tar
+  - unzip
+  - rsync
+archiveweaver_packages_redhat: "{{ archiveweaver_packages_debian }}"

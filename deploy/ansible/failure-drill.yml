@@ -1,0 +1,26 @@
+---
+- name: Validate the pinned Ansible controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: archiveweaver_controller_preflight
+      tags: [always, controller]
+
+- name: ArchiveWeaver non-production failure-domain drill
+  hosts: archiveweaver_failure
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    archiveweaver_failure_apply: false
+    archiveweaver_failure_environment: staging
+    archiveweaver_failure_change_id: FD-PLAN
+    archiveweaver_failure_tests: []
+    archiveweaver_failure_evidence_dir: "{{ archiveweaver_bundle_root }}/evidence/failure-drill"
+  roles:
+    - role: archiveweaver_failure
+      tags: [failure-drill]
+    - role: archiveweaver_evidence
+      tags: [evidence]

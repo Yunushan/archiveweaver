@@ -1,0 +1,18 @@
+---
+- name: ArchiveWeaver guarded repair
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    archiveweaver_run_verification: true
+  roles:
+    - role: archiveweaver_preflight
+      tags: [preflight]
+    - role: archiveweaver_repair
+      tags: [repair]
+    - role: archiveweaver_verify
+      tags: [verify]
+    - role: archiveweaver_evidence
+      tags: [evidence]

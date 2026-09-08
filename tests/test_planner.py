@@ -36,3 +36,23 @@ class PlannerTests(unittest.TestCase):
         plan = build_plan(self.catalog, "dspace", "docker", "1", "ubuntu-26.04")
         self.assertTrue(any("forward validation" in item for item in plan.warnings))
 
+    def test_ansible_is_an_orchestration_adapter(self) -> None:
+        plan = build_plan(self.catalog, "paperless-ngx", "ansible", "3", "ubuntu-24.04")
+        self.assertNotEqual(plan.status, "blocked")
+        self.assertEqual(plan.support_level, "portable")
+        self.assertEqual(plan.underlying_mode, "raw")
+        self.assertTrue(any("not an HA runtime" in item for item in plan.warnings))
+        self.assertTrue(any("ansible-playbook" in item for item in plan.commands))
+        self.assertTrue(all("--ask-vault-pass" not in item for item in plan.commands))
+
+    def test_ansible_uses_underlying_topology_policy(self) -> None:
+        plan = build_plan(self.catalog, "paperless-ngx", "ansible", "2", "ubuntu-24.04", underlying_mode="rke2")
+        self.assertEqual(plan.underlying_mode, "rke2")
+        self.assertEqual(plan.topology_level, "not-recommended")
+        self.assertEqual(plan.status, "blocked")
+        self.assertTrue(any("RKE2 topology policy marks 2 nodes" in item for item in plan.blockers))
+
+    def test_namespace_is_safe_for_generated_provider_commands(self) -> None:
+        with self.assertRaises(ValueError):
+            build_plan(self.catalog, "paperless-ngx", "rke2", "1", "ubuntu-24.04", namespace="archive; rm -rf /")
+

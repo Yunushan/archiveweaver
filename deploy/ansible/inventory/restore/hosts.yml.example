@@ -1,0 +1,11 @@
+---
+# Restore drills must target isolated infrastructure and non-production data.
+all:
+  vars:
+    ansible_user: archiveweaver-restore
+    ansible_become: true
+  children:
+    archiveweaver_restore:
+      hosts:
+        archive-restore-a.example.org:
+          ansible_host: 203.0.113.11

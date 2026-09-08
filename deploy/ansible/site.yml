@@ -1,0 +1,27 @@
+---
+- name: ArchiveWeaver enterprise deployment envelope
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: true
+  serial: "{{ archiveweaver_serial }}"
+  any_errors_fatal: true
+  roles:
+    - role: archiveweaver_preflight
+      tags: [preflight]
+    - role: archiveweaver_host
+      when: archiveweaver_apply | bool
+      tags: [host, deploy]
+    - role: archiveweaver_provider
+      when: archiveweaver_apply | bool
+      tags: [provider, deploy]
+    - role: archiveweaver_observe
+      when:
+        - archiveweaver_apply | bool
+        - archiveweaver_observe_enabled | bool
+      tags: [observe]
+    - role: archiveweaver_verify
+      when: archiveweaver_run_verification | bool
+      tags: [verify]
+    - role: archiveweaver_evidence
+      when: archiveweaver_run_verification | bool
+      tags: [evidence]

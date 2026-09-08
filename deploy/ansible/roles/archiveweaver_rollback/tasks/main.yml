@@ -1,0 +1,222 @@
+---
+- name: Validate the rollback inputs
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_rollback_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_rollback_change_id is string
+      - archiveweaver_rollback_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_rollback_change_id is not search('(?i)(?:replace|todo|tbd)')
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_rollback_evidence_dir is string
+      - archiveweaver_rollback_evidence_dir is match('^' ~ (archiveweaver_evidence_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_rollback_evidence_dir is not search('\\.\\.')
+      - archiveweaver_rollback_evidence_dir is not search('[\"\\s\\r\\n]')
+    fail_msg: "Rollback requires a valid change ID, non-production boundary, and safe evidence path."
+  tags: [rollback]
+
+- name: Refuse to execute rollback hooks in check mode
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode | bool
+    fail_msg: "Applied rollback hooks cannot run with --check; use the non-applied preview or an approved real run."
+  when:
+    - archiveweaver_rollback_apply | bool
+    - ansible_check_mode | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Require reviewed rollback inputs for an applied rollback
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_rollback_release is string
+      - archiveweaver_rollback_release | length > 0
+      - archiveweaver_rollback_release is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_rollback_release is not search('[\\r\\n]')
+      - archiveweaver_rollback_artifact_digest is match('^sha256:[0-9a-f]{64}$')
+      - archiveweaver_rollback_release != archiveweaver_release
+      - archiveweaver_rollback_command is sequence
+      - archiveweaver_rollback_command is not string
+      - archiveweaver_rollback_command | length > 0
+      - archiveweaver_rollback_verify_command is sequence
+      - archiveweaver_rollback_verify_command is not string
+      - archiveweaver_rollback_verify_command | length > 0
+      - archiveweaver_release is string
+      - archiveweaver_release | length > 0
+      - archiveweaver_release is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is string
+      - archiveweaver_operator | length > 0
+      - archiveweaver_operator is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is not search('["\\s\\r\\n]')
+      - archiveweaver_fixture_set is string
+      - archiveweaver_fixture_set | length > 0
+      - archiveweaver_fixture_set is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_fixture_set is not search('["\\s\\r\\n]')
+    fail_msg: "An applied rollback requires a pinned previous release, digest, and reviewed argv hook."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Load the reviewed rollback identity from the readiness manifest
+  ansible.builtin.set_fact:
+    archiveweaver_rollback_readiness_manifest: >-
+      {{ lookup('ansible.builtin.file', archiveweaver_readiness_manifest_path) | from_json }}
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Bind rollback to the reviewed release manifest
+  ansible.builtin.assert:
+    that:
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('release', {}).get('version') == archiveweaver_release
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('recovery', {}).get('rollback_release') == archiveweaver_rollback_release
+      - (archiveweaver_rollback_readiness_manifest | default({})).get('recovery', {}).get('rollback_artifact_digest') == archiveweaver_rollback_artifact_digest
+    fail_msg: "Rollback inputs do not match the reviewed readiness manifest identity or previous artifact binding."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Announce plan-only rollback posture
+  ansible.builtin.debug:
+    msg: "Rollback is not executed. Set archiveweaver_rollback_apply=true only through approved change control."
+  when: not archiveweaver_rollback_apply | bool
+  tags: [rollback]
+
+- name: Require rollback approval and backup evidence
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_rollback_approval_ticket is string
+      - archiveweaver_rollback_approval_ticket | length > 0
+      - archiveweaver_rollback_approval_ticket is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_rollback_approval_ticket is not search('["\\s]')
+      - archiveweaver_rollback_approval_ticket is not search('[\"\\r\\n]')
+      - archiveweaver_rollback_backup_verified | bool
+      - archiveweaver_rollback_command | length > 0
+    fail_msg: "Rollback requires an approval ticket, verified backup, and reviewed command hook."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Require non-empty reviewed rollback argv elements
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item | length > 0
+      - item is not search('["\\r\\n]')
+  loop: "{{ archiveweaver_rollback_command + archiveweaver_rollback_verify_command }}"
+  fail_msg: "Rollback and post-rollback verification hooks must contain safe, non-empty argument-vector elements."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Run the reviewed rollback hook
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_rollback_command }}"
+    expand_argument_vars: false
+  register: archiveweaver_rollback_result
+  changed_when: true
+  failed_when: false
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Require rollback hook to pass
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_rollback_result.rc == 0
+    fail_msg: "Rollback failed; stop promotion and preserve evidence."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Run the reviewed post-rollback verification hook
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_rollback_verify_command }}"
+    expand_argument_vars: false
+  register: archiveweaver_rollback_verify_result
+  changed_when: true
+  failed_when: false
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback, verify]
+
+- name: Require post-rollback verification to pass
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_rollback_verify_result.rc == 0
+    fail_msg: "Post-rollback verification failed; preserve the rollback evidence and stop promotion."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback, verify]
+
+- name: Build stable rollback evidence filename keys
+  ansible.builtin.set_fact:
+    archiveweaver_rollback_evidence_host_keys: >-
+      {{ (archiveweaver_rollback_evidence_host_keys | default([]))
+         + [item | regex_replace('[^A-Za-z0-9_.-]', '_')] }}
+  loop: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  tags: [rollback]
+
+- name: Reject colliding rollback evidence filenames
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_rollback_evidence_host_keys | unique | length == archiveweaver_rollback_evidence_host_keys | length
+    fail_msg: "Rollback evidence hostnames collapse to the same sanitized filename."
+  no_log: true
+  tags: [rollback]
+
+- name: Build redacted rollback evidence
+  ansible.builtin.set_fact:
+    archiveweaver_rollback_evidence:
+      name: "rollback-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      host: "{{ inventory_hostname }}"
+      solution: "{{ archiveweaver_solution_id }}"
+      runtime: ansible
+      underlying_runtime: "{{ archiveweaver_runtime }}"
+      os_id: "{{ archiveweaver_os_id }}"
+      release: "{{ archiveweaver_release }}"
+      environment: "{{ archiveweaver_evidence_environment }}"
+      execution_environment: "{{ archiveweaver_rollback_environment }}"
+      execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      recorded_at: "{{ ansible_date_time.iso8601 }}"
+      operator: "{{ archiveweaver_operator }}"
+      fixture_set: "{{ archiveweaver_fixture_set }}"
+      change_id: "{{ archiveweaver_rollback_change_id }}"
+      approval_ticket: "{{ archiveweaver_rollback_approval_ticket }}"
+      backup_verified: "{{ archiveweaver_rollback_backup_verified | bool }}"
+      rollback_release: "{{ archiveweaver_rollback_release }}"
+      artifact_digest: "{{ archiveweaver_rollback_artifact_digest }}"
+      status: "{{ 'pass' if archiveweaver_rollback_apply | bool else 'planned' }}"
+      returncode: "{{ archiveweaver_rollback_result.rc | default('not-run') }}"
+      verification_returncode: "{{ archiveweaver_rollback_verify_result.rc | default('not-run') }}"
+  no_log: true
+  tags: [rollback]
+
+- name: Create the rollback evidence directory on the controller
+  ansible.builtin.file:
+    path: "{{ archiveweaver_rollback_evidence_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [rollback]
+
+- name: Write redacted rollback evidence on the controller
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_rollback_evidence_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+    content: "{{ archiveweaver_rollback_evidence | to_nice_json }}\n"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  no_log: true
+  tags: [rollback]

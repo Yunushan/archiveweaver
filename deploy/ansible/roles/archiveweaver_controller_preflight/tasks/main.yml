@@ -1,0 +1,177 @@
+---
+- name: Validate the pinned Ansible Core declaration
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_ansible_core_version is string
+      - archiveweaver_ansible_core_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+    fail_msg: "The controller Ansible Core version must be a pinned semantic version."
+  tags: [always, controller]
+
+- name: Inspect the controller Ansible Core version
+  ansible.builtin.command:
+    argv: [ansible-playbook, --version]
+  register: archiveweaver_controller_ansible_version
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the pinned Ansible Core execution environment
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_ansible_version.rc == 0
+      - archiveweaver_controller_ansible_version.stdout is search('core ' ~ archiveweaver_ansible_core_version)
+    fail_msg: "The controller is not using the pinned Ansible Core execution environment."
+  no_log: true
+  tags: [always, controller]
+
+- name: Require an immutable execution-environment digest for applied workflows
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_execution_environment_digest is string
+      - archiveweaver_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
+    fail_msg: "Applied controller workflows require the immutable execution-environment digest binding."
+  when:
+    - not ansible_check_mode | bool
+    - archiveweaver_apply | default(false) | bool
+      or archiveweaver_repair_apply | default(false) | bool
+      or archiveweaver_run_verification | default(false) | bool
+      or archiveweaver_certification_apply | default(false) | bool
+      or archiveweaver_restore_apply | default(false) | bool
+      or archiveweaver_failure_apply | default(false) | bool
+      or archiveweaver_rollback_apply | default(false) | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Read the controller-provided execution-environment identity
+  ansible.builtin.set_fact:
+    archiveweaver_controller_execution_environment_digest: "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') }}"
+  when:
+    - not ansible_check_mode | bool
+    - archiveweaver_apply | default(false) | bool
+      or archiveweaver_repair_apply | default(false) | bool
+      or archiveweaver_run_verification | default(false) | bool
+      or archiveweaver_certification_apply | default(false) | bool
+      or archiveweaver_restore_apply | default(false) | bool
+      or archiveweaver_failure_apply | default(false) | bool
+      or archiveweaver_rollback_apply | default(false) | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the controller image identity to match the job binding
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
+      - archiveweaver_controller_execution_environment_digest == archiveweaver_execution_environment_digest
+    fail_msg: "The controller-provided execution-environment identity does not match the applied job binding."
+  when:
+    - not ansible_check_mode | bool
+    - archiveweaver_apply | default(false) | bool
+      or archiveweaver_repair_apply | default(false) | bool
+      or archiveweaver_run_verification | default(false) | bool
+      or archiveweaver_certification_apply | default(false) | bool
+      or archiveweaver_restore_apply | default(false) | bool
+      or archiveweaver_failure_apply | default(false) | bool
+      or archiveweaver_rollback_apply | default(false) | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Determine whether the final readiness gate applies
+  ansible.builtin.set_fact:
+    archiveweaver_controller_readiness_gate_active: >-
+      {{ (not (ansible_check_mode | bool)) and (
+         archiveweaver_apply | default(false) | bool
+         or archiveweaver_repair_apply | default(false) | bool
+         or archiveweaver_run_verification | default(false) | bool
+         or archiveweaver_rollback_apply | default(false) | bool
+      ) }}
+  tags: [always, controller]
+
+- name: Validate the controller readiness manifest boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_bundle_root is string
+      - archiveweaver_bundle_root | length > 0
+      - archiveweaver_bundle_root is match('^/')
+      - archiveweaver_bundle_root == ((ansible_config_file | default(playbook_dir ~ '/ansible.cfg', true)) | regex_replace('/[^/]+$', ''))
+      - archiveweaver_readiness_manifest_path is string
+      - archiveweaver_readiness_manifest_path | length > 0
+      - archiveweaver_readiness_manifest_path is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_readiness_manifest_path is not search('["\\s\\r\\n]')
+      - archiveweaver_readiness_manifest_path is not search('\\.\\.')
+      - archiveweaver_readiness_python is string
+      - archiveweaver_readiness_python | length > 0
+      - archiveweaver_readiness_python is not search('[\\r\\n]')
+      - archiveweaver_readiness_pythonpath is string
+      - archiveweaver_readiness_pythonpath == (archiveweaver_bundle_root ~ '/../../src')
+    fail_msg: "Applied controller workflows require a controller-local readiness manifest and repository source path."
+  when: archiveweaver_controller_readiness_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Inspect the controller readiness manifest
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_readiness_manifest_path }}"
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_readiness_manifest_stat
+  when: archiveweaver_controller_readiness_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require a regular controller readiness manifest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_readiness_manifest_stat.stat.exists
+      - archiveweaver_controller_readiness_manifest_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_controller_readiness_manifest_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The applied controller workflow readiness manifest must be a regular, non-symlink file inside the Ansible bundle."
+  when: archiveweaver_controller_readiness_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Verify the applied workflow readiness manifest
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - -m
+      - archiveweaver
+      - readiness
+      - --manifest
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - --json
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  register: archiveweaver_controller_readiness_result
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_readiness_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Parse the applied workflow readiness report
+  ansible.builtin.set_fact:
+    archiveweaver_controller_readiness_report: "{{ archiveweaver_controller_readiness_result.stdout | from_json }}"
+  when:
+    - archiveweaver_controller_readiness_gate_active | bool
+    - archiveweaver_controller_readiness_result.rc == 0
+  no_log: true
+  tags: [always, controller]
+
+- name: Require applied workflows to match the signed readiness identity
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_readiness_result.rc == 0
+      - (archiveweaver_controller_readiness_report | default({})).get('status') == 'pass'
+      - (archiveweaver_controller_readiness_report | default({})).get('score', 0) | int == 100
+      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_controller_readiness_report | default({})).get('release_version') == archiveweaver_release
+      - (archiveweaver_controller_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+    fail_msg: "Applied workflow identity or execution-environment digest does not match the signed 100/100 readiness manifest."
+  when: archiveweaver_controller_readiness_gate_active | bool
+  no_log: true
+  tags: [always, controller]

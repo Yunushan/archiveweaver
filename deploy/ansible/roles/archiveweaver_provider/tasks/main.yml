@@ -1,0 +1,44 @@
+---
+- name: Validate provider envelope prerequisites
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_product_stack_ready | bool
+      - archiveweaver_release_manifest_verified | bool
+    fail_msg: "Provider application is blocked until the official product stack and release manifest are verified."
+  when: not archiveweaver_is_staging_preview | default(false) | bool
+  tags: [provider, deploy]
+
+- name: Apply the raw systemd provider envelope
+  ansible.builtin.include_tasks: raw.yml
+  when: archiveweaver_runtime == 'raw'
+  tags: [provider, deploy]
+
+- name: Apply the Podman Quadlet provider envelope
+  ansible.builtin.include_tasks: podman-quadlet.yml
+  when: archiveweaver_runtime == 'podman-quadlet'
+  tags: [provider, deploy]
+
+- name: Apply the Docker Compose provider envelope
+  ansible.builtin.include_tasks: docker.yml
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  tags: [provider, deploy]
+
+- name: Apply the Docker Swarm provider envelope
+  ansible.builtin.include_tasks: docker-swarm.yml
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [provider, deploy]
+
+- name: Apply a Kubernetes-family provider envelope
+  ansible.builtin.include_tasks: kubernetes.yml
+  when: archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+  tags: [provider, deploy]
+
+- name: Fail closed for Pacemaker deployment resources
+  ansible.builtin.fail:
+    msg: "Ansible does not invent Pacemaker resources. Apply the reviewed VIP, storage, STONITH, and application resource runbook separately."
+  when: archiveweaver_runtime == 'pacemaker'
+  tags: [provider, deploy]

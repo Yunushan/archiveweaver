@@ -1,0 +1,28 @@
+---
+- name: Validate the pinned Ansible controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: archiveweaver_controller_preflight
+      tags: [always, controller]
+
+- name: ArchiveWeaver non-production restore and fixity drill
+  hosts: archiveweaver_restore
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    archiveweaver_restore_apply: false
+    archiveweaver_restore_environment: restore
+    archiveweaver_restore_source: ""
+    archiveweaver_restore_command: []
+    archiveweaver_fixity_command: []
+    archiveweaver_restore_change_id: DR-PLAN
+    archiveweaver_restore_evidence_dir: "{{ archiveweaver_bundle_root }}/evidence/restore-drill"
+  roles:
+    - role: archiveweaver_restore
+      tags: [restore, fixity]
+    - role: archiveweaver_evidence
+      tags: [evidence]

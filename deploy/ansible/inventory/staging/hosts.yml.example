@@ -1,0 +1,37 @@
+---
+# Staging must be a separate failure domain and data set from production.
+all:
+  vars:
+    ansible_user: archiveweaver-staging
+    ansible_become: true
+    archiveweaver_environment: staging
+    archiveweaver_nodes: "1"
+    archiveweaver_readiness_manifest_path: "{{ playbook_dir }}/release-manifest-staging.json"
+  children:
+    archiveweaver_nodes:
+      children:
+        archiveweaver_control:
+        archiveweaver_app:
+        archiveweaver_workers:
+    archiveweaver_failure:
+      children:
+        archiveweaver_nodes:
+    archiveweaver_certification:
+      children:
+        archiveweaver_app:
+    archiveweaver_control:
+      hosts:
+        archive-staging-a.example.org:
+          ansible_host: 198.51.100.11
+          archiveweaver_failure_domain: staging-zone-a
+    archiveweaver_app:
+      hosts:
+        archive-staging-a.example.org:
+    archiveweaver_workers:
+      hosts: {}
+    archiveweaver_data:
+      hosts: {}
+    archiveweaver_storage:
+      hosts: {}
+    archiveweaver_witness:
+      hosts: {}

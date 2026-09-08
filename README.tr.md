@@ -18,6 +18,7 @@ ArchiveWeaver; araştırma veri depoları, dijital koruma sistemleri, DMS/ECM ü
 
 - 30 çözüm için upstream repository, resmi dokümantasyon, bağımlılık, servis, sağlık yolu ve format ailesi kataloğu;
 - raw/native, Docker Compose, K3s, RKE2, Pacemaker/Corosync + STONITH, Podman Quadlet, k0s, Docker Swarm ve MicroK8s;
+- inventory, Vault/secret sınırı, fail-closed approval, rolling execution, provider envelope, repair gate ve evidence içeren Ansible orchestration edition;
 - standalone, 2 node, 3 node ve 3+ node topolojileri;
 - Ubuntu 22.04/24.04/26.04, Rocky Linux 8/9/10, RHEL 8/9/10, AlmaLinux 8/9/10, Debian 12/13;
 - salt-okunur host, runtime, systemd, HTTP, storage path ve configuration kontrolleri;
@@ -75,6 +76,29 @@ archiveweaver check \
   --json > reports/paperless-check.json
 ```
 
+Enterprise Ansible orchestration edition:
+
+```bash
+cd deploy/ansible
+cp inventory/production/hosts.yml.example inventory/production/hosts.yml
+ansible-playbook site.yml --syntax-check
+ansible-playbook site.yml --check --diff -e archiveweaver_apply=true
+```
+
+Belirli bir provider için Ansible entry point üretmek üzere örneğin
+`archiveweaver render --solution paperless-ngx --mode ansible --underlying-mode rke2 --nodes 3 --os ubuntu-24.04 --output deploy/ansible/generated/paperless-rke2.yml` kullanılabilir.
+
+Ansible seçilen provider'ı koordine eder; quorum, fencing, scheduler HA,
+database replication veya ürün seviyesinde failover sağlamaz. Release
+manifest, dependency stack, backup kanıtı ve change approval tamamlanana
+kadar `archiveweaver_apply: false` bırakılmalıdır.
+
+Üretim değişikliğinden önce 100 puanlık readiness gate çalıştırın:
+`PYTHONPATH=src python3 -m archiveweaver readiness --manifest deploy/ansible/release-manifest.json --json`.
+Örnek, gerçek release manifesti, ürün test kanıtları ve doğrulanmış SHA-256
+evidence index sağlanana kadar bilerek başarısız olur. Sözleşme için [premium
+readiness](docs/operations/premium-readiness.md) sayfasına bakın.
+
 Onarım varsayılan olarak yalnızca plan üretir. Uygulamak için açıkça `--apply` gerekir:
 
 ```bash
@@ -112,8 +136,13 @@ Detaylı katalog: [solutions-catalog.md](docs/reference/solutions-catalog.md). �
 | k0s | destekli | önerilmez | destekli | destekli |
 | Docker Swarm | destekli | önerilmez | destekli | destekli |
 | MicroK8s | destekli | önerilmez | destekli | destekli |
+| Ansible orchestration adapter | destekli | destekli | destekli | destekli |
 
 İki node embedded-etcd veya iki Swarm manager yapısı, tek node kaybında quorum koruyan HA olarak kabul edilmez. İki node Pacemaker tasarımında gerçek STONITH/fencing zorunludur. Ayrıntı için [runtime matrix](docs/deployment/runtime-matrix.md) ve [two-node design](docs/deployment/two-node.md) sayfalarına bakın.
+
+Ansible satırı, koordine edilebilen host sayısını gösterir; tek başına HA
+garantisi değildir. Dayanıklılığı underlying runtime ve uygulamanın state
+tasarımı belirler.
 
 ## Linux tabanı
 
@@ -136,7 +165,9 @@ Bu liste ArchiveWeaver host baseline'ıdır; tüm ürünlerin tüm release'leri 
 - [ADR](docs/architecture/DECISIONS.md): katalog yaklaşımı, iki node quorum politikası ve envelope kararı;
 - [Standalone](docs/deployment/standalone.md), [two-node](docs/deployment/two-node.md), [three-node](docs/deployment/three-node.md), [three-plus-node](docs/deployment/three-plus-node.md);
 - [Kubernetes ailesi](docs/deployment/kubernetes.md), [containers](docs/deployment/containers.md), [Pacemaker](docs/deployment/pacemaker.md);
-- [Checking](docs/operations/checking.md), [repair](docs/operations/repair.md), [backup/restore](docs/operations/backup-restore.md), [security](docs/operations/security.md);
+- [Ansible enterprise orchestration](docs/deployment/ansible.md) ve çalıştırılabilir [Ansible edition](deploy/ansible/README.md);
+- [Checking](docs/operations/checking.md), [repair](docs/operations/repair.md), [backup/restore](docs/operations/backup-restore.md), [product certification](docs/operations/product-certification.md), [service management](docs/operations/service-management.md) ve [security](docs/operations/security.md);
+- [Supply-chain controls](docs/operations/supply-chain.md);
 - [format kataloğu](docs/reference/formats.md), [format-family matrix](docs/reference/format-matrix.md), [product support matrix](docs/reference/support-matrix.md) ve [upstream kaynakları](docs/reference/upstream-sources.md).
 
 ## Format modeli

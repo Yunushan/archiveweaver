@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [{ name = "ArchiveWeaver contributors" }]
-keywords = ["digital-archives", "digital-preservation", "dms", "devops", "ha", "kubernetes"]
+keywords = ["digital-archives", "digital-preservation", "dms", "devops", "ha", "kubernetes", "ansible", "site-reliability"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: Zero-Clause BSD",

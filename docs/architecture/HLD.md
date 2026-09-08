@@ -6,7 +6,7 @@ ArchiveWeaver is an operations control plane and reference deployment kit for di
 
 - a versioned catalog for the 30 requested products;
 - a common deployment and topology vocabulary;
-- safe planning for raw/native, container, cluster-manager, and Kubernetes-style runtimes;
+- safe planning for raw/native, container, cluster-manager, Kubernetes-style runtimes, and Ansible orchestration;
 - read-only host, service, HTTP, storage-path, and configuration checks;
 - explicit, gated repair actions;
 - English and Turkish operator documentation;
@@ -47,13 +47,14 @@ flowchart TD
   Checks --> Evidence
   Repair --> Evidence
   Renderer --> Runtime[Raw / Docker / K8s / Pacemaker]
+  Ansible[Ansible orchestration edition] --> Runtime
 ```
 
 The CLI is intentionally stateless. A deployment system such as GitLab CI, GitHub Actions, Ansible, Flux, Argo CD, or an internal change-management process may store the generated plan and evidence. ArchiveWeaver does not require one specific CI/CD product.
 
 ## 5. Runtime abstraction
 
-The engine exposes nine modes:
+The engine exposes ten modes (nine underlying runtimes plus the Ansible orchestration adapter):
 
 | Mode | Primary responsibility | Recommended HA shape |
 | --- | --- | --- |
@@ -66,6 +67,7 @@ The engine exposes nine modes:
 | k0s | Kubernetes distribution | 3 or 5 controllers with etcd; workers as required |
 | Docker Swarm | Multi-host container scheduling | Odd number of managers, normally 3 or 5 |
 | MicroK8s | Kubernetes distribution | 3 or 5 control-plane nodes with HA datastore |
+| Ansible orchestration | Version-controlled host/configuration management | Coordinates an underlying runtime; does not provide HA, quorum, or fencing |
 
 Support levels in the catalog are deliberately precise:
 
@@ -162,6 +164,7 @@ Use the 3-2-1 rule, immutable/offline copies where possible, encryption in trans
 
 - TLS terminates at an approved ingress/reverse proxy and is re-encrypted to backends where policy requires it.
 - Secrets are supplied through an approved secret manager, Kubernetes Secret encryption, or protected environment files; never commit them.
+- The Ansible edition keeps apply disabled by default, uses host-key verification and reviewed become policy, requires explicit backup/release/approval gates, and writes redacted evidence without credentials or document content.
 - Container images are pinned by digest or approved immutable tag and scanned before promotion.
 - Run services as non-root when upstream support permits; use `no-new-privileges`, dropped capabilities, seccomp, SELinux/AppArmor, and read-only paths where compatible.
 - Restrict database/search/queue ports to application networks.
@@ -181,5 +184,7 @@ Every deployment should expose or collect:
 - backup age, restore test result, and checksum verification;
 - cluster quorum, node readiness, fencing state, and event logs.
 
-The acceptance gate is: catalog validation, plan review, dependency readiness, smoke test, backup verification, failure test, and recorded evidence.
+The acceptance gate is: catalog validation, plan review, a 100/100 release
+readiness report, dependency readiness, smoke test, backup verification,
+failure test, and a sealed evidence index.
 

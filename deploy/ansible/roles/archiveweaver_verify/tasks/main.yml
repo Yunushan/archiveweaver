@@ -1,0 +1,111 @@
+---
+- name: Validate the verification evidence boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_evidence_dir is string
+      - archiveweaver_evidence_dir is match('^' ~ (archiveweaver_evidence_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_evidence_dir is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_dir is not search('\\.\\.')
+    fail_msg: "Verification evidence must stay below the configured controller evidence root."
+  tags: [verify]
+
+- name: Verify the staged provider bundle before collecting service evidence
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_provider/tasks/verify-bundle.yml"
+  when: archiveweaver_runtime in ['docker', 'docker-swarm', 'k3s', 'rke2', 'k0s', 'microk8s']
+  tags: [verify]
+
+- name: Collect service facts
+  ansible.builtin.service_facts:
+  tags: [verify]
+
+- name: Inspect the application data path
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_data_root }}"
+    follow: false
+  register: archiveweaver_data_stat
+  tags: [verify]
+
+- name: Probe the configured health endpoint with TLS verification
+  ansible.builtin.uri:
+    url: "{{ archiveweaver_health_url }}"
+    method: GET
+    return_content: false
+    validate_certs: "{{ archiveweaver_health_validate_certs | bool }}"
+    status_code: [200, 201, 202, 204]
+    follow_redirects: none
+    timeout: 8
+  register: archiveweaver_health_result
+  when: archiveweaver_health_url | length > 0
+  no_log: true
+  tags: [verify]
+
+- name: Build a redacted per-host evidence record
+  ansible.builtin.set_fact:
+    archiveweaver_evidence:
+      name: "host-verification-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      status: >-
+        {{ 'pass' if
+           (archiveweaver_data_stat.stat.isdir | default(false) | bool)
+           and (
+             ((archiveweaver_health_url | length > 0) and
+             ((archiveweaver_health_result.status | default(0) | int) in [200, 201, 202, 204]))
+             or
+             ((archiveweaver_health_url | length == 0) and
+              (ansible_facts.services.get(archiveweaver_service_name + '.service', {}).get('state', 'unknown') in ['active', 'running']))
+           )
+           else 'fail' }}
+      evidence: "{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+      solution: "{{ archiveweaver_solution_id }}"
+      runtime: ansible
+      underlying_runtime: "{{ archiveweaver_runtime }}"
+      os_id: "{{ archiveweaver_os_id }}"
+      host: "{{ inventory_hostname }}"
+      release: "{{ archiveweaver_release }}"
+      environment: "{{ archiveweaver_evidence_environment }}"
+      execution_environment: "{{ archiveweaver_environment }}"
+      execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      recorded_at: "{{ ansible_date_time.iso8601 }}"
+      operator: "{{ archiveweaver_operator }}"
+      fixture_set: "{{ archiveweaver_fixture_set }}"
+      change_id: "{{ archiveweaver_change_id }}"
+      os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+      data_path:
+        exists: "{{ archiveweaver_data_stat.stat.exists | bool }}"
+        directory: "{{ archiveweaver_data_stat.stat.isdir | default(false) | bool }}"
+      service_state: "{{ ansible_facts.services.get(archiveweaver_service_name + '.service', {}).get('state', 'unknown') }}"
+      health:
+        configured: "{{ archiveweaver_health_url | length > 0 }}"
+        status: "{{ archiveweaver_health_result.status | default('not-configured') }}"
+  tags: [verify]
+
+- name: Require the service verification evidence to pass
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence.status == 'pass'
+    fail_msg: "Service verification did not pass; no passing evidence may be sealed."
+  no_log: true
+  tags: [verify]
+
+- name: Write evidence on the controller without credentials or document data
+  ansible.builtin.file:
+    path: "{{ archiveweaver_evidence_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [verify]
+
+- name: Write the per-host evidence record on the controller
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_evidence_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+    content: "{{ archiveweaver_evidence | to_nice_json }}\n"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  tags: [verify]

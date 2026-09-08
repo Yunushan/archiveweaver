@@ -1,0 +1,42 @@
+---
+- name: Validate the pinned Ansible controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: archiveweaver_controller_preflight
+      tags: [always, controller]
+
+- name: Require a certification target in the selected inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require the isolated certification group to be non-empty
+      ansible.builtin.assert:
+        that:
+          - groups['archiveweaver_certification'] is defined
+          - groups['archiveweaver_certification'] | length > 0
+        fail_msg: "The certification inventory must define at least one isolated archiveweaver_certification host."
+      tags: [always, certification]
+
+- name: ArchiveWeaver isolated product certification
+  hosts: archiveweaver_certification
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    archiveweaver_certification_apply: false
+    archiveweaver_certification_environment: staging
+    archiveweaver_certification_release: "{{ archiveweaver_release }}"
+    archiveweaver_certification_operator: ""
+    archiveweaver_certification_fixture_set: ""
+    archiveweaver_certification_change_id: CERT-PLAN
+    archiveweaver_certification_tests: []
+    archiveweaver_certification_evidence_dir: "{{ archiveweaver_evidence_root }}/product-certification/{{ archiveweaver_certification_change_id }}"
+  roles:
+    - role: archiveweaver_certification
+      tags: [certification]
+    - role: archiveweaver_evidence
+      tags: [evidence]

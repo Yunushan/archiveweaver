@@ -1,0 +1,43 @@
+---
+- name: Require a staged product Swarm stack
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_swarm_stack_path_stat
+  tags: [provider, deploy]
+
+- name: Reject missing or symlinked product Swarm content
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_swarm_stack_path_stat.stat.exists
+      - archiveweaver_swarm_stack_path_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_swarm_stack_path_stat.stat.islnk | default(false) | bool)
+    fail_msg: "Stage the reviewed, official product Swarm stack at archiveweaver_compose_path before apply."
+  tags: [provider, deploy]
+
+- name: Require the reviewed Swarm stack digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_product_stack_sha256 is string
+      - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_swarm_stack_path_stat.stat.checksum == archiveweaver_product_stack_sha256
+    fail_msg: "The staged Swarm stack does not match the reviewed SHA-256 release binding."
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Validate the reviewed product Swarm stack
+  ansible.builtin.command:
+    argv: [docker, stack, config, -c, "{{ archiveweaver_compose_path }}"]
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Deploy the reviewed Swarm stack
+  ansible.builtin.command:
+    argv: [docker, stack, deploy, --compose-file, "{{ archiveweaver_compose_path }}", "{{ archiveweaver_solution_id }}"]
+  changed_when: true
+  no_log: true
+  tags: [provider, deploy]

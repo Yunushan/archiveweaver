@@ -1,0 +1,161 @@
+---
+- name: Validate the failure-drill boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_failure_environment in ['staging', 'restore', 'dr']
+      - archiveweaver_failure_change_id is string
+      - archiveweaver_failure_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_failure_change_id is not search('(?i)(?:replace|todo|tbd)')
+      - archiveweaver_failure_tests is sequence
+      - archiveweaver_failure_tests is not string
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_failure_evidence_dir is string
+      - archiveweaver_failure_evidence_dir is match('^' ~ (archiveweaver_evidence_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_failure_evidence_dir is not search('\\.\\.')
+      - archiveweaver_failure_evidence_dir is not search('[\"\\s\\r\\n]')
+    fail_msg: "Failure drills are permitted only in explicitly non-production environments."
+  tags: [failure-drill]
+
+- name: Refuse to execute failure hooks in check mode
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode | bool
+    fail_msg: "Applied failure hooks cannot run with --check; use the non-applied preview or an approved real run."
+  when:
+    - archiveweaver_failure_apply | bool
+    - ansible_check_mode | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Announce plan-only failure-drill posture
+  ansible.builtin.debug:
+    msg: "Failure hooks are not executed. Set archiveweaver_failure_apply=true only for an approved isolated drill."
+  when: not archiveweaver_failure_apply | bool
+  tags: [failure-drill]
+
+- name: Require named argv failure hooks for an applied drill
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_failure_tests | length >= 4
+      - "'node' in (archiveweaver_failure_tests | map(attribute='name') | list)"
+      - "'service' in (archiveweaver_failure_tests | map(attribute='name') | list)"
+      - "'dependency' in (archiveweaver_failure_tests | map(attribute='name') | list)"
+      - "'storage' in (archiveweaver_failure_tests | map(attribute='name') | list)"
+      - item is mapping
+      - item.name is string
+      - item.name is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - item.command is sequence
+      - item.command is not string
+      - item.command | length > 0
+    fail_msg: "Each failure test requires a named reviewed argument-vector command."
+  loop: "{{ archiveweaver_failure_tests }}"
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Require attributable identity for an applied failure drill
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_release is string
+      - archiveweaver_release | length > 0
+      - archiveweaver_release is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is string
+      - archiveweaver_operator | length > 0
+      - archiveweaver_operator is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is not search('["\\s\\r\\n]')
+      - archiveweaver_fixture_set is string
+      - archiveweaver_fixture_set | length > 0
+      - archiveweaver_fixture_set is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_fixture_set is not search('["\\s\\r\\n]')
+    fail_msg: "An applied failure drill requires a pinned release, operator, and fixture-set identity."
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Run the reviewed failure hooks
+  ansible.builtin.command:
+    argv: "{{ item.command }}"
+    expand_argument_vars: false
+  loop: "{{ archiveweaver_failure_tests }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_failure_results
+  changed_when: true
+  failed_when: false
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Require every failure hook to pass
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: "A failure-domain drill did not pass; do not promote the release."
+  loop: "{{ archiveweaver_failure_results.results | default([]) }}"
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Build stable failure-drill evidence filename keys
+  ansible.builtin.set_fact:
+    archiveweaver_failure_evidence_host_keys: >-
+      {{ (archiveweaver_failure_evidence_host_keys | default([]))
+         + [item | regex_replace('[^A-Za-z0-9_.-]', '_')] }}
+  loop: "{{ groups['archiveweaver_failure'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  tags: [failure-drill]
+
+- name: Reject colliding failure-drill evidence filenames
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_failure_evidence_host_keys | unique | length == archiveweaver_failure_evidence_host_keys | length
+    fail_msg: "Failure-drill evidence hostnames collapse to the same sanitized filename."
+  no_log: true
+  tags: [failure-drill]
+
+- name: Build redacted failure-drill evidence
+  ansible.builtin.set_fact:
+    archiveweaver_failure_evidence:
+      name: "failure-drill-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      host: "{{ inventory_hostname }}"
+      solution: "{{ archiveweaver_solution_id }}"
+      runtime: ansible
+      underlying_runtime: "{{ archiveweaver_runtime }}"
+      os_id: "{{ archiveweaver_os_id }}"
+      release: "{{ archiveweaver_release }}"
+      environment: "{{ archiveweaver_evidence_environment }}"
+      execution_environment: "{{ archiveweaver_failure_environment }}"
+      execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      recorded_at: "{{ ansible_date_time.iso8601 }}"
+      operator: "{{ archiveweaver_operator }}"
+      fixture_set: "{{ archiveweaver_fixture_set }}"
+      change_id: "{{ archiveweaver_failure_change_id }}"
+      status: "{{ 'pass' if archiveweaver_failure_apply | bool else 'planned' }}"
+      tests: "{{ archiveweaver_failure_results.results | default([]) | map(attribute='item') | map(attribute='name') | list }}"
+  no_log: true
+  tags: [failure-drill]
+
+- name: Create the failure-drill evidence directory on the controller
+  ansible.builtin.file:
+    path: "{{ archiveweaver_failure_evidence_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [failure-drill]
+
+- name: Write redacted failure-drill evidence on the controller
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_failure_evidence_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+    content: "{{ archiveweaver_failure_evidence | to_nice_json }}\n"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  no_log: true
+  tags: [failure-drill]

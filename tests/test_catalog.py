@@ -29,3 +29,8 @@ class CatalogTests(unittest.TestCase):
         for solution in self.catalog.solutions.values():
             self.assertEqual(set(solution["mode_support"]), set(self.catalog.runtimes))
 
+    def test_catalog_rejects_malformed_solution_collections(self) -> None:
+        self.catalog.solutions["paperless-ngx"]["dependencies"] = "PostgreSQL"
+        errors = validate_catalog(self.catalog)
+        self.assertIn("solution 'paperless-ngx' field 'dependencies' must be a list of non-empty strings", errors)
+

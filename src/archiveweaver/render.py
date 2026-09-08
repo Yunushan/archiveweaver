@@ -1,18 +1,33 @@
 from __future__ import annotations
 
+import json
+import re
 from textwrap import dedent
 
 from .catalog import Catalog
 from .planner import build_plan
 
 
+_IMAGE_REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]*$")
+_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
 def _safe_image(image: str, allow_floating: bool) -> str:
+    original = image
     image = image.strip()
-    if not image:
+    if not image or image != original:
         raise ValueError("an image reference is required for container rendering")
+    if not _IMAGE_REFERENCE_RE.fullmatch(image) or image.count("@") > 1:
+        raise ValueError("image references may contain only safe OCI characters")
+    name, separator, digest = image.partition("@")
+    if separator:
+        if not name or not _IMAGE_DIGEST_RE.fullmatch(digest):
+            raise ValueError("image digests must use sha256:<64 hex>")
+    elif image.startswith((".", "/", ":", "@")) or image.endswith((".", "/", ":", "@")):
+        raise ValueError("image reference has an unsafe boundary")
     if not allow_floating:
         last_component = image.rsplit("/", 1)[-1]
-        has_digest = "@sha256:" in image
+        has_digest = bool(separator)
         has_tag = ":" in last_component
         if not has_digest and not has_tag:
             raise ValueError("untagged image references are blocked; provide an immutable tag or digest, or pass --allow-floating")
@@ -226,6 +241,71 @@ def render_raw(solution_id: str, command: str) -> str:
     """).lstrip()
 
 
+def _yaml_string(value: str) -> str:
+    """Emit a JSON-quoted scalar, which is also a valid YAML string."""
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def render_ansible(
+    solution_id: str,
+    nodes: str,
+    os_id: str,
+    namespace: str,
+    port: int,
+    underlying_mode: str = "raw",
+    image: str = "",
+) -> str:
+    image_value = _yaml_string(image) if image else '""'
+    return dedent(f"""
+        ---
+        # ArchiveWeaver generated Ansible entry point for {solution_id}
+        #
+        # Run this file from deploy/ansible so the checked-in roles are on the
+        # configured roles_path. It is an orchestration envelope, not a
+        # universal product installer. Add the upstream product stack and
+        # release-specific tasks only after staging validation.
+        - name: ArchiveWeaver enterprise deployment envelope
+          hosts: archiveweaver_nodes
+          become: true
+          gather_facts: true
+          serial: 1
+          any_errors_fatal: true
+          vars:
+            archiveweaver_solution_id: {_yaml_string(solution_id)}
+            archiveweaver_nodes: {_yaml_string(nodes)}
+            archiveweaver_os_id: {_yaml_string(os_id)}
+            archiveweaver_namespace: {_yaml_string(namespace)}
+            archiveweaver_app_port: {port}
+            archiveweaver_ansible_core_version: "2.21.0"
+            archiveweaver_execution_environment_digest: ""
+            archiveweaver_environment: "production"
+            archiveweaver_evidence_environment: "production"
+            archiveweaver_runtime: {_yaml_string(underlying_mode)}
+            archiveweaver_image: {image_value}
+            archiveweaver_operator: ""
+            archiveweaver_fixture_set: ""
+            # Bind the staged provider bundle to the reviewed release before
+            # enabling apply. Use a bare SHA-256 hex digest here.
+            archiveweaver_provider_bundle_sha256: ""
+            archiveweaver_product_stack_sha256: ""
+            archiveweaver_kustomize_bundle_sha256: ""
+            archiveweaver_apply: false
+            archiveweaver_run_verification: false
+          roles:
+            - role: archiveweaver_preflight
+            - role: archiveweaver_host
+              when: archiveweaver_apply | bool
+            - role: archiveweaver_provider
+              when: archiveweaver_apply | bool
+            - role: archiveweaver_verify
+              when: archiveweaver_run_verification | bool
+              tags: [verify]
+            - role: archiveweaver_evidence
+              when: archiveweaver_run_verification | bool
+              tags: [evidence]
+    """).lstrip()
+
+
 def render(
     catalog: Catalog,
     solution_id: str,
@@ -237,8 +317,12 @@ def render(
     image: str | None = None,
     allow_floating: bool = False,
     allow_conditional: bool = False,
+    underlying_mode: str | None = None,
 ) -> tuple[dict, str]:
-    plan = build_plan(catalog, solution_id, mode, nodes, os_id, namespace=namespace, allow_conditional=allow_conditional)
+    if mode != "ansible" and underlying_mode is not None:
+        raise ValueError("--underlying-mode is only valid when --mode ansible is selected")
+    selected_underlying_mode = underlying_mode or "raw"
+    plan = build_plan(catalog, solution_id, mode, nodes, os_id, namespace=namespace, allow_conditional=allow_conditional, underlying_mode=selected_underlying_mode if mode == "ansible" else None)
     if plan.status == "blocked":
         raise ValueError("render blocked: " + " ".join(plan.blockers))
     solution = catalog.solution(solution_id)
@@ -247,6 +331,13 @@ def render(
     if mode == "raw":
         command = "/usr/local/lib/archiveweaver/replace-with-upstream-command"
         return plan.as_dict(), render_raw(solution_id, command)
+    if mode == "ansible":
+        if selected_underlying_mode == "ansible":
+            raise ValueError("Ansible cannot be its own underlying runtime")
+        catalog.runtime(selected_underlying_mode)
+        selected_image = _safe_image(image, allow_floating) if image else ""
+        port = int(solution["health"]["default_port"] or 8080)
+        return plan.as_dict(), render_ansible(solution_id, nodes, os_id, namespace, port, selected_underlying_mode, selected_image)
     selected_image = _safe_image(selected_image or "", allow_floating)
     port = int(solution["health"]["default_port"] or 8080)
     try:

@@ -10,7 +10,8 @@
     "podman-quadlet",
     "k0s",
     "docker-swarm",
-    "microk8s"
+    "microk8s",
+    "ansible"
   ],
   "operating_systems": [
     {
@@ -266,6 +267,28 @@
         "external object storage"
       ],
       "notes": "The datastore must itself be highly available; use three or more control-plane nodes for production."
+    },
+    {
+      "id": "ansible",
+      "name": "Ansible orchestration adapter",
+      "kind": "automation",
+      "topology": {
+        "1": "supported",
+        "2": "supported",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "pinned Ansible Core execution environment",
+        "SSH with host-key verification",
+        "Python 3 on managed nodes",
+        "reviewed become policy",
+        "version-controlled inventory and group variables",
+        "Ansible Vault or an approved external secret manager",
+        "an underlying raw, container, cluster, or Pacemaker runtime",
+        "external backup and restore evidence"
+      ],
+      "notes": "Ansible is an orchestration and configuration-management layer, not a scheduler or HA system. Use it to coordinate the existing provider envelopes; quorum, fencing, state replication, and application support remain the responsibility of the selected underlying runtime and product release."
     }
   ],
   "formats": {
@@ -405,7 +428,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Treat the application as a distributed service; keep object storage and database outside the web process."
@@ -477,7 +501,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [],
       "image_hint": null
@@ -550,7 +575,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Preservation workflows are multi-service; a single container health check is not enough."
@@ -620,7 +646,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [],
       "image_hint": null
@@ -692,7 +719,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Islandora is a framework/distribution; deployment must choose a Drupal/Fedora composition such as the official documentation path."
@@ -761,7 +789,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [],
       "image_hint": "mayanedms/mayanedms"
@@ -829,7 +858,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Fedora is a repository backend, not a complete public UI; pair it with a client such as Islandora or Hyrax."
@@ -904,7 +934,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Hyrax is a Rails engine and must be mounted in a host application; it is not a standalone web app."
@@ -976,7 +1007,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The upstream local installation guide is single-node and testing-oriented; design production storage and database separately."
@@ -1045,7 +1077,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The official project is hosted on Maarch Labs rather than GitHub; use the linked documentation and image registry."
@@ -1115,7 +1148,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The official source and Compose assets are hosted on the ADULLACT GitLab instance."
@@ -1184,7 +1218,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Large media uploads require deliberate PHP, web-server, reverse-proxy, and filesystem limits."
@@ -1250,7 +1285,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Use the official Maarch Labs source and the current Maarch documentation; older GitHub mirrors are not authoritative."
@@ -1318,7 +1354,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The project provides Docker Compose and Helm paths; the Debian package and Helm chart are better baselines than ad-hoc source builds."
@@ -1396,7 +1433,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Use external database, Redis locking, shared or object-backed data, and a separate preview/Office strategy for HA."
@@ -1465,7 +1503,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The current technical documentation recommends Docker for new installations and documents clustering separately."
@@ -1537,7 +1576,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "AtoM has official tarball, source, and Docker guidance; Elasticsearch compatibility must follow the selected AtoM release."
@@ -1613,7 +1653,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Alfresco Community is a multi-module platform; deploy the repository, search, Share, transforms, database, and messaging as a tested release set."
@@ -1685,7 +1726,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The official wiki distinguishes Debian/Ubuntu and RHEL/Fedora/CentOS installation paths; source Git is the production recommendation."
@@ -1754,7 +1796,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Version 4 changes the Java/Tomcat baseline; pin the server version to the selected Kitodo release."
@@ -1823,7 +1866,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Goobi uses a plugin ecosystem; application, plugin, and database versions must be released as one compatibility set."
@@ -1894,7 +1938,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Providence is the cataloguing application; Pawtucket is the public web layer and should be versioned separately."
@@ -1959,7 +2004,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The official download channel is SourceForge; GitHub mirrors are not treated as authoritative."
@@ -2029,7 +2075,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [],
       "image_hint": "paperlessngx/paperless-ngx"
@@ -2098,7 +2145,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Omeka S is intentionally extensible through modules; check module compatibility as part of the release manifest."
@@ -2165,7 +2213,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [],
       "image_hint": "papermerge/papermerge"
@@ -2232,7 +2281,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The official GitHub repository is archived as of 2026; treat this adapter as maintenance-only and pin an audited release."
@@ -2302,7 +2352,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Teedy was formerly known as Sismics Docs; pin the source/release identity and avoid community images unless explicitly approved."
@@ -2371,7 +2422,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "The project publishes separate Community and Docker repositories; do not use embedded HSQLDB for production."
@@ -2448,7 +2500,8 @@
         "podman-quadlet": "portable",
         "k0s": "portable",
         "docker-swarm": "portable",
-        "microk8s": "portable"
+        "microk8s": "portable",
+        "ansible": "portable"
       },
       "notes": [
         "Current Community deployment guidance is container-first; verify the selected release's Community/Professional boundaries before applying HA automation."

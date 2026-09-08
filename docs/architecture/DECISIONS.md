@@ -30,3 +30,14 @@
 
 **Reason:** Most repository/DMS products can store arbitrary binary objects, while transformation and browser support depends on converters, plugins, and release configuration.
 
+## ADR-006: Ansible is an orchestration adapter, not a runtime
+
+**Decision:** Support Ansible as a first-class orchestration edition layered
+over the existing raw, container, Kubernetes, Swarm, and Pacemaker envelopes.
+
+**Reason:** Ansible improves repeatability, idempotent host configuration,
+check-mode review, rolling execution, secret boundaries, and evidence capture,
+but it does not provide a scheduler, quorum, fencing, database replication, or
+application-level HA. Modeling it separately keeps the support matrix honest
+and lets the underlying runtime retain its real topology policy.
+

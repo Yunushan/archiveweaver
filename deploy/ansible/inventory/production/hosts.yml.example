@@ -1,0 +1,44 @@
+---
+# Copy to hosts.yml and replace every example host before use.
+all:
+  vars:
+    ansible_user: archiveweaver-admin
+    ansible_become: true
+  children:
+    archiveweaver_nodes:
+      children:
+        archiveweaver_control:
+        archiveweaver_app:
+        archiveweaver_workers:
+    archiveweaver_control:
+      hosts:
+        archive-node-a.example.org:
+          ansible_host: 192.0.2.11
+          archiveweaver_failure_domain: zone-a
+        archive-node-b.example.org:
+          ansible_host: 192.0.2.12
+          archiveweaver_failure_domain: zone-b
+        archive-node-c.example.org:
+          ansible_host: 192.0.2.13
+          archiveweaver_failure_domain: zone-c
+
+    archiveweaver_app:
+      hosts:
+        archive-node-a.example.org:
+        archive-node-b.example.org:
+        archive-node-c.example.org:
+
+    archiveweaver_workers:
+      hosts:
+        archive-worker-a.example.org:
+          ansible_host: 192.0.2.21
+          archiveweaver_failure_domain: zone-a
+
+    archiveweaver_data:
+      hosts: {}
+
+    archiveweaver_storage:
+      hosts: {}
+
+    archiveweaver_witness:
+      hosts: {}

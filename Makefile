@@ -1,9 +1,10 @@
-.PHONY: help generate validate test lint smoke
+.PHONY: help generate validate test lint smoke ansible-validate
 
 help:
 	@printf '%s\n' 'make generate  - regenerate catalog JSON and reference pages' \
 	              'make validate  - validate catalog and compile Python' \
 	              'make test      - run stdlib unit tests' \
+	              'make ansible-validate - run pinned Ansible lint and syntax checks' \
 	              'make smoke     - exercise CLI planning/checking commands'
 
 generate:
@@ -18,6 +19,9 @@ test: validate
 
 lint:
 	python3 -m compileall -q src scripts tests
+
+ansible-validate:
+	bash scripts/validate-ansible.sh
 
 smoke:
 	PYTHONPATH=src python3 -m archiveweaver list-solutions

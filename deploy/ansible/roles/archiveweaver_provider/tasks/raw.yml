@@ -1,0 +1,59 @@
+---
+- name: Validate the raw service command
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_exec_start is string
+      - archiveweaver_exec_start | length > 0
+      - archiveweaver_exec_start is not search('\n')
+      - archiveweaver_exec_start is not search('\r')
+      - archiveweaver_exec_start is not search('%')
+      - archiveweaver_exec_start is not search('replace-with-upstream-command')
+    fail_msg: "Raw deployment requires a reviewed, single-line upstream ExecStart command."
+  tags: [provider, deploy]
+
+- name: Install the hardened systemd unit
+  ansible.builtin.template:
+    src: archiveweaver.service.j2
+    dest: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+    diff: false
+  notify: Restart ArchiveWeaver service
+  tags: [provider, deploy]
+
+- name: Inspect the rendered raw provider unit
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_raw_unit_stat
+  when:
+    - not archiveweaver_is_staging_preview | default(false) | bool
+    - not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Require the rendered raw provider unit digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_raw_unit_stat.stat.exists
+      - archiveweaver_raw_unit_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_bundle_sha256 is string
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
+    fail_msg: "The rendered raw provider unit does not match the reviewed SHA-256 release binding."
+  when:
+    - not archiveweaver_is_staging_preview | default(false) | bool
+    - not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Enable the raw service and reload systemd
+  ansible.builtin.systemd_service:
+    name: "{{ archiveweaver_service_name }}.service"
+    daemon_reload: true
+    enabled: true
+    state: started
+  tags: [provider, deploy]

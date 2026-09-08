@@ -1,0 +1,117 @@
+---
+- name: Require a staged product Kustomize bundle
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_kustomize_path is string
+      - archiveweaver_kustomize_path | length > 0
+      - archiveweaver_kustomize_path is match('^/')
+      - archiveweaver_kustomize_path is not search('\n')
+      - archiveweaver_kustomize_path is not search('\r')
+    fail_msg: "Kubernetes deployment requires a reviewed absolute product Kustomize path on the control host."
+  tags: [provider, deploy]
+
+- name: Build a safe kubectl argv prefix
+  ansible.builtin.set_fact:
+    archiveweaver_kubectl_argv: "{{ ['kubectl'] + (['--kubeconfig', archiveweaver_kubeconfig] if archiveweaver_kubeconfig | length > 0 else []) }}"
+  tags: [provider, deploy]
+
+- name: Validate the Kubernetes cluster before apply
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_kubectl_argv + ['get', 'nodes', '-o', 'wide'] }}"
+  register: archiveweaver_kubectl_nodes
+  changed_when: false
+  check_mode: false
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Inspect the staged product Kustomize bundle
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_kustomize_path }}"
+    follow: false
+  register: archiveweaver_kustomize_path_stat
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Reject missing or symlinked product Kustomize content
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_kustomize_path_stat.stat.exists
+      - archiveweaver_kustomize_path_stat.stat.isdir | default(false) | bool
+      - not (archiveweaver_kustomize_path_stat.stat.islnk | default(false) | bool)
+    fail_msg: "Stage the reviewed, official product Kustomize bundle at archiveweaver_kustomize_path before apply."
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Inspect the staged Kustomize tree for symlinks
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: link
+    hidden: true
+    follow: false
+  register: archiveweaver_kustomize_links
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Reject symlinks inside the staged product Kustomize bundle
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_kustomize_links.files | default([]) | length == 0
+    fail_msg: "The staged Kustomize bundle must not contain symlinks."
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Hash every staged Kustomize file for the release binding
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: file
+    hidden: true
+    checksum_algorithm: sha256
+  register: archiveweaver_kustomize_files
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Build deterministic Kustomize bundle digest input
+  ansible.builtin.set_fact:
+    archiveweaver_kustomize_digest_input: >-
+      {{ (archiveweaver_kustomize_digest_input | default([])) + [
+         (item.path | replace(archiveweaver_kustomize_path ~ '/', '', 1)) ~ ':' ~ item.checksum
+      ] }}
+  loop: "{{ archiveweaver_kustomize_files.files | default([]) | sort(attribute='path') }}"
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Require the reviewed Kustomize bundle digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_kustomize_files.files | default([]) | length > 0
+      - archiveweaver_kustomize_bundle_sha256 is string
+      - archiveweaver_kustomize_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - (archiveweaver_kustomize_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_kustomize_bundle_sha256
+    fail_msg: "The staged Kustomize bundle does not match the reviewed SHA-256 release binding."
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Render the staged product Kustomize bundle read-only
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_kubectl_argv + ['kustomize', archiveweaver_kustomize_path] }}"
+  register: archiveweaver_kustomize_render
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Apply the reviewed product Kustomize bundle
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_kubectl_argv + ['apply', '-k', archiveweaver_kustomize_path] }}"
+  changed_when: true
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]

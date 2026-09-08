@@ -13,10 +13,15 @@ The following matrix is the policy applied by the planner. Product-specific fit 
 | k0s | supported | not-recommended | supported | supported | 3/5 controllers and a control-plane endpoint |
 | Docker Swarm | supported | not-recommended | supported | supported | 3/5 managers for Raft quorum |
 | MicroK8s | supported | not-recommended | supported | supported | HA datastore and 3/5 control-plane nodes |
+| Ansible orchestration adapter | supported | supported | supported | supported | Coordinates an underlying provider; it is not an HA runtime |
 
 ## Product fit and topology are separate
 
 For example, `paperless-ngx + RKE2 + 3 nodes` is *portable/supported* at the infrastructure layer, but it still requires PostgreSQL, Redis, OCR, Tika/Gotenberg, and durable media storage to be deployed and tested correctly. `Hyrax + Docker` is possible as a host application container, but Hyrax itself is a Rails engine that must be mounted into a Rails application. `Islandora` is a Drupal/Fedora/Solr composition rather than a single image.
+
+Ansible's row describes the hosts it can coordinate. It does not change the
+underlying runtime topology policy or create HA by itself; use a real
+Kubernetes, Swarm, Pacemaker, or product-native design for resilience.
 
 ## Required exception inputs
 

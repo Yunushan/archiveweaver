@@ -1,0 +1,44 @@
+---
+- name: Require a staged product Compose stack
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_compose_path_stat
+  tags: [provider, deploy]
+
+- name: Reject missing or symlinked product Compose content
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_compose_path_stat.stat.exists
+      - archiveweaver_compose_path_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_compose_path_stat.stat.islnk | default(false) | bool)
+    fail_msg: "Stage the reviewed, official product Compose stack at archiveweaver_compose_path before apply."
+  tags: [provider, deploy]
+
+- name: Require the reviewed Compose stack digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_product_stack_sha256 is string
+      - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_compose_path_stat.stat.checksum == archiveweaver_product_stack_sha256
+    fail_msg: "The staged Compose stack does not match the reviewed SHA-256 release binding."
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Validate the Compose model
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ archiveweaver_compose_path }}", config]
+  register: archiveweaver_compose_config
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Reconcile the declared Compose workload
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ archiveweaver_compose_path }}", up, -d]
+  changed_when: true
+  no_log: true
+  tags: [provider, deploy]

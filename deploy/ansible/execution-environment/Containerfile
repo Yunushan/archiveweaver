@@ -1,0 +1,11 @@
+# Build with an immutable approved base image digest:
+# podman build --build-arg BASE_IMAGE=registry.example/ansible-ee@sha256:<digest> .
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG BASE_IMAGE
+RUN if ! printf '%s\n' "$BASE_IMAGE" | python3 -c "import re,sys; sys.exit(0 if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[0-9a-f]{64}', sys.stdin.read().strip()) else 1)"; then echo 'BASE_IMAGE must be an OCI reference with a 64-character SHA-256 digest' >&2; exit 1; fi
+
+COPY requirements.txt /tmp/archiveweaver-controller-requirements.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/archiveweaver-controller-requirements.txt \
+    && rm -f /tmp/archiveweaver-controller-requirements.txt

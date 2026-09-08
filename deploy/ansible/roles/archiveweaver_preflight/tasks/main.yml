@@ -1,0 +1,680 @@
+---
+- name: Derive the narrowly scoped staging preview mode
+  ansible.builtin.set_fact:
+    archiveweaver_is_staging_preview: >-
+      {{ (archiveweaver_staging_preview | default(false) | bool)
+         and (ansible_check_mode | bool)
+         and archiveweaver_environment == 'staging' }}
+  tags: [always, preflight]
+
+- name: Validate ArchiveWeaver operator inputs
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_solution_id is string
+      - archiveweaver_solution_id is match('^[a-z0-9][a-z0-9-]{1,62}$')
+      - archiveweaver_release is string
+      - archiveweaver_release | length > 0
+      - archiveweaver_release is match('^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$')
+      - archiveweaver_release is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_release is not search('\\n')
+      - archiveweaver_release is not search('\\r')
+      - archiveweaver_nodes in ['1', '2', '3', '3+']
+      - archiveweaver_os_id is string
+      - archiveweaver_os_id is match('^[a-z0-9][a-z0-9.-]{1,62}$')
+      - archiveweaver_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_change_id is string
+      - archiveweaver_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_change_id is not search('(?i)(?:replace|todo|tbd)')
+      - archiveweaver_runtime in ['raw', 'docker', 'docker-swarm', 'podman-quadlet', 'k3s', 'rke2', 'k0s', 'microk8s', 'pacemaker']
+      - archiveweaver_namespace is string
+      - archiveweaver_namespace is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - archiveweaver_app_port | int > 0
+      - archiveweaver_app_port | int < 65536
+      - archiveweaver_health_url is string
+      - archiveweaver_health_url is not search('[\"\s\r\n]')
+      - archiveweaver_health_url is not search('[@?#$%&;]')
+      - archiveweaver_health_url is not search('\\')
+      - archiveweaver_health_url | length == 0 or archiveweaver_health_url is match('^https://[^/\\s]+(?:/[^\\s]*)?$')
+      - archiveweaver_health_validate_certs | bool
+      - archiveweaver_data_root is match('^/')
+      - archiveweaver_log_root is match('^/')
+      - archiveweaver_data_root is match('^/srv/archiveweaver/' ~ archiveweaver_solution_id ~ '(/|$)')
+      - archiveweaver_log_root is match('^/var/log/archiveweaver/' ~ archiveweaver_solution_id ~ '(/|$)')
+      - archiveweaver_data_root is not search('[\"\\s\\r\\n]')
+      - archiveweaver_log_root is not search('[\"\\s\\r\\n]')
+      - archiveweaver_data_root is not search('\\.\\.')
+      - archiveweaver_log_root is not search('\\.\\.')
+      - archiveweaver_release_record is string
+      - archiveweaver_release_record is match('^/etc/archiveweaver/' ~ archiveweaver_solution_id ~ '/')
+      - archiveweaver_release_record is not match('/$')
+      - archiveweaver_release_record is not search('[\"\\s\\r\\n]')
+      - archiveweaver_release_record is not search('\\.\\.')
+      - archiveweaver_compose_path is match('^/')
+      - archiveweaver_compose_path is not search('[\"\\s\\r\\n]')
+      - archiveweaver_compose_path is not search('\\.\\.')
+      - archiveweaver_compose_path is match('^/etc/archiveweaver/' ~ archiveweaver_solution_id ~ '/')
+      - archiveweaver_kustomize_path is match('^/')
+      - archiveweaver_kustomize_path is not search('[\"\\s\\r\\n]')
+      - archiveweaver_kustomize_path is not search('\\.\\.')
+      - archiveweaver_kustomize_path is not match('/$')
+      - archiveweaver_kustomize_path is match('^/etc/archiveweaver/' ~ archiveweaver_solution_id ~ '/')
+      - archiveweaver_kubeconfig is string
+      - archiveweaver_kubeconfig is not search('[\"\\r\\n]')
+      - archiveweaver_kubeconfig | length == 0 or archiveweaver_kubeconfig is match('^/')
+      - archiveweaver_service_name is match('^[a-z0-9][a-z0-9-]{1,62}$')
+      - archiveweaver_resource_name is match('^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$')
+      - archiveweaver_serial | int > 0
+      - archiveweaver_ansible_core_version is string
+      - archiveweaver_ansible_core_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - archiveweaver_execution_environment_digest is string
+      - archiveweaver_topology_design_approved | string | lower in ['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']
+      - archiveweaver_single_node_production_approved | string | lower in ['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']
+    fail_msg: "Required deployment inputs are missing or unsafe; review group_vars/all/main.yml."
+  tags: [always, preflight]
+
+- name: Validate the controller evidence-root boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_bundle_root is string
+      - archiveweaver_bundle_root | length > 0
+      - archiveweaver_bundle_root is match('^/')
+      - archiveweaver_bundle_root == ((ansible_config_file | default(playbook_dir ~ '/ansible.cfg', true)) | regex_replace('/[^/]+$', ''))
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+    fail_msg: "The controller evidence root must stay below this playbook's evidence directory."
+  when: archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Derive the minimum inventory size from the declared topology
+  ansible.builtin.set_fact:
+    archiveweaver_minimum_host_count: "{{ 3 if archiveweaver_nodes == '3+' else (archiveweaver_nodes | int) }}"
+  tags: [always, preflight]
+
+- name: Require inventory cardinality for the declared topology
+  ansible.builtin.assert:
+    that:
+      - groups['archiveweaver_nodes'] | default([]) | length >= (archiveweaver_minimum_host_count | int)
+    fail_msg: "The inventory has fewer archiveweaver_nodes than the declared topology requires."
+  when: archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  tags: [always, preflight]
+
+- name: Require explicit design approval for a conditional multi-node provider
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_topology_design_approved | bool
+    fail_msg: >-
+      Production multi-node {{ archiveweaver_runtime }} is conditional in the
+      catalog; set archiveweaver_topology_design_approved=true only after the
+      reviewed placement, state, and failover design is approved.
+  when:
+    - archiveweaver_environment == 'production'
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_nodes != '1'
+    - archiveweaver_runtime in ['raw', 'docker', 'podman-quadlet']
+  tags: [always, preflight]
+
+- name: Require explicit approval for a single-node consensus production topology
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_single_node_production_approved | bool
+    fail_msg: >-
+      A single-node {{ archiveweaver_runtime }} deployment is not
+      failure-tolerant production HA; set
+      archiveweaver_single_node_production_approved=true only for a reviewed
+      edge or development exception.
+  when:
+    - archiveweaver_environment == 'production'
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_nodes == '1'
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s', 'docker-swarm']
+  tags: [always, preflight]
+
+- name: Require explicit role groups before a production mutation
+  ansible.builtin.assert:
+    that:
+      - groups['archiveweaver_control'] is defined
+      - groups['archiveweaver_control'] | length > 0
+      - groups['archiveweaver_app'] is defined
+      - groups['archiveweaver_app'] | length > 0
+      - groups['archiveweaver_data'] is defined
+      - groups['archiveweaver_storage'] is defined
+      - groups['archiveweaver_witness'] is defined
+    fail_msg: "Production inventory must declare control, app, data, storage, and witness groups explicitly."
+  when: archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  tags: [always, preflight]
+
+- name: Collect control-plane failure-domain labels
+  ansible.builtin.set_fact:
+    archiveweaver_control_failure_domains: >-
+      {{ (archiveweaver_control_failure_domains | default([])) + [
+         hostvars[item].archiveweaver_failure_domain | default('')
+      ] }}
+  loop: "{{ groups['archiveweaver_control'] | default([]) }}"
+  when: archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+  tags: [always, preflight]
+
+- name: Require distinct control-plane failure domains
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_control_failure_domains | select('length') | list | length == archiveweaver_control_failure_domains | length
+      - >-
+        {{ archiveweaver_control_failure_domains | unique | list | length >=
+           (2 if archiveweaver_nodes == '2' else (3 if archiveweaver_nodes in ['3', '3+'] else 1)) }}
+    fail_msg: "Control-plane hosts must declare enough distinct failure domains for the selected topology."
+  when:
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_nodes in ['2', '3', '3+']
+  tags: [always, preflight]
+
+- name: Collect managed-node failure-domain labels
+  ansible.builtin.set_fact:
+    archiveweaver_node_failure_domains: >-
+      {{ (archiveweaver_node_failure_domains | default([])) + [
+         hostvars[item].archiveweaver_failure_domain | default('')
+      ] }}
+  loop: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+  when:
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_nodes in ['2', '3', '3+']
+  tags: [always, preflight]
+
+- name: Require a failure-domain label for every managed node
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_node_failure_domains | select('length') | list | length == archiveweaver_node_failure_domains | length
+    fail_msg: "Every managed node must declare archiveweaver_failure_domain for a multi-node operation."
+  when:
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_nodes in ['2', '3', '3+']
+  tags: [always, preflight]
+
+- name: Build stable evidence filenames for managed hosts
+  ansible.builtin.set_fact:
+    archiveweaver_evidence_host_keys: >-
+      {{ (archiveweaver_evidence_host_keys | default([])) + [
+         item | regex_replace('[^A-Za-z0-9_.-]', '_')
+      ] }}
+  loop: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+  when: archiveweaver_run_verification | bool
+  tags: [always, preflight]
+
+- name: Reject colliding managed-host evidence filenames
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_host_keys | unique | list | length == archiveweaver_evidence_host_keys | length
+    fail_msg: "Inventory hostnames would collide after evidence filename sanitization."
+  when: archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require explicit production gates before a mutation or repair
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_approval_ticket is string
+      - archiveweaver_approval_ticket | length > 0
+      - archiveweaver_approval_ticket is not search('(?i)(?:replace|todo|tbd)')
+      - archiveweaver_approval_ticket is not search('["\\s\\r\\n]')
+      - archiveweaver_backup_verified | bool
+      - archiveweaver_release_manifest_verified | bool
+      - archiveweaver_product_stack_ready | bool
+  fail_msg: "Apply is blocked until approval, backup, release-manifest, and product-stack gates are true."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require a repository readiness manifest before mutation or verification
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_manifest_path is string
+      - archiveweaver_readiness_manifest_path | length > 0
+      - archiveweaver_readiness_manifest_path is not search('[\"\\s\\r\\n]')
+      - archiveweaver_readiness_manifest_path is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_readiness_python is string
+      - archiveweaver_readiness_python | length > 0
+      - archiveweaver_readiness_python is not search('[\\r\\n]')
+      - archiveweaver_readiness_pythonpath is string
+      - archiveweaver_readiness_pythonpath == (archiveweaver_bundle_root ~ '/../../src')
+    fail_msg: "The operation is blocked until a controller-side readiness manifest path is configured."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Inspect the controller readiness manifest
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_readiness_manifest_path }}"
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_readiness_manifest_stat
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require a regular controller readiness manifest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_manifest_stat.stat.exists
+      - archiveweaver_readiness_manifest_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_readiness_manifest_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The controller readiness manifest must be a regular, non-symlink file inside the Ansible bundle."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require attributable identity for verification evidence
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_operator is string
+      - archiveweaver_operator | length > 0
+      - archiveweaver_operator is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is not search('[\"\s\r\n]')
+      - archiveweaver_fixture_set is string
+      - archiveweaver_fixture_set | length > 0
+      - archiveweaver_fixture_set is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_fixture_set is not search('[\"\s\r\n]')
+  fail_msg: "Verification evidence requires a real operator and fixture-set identity."
+  when: archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require a health endpoint for non-systemd verification
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_health_url | length > 0
+    fail_msg: "Container and Kubernetes verification requires an HTTPS application health endpoint."
+  when:
+    - archiveweaver_run_verification | bool
+    - archiveweaver_runtime not in ['raw', 'podman-quadlet']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require an explicit kubeconfig for Kubernetes-family operations
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_kubeconfig | length > 0
+    fail_msg: "Kubernetes-family operations require an explicit kubeconfig; ambient kubectl contexts are not accepted."
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Inspect the explicit kubeconfig on the first control host
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_kubeconfig }}"
+    follow: false
+  register: archiveweaver_kubeconfig_stat
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require a private, regular kubeconfig on the first control host
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_kubeconfig_stat.stat.exists
+      - archiveweaver_kubeconfig_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_kubeconfig_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_kubeconfig_stat.stat.mode in ['0600', '0640']
+    fail_msg: "The explicit kubeconfig must be a regular non-symlink file with 0600 or 0640 permissions."
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind standard-playbook evidence to its target environment
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_environment == archiveweaver_environment
+    fail_msg: "Deployment and verification evidence must target the same environment as the playbook."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Verify the pinned Ansible Core on the controller
+  ansible.builtin.command:
+    argv: [ansible-playbook, --version]
+  register: archiveweaver_controller_ansible_version
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  become: false
+  when:
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require the configured Ansible Core version
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_ansible_version.rc == 0
+      - archiveweaver_controller_ansible_version.stdout is search('core ' ~ archiveweaver_ansible_core_version)
+    fail_msg: "The controller is not using the pinned Ansible Core execution environment."
+  when:
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Verify the repository readiness score on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - -m
+      - archiveweaver
+      - readiness
+      - --manifest
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - --json
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_readiness_result
+  changed_when: false
+  check_mode: false
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Parse the controller readiness report
+  ansible.builtin.set_fact:
+    archiveweaver_readiness_report: "{{ archiveweaver_readiness_result.stdout | from_json }}"
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_readiness_result.rc == 0
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require a 100-point readiness result before mutation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_result.rc == 0
+      - (archiveweaver_readiness_report | default({})).get('score', 0) | int == 100
+      - (archiveweaver_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_readiness_report | default({})).get('service', {}).get('environment') == archiveweaver_environment
+      - (archiveweaver_readiness_report | default({})).get('release_version') == archiveweaver_release
+  fail_msg: "The controller-side readiness manifest did not score 100 or match the target identity; operation remains blocked."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind the reviewed Compose or Swarm digest to readiness
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_report.release.provider_bundle.remote_digest == ('sha256:' ~ archiveweaver_product_stack_sha256)
+    fail_msg: "The readiness provider-bundle digest does not match the reviewed Compose or Swarm content."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_runtime in ['docker', 'docker-swarm']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind the live execution environment to the reviewed readiness manifest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
+      - (archiveweaver_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+    fail_msg: "The live Ansible execution-environment digest does not match the signed readiness manifest."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require the controller-provided execution-environment identity
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') is match('^sha256:[0-9a-f]{64}$')
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') == archiveweaver_execution_environment_digest
+    fail_msg: "The controller-provided execution-environment identity does not match the applied job binding."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind the reviewed Kustomize digest to readiness
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_report.release.provider_bundle.remote_digest == ('sha256:' ~ archiveweaver_kustomize_bundle_sha256)
+    fail_msg: "The readiness provider-bundle digest does not match the reviewed Kustomize content."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind the reviewed raw or Quadlet digest to readiness
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_report.release.provider_bundle.remote_digest == ('sha256:' ~ archiveweaver_provider_bundle_sha256)
+    fail_msg: "The readiness provider-bundle digest does not match the reviewed raw or Quadlet content."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+    - archiveweaver_runtime in ['raw', 'podman-quadlet']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require fencing controls for Pacemaker repair
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_allow_fencing_actions | bool
+      - archiveweaver_stonith_ready | bool
+    fail_msg: "Pacemaker repair requires an explicit allow flag and verified STONITH state."
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'pacemaker'
+  no_log: true
+  tags: [always, preflight]
+
+- name: Check the managed operating-system family
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family in ['Debian', 'RedHat']
+    fail_msg: "ArchiveWeaver Ansible host roles support Debian-family and RedHat-family hosts only."
+  tags: [always, preflight]
+
+- name: Check the managed host exposes /etc/os-release
+  ansible.builtin.stat:
+    path: /etc/os-release
+  register: archiveweaver_os_release_stat
+  tags: [preflight]
+
+- name: Require /etc/os-release for host identity evidence
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_os_release_stat.stat.exists
+    fail_msg: "Cannot establish the managed host OS identity."
+  tags: [preflight]
+
+- name: Derive the catalog OS identifier from managed-host facts
+  ansible.builtin.set_fact:
+    archiveweaver_detected_os_prefix: "{{ archiveweaver_os_prefixes.get(ansible_facts.distribution, 'unknown') }}"
+  vars:
+    archiveweaver_os_prefixes:
+      Ubuntu: ubuntu
+      Debian: debian
+      Rocky: rocky
+      AlmaLinux: alma
+      RedHat: rhel
+  tags: [preflight]
+
+- name: Use the full Ubuntu release for the catalog OS identifier
+  ansible.builtin.set_fact:
+    archiveweaver_detected_os_version: "{{ ansible_facts.distribution_version }}"
+  when: ansible_facts.distribution == 'Ubuntu'
+  tags: [preflight]
+
+- name: Use the major release for the catalog OS identifier
+  ansible.builtin.set_fact:
+    archiveweaver_detected_os_version: "{{ ansible_facts.distribution_major_version }}"
+  when: ansible_facts.distribution != 'Ubuntu'
+  tags: [preflight]
+
+- name: Assemble the catalog OS identifier
+  ansible.builtin.set_fact:
+    archiveweaver_detected_os_id: "{{ archiveweaver_detected_os_prefix }}-{{ archiveweaver_detected_os_version }}"
+  tags: [preflight]
+
+- name: Require the managed host to match the declared catalog OS
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_detected_os_id == archiveweaver_os_id
+    fail_msg: "Managed host OS {{ archiveweaver_detected_os_id }} does not match declared catalog OS {{ archiveweaver_os_id }}."
+  when: archiveweaver_apply | bool or archiveweaver_run_verification | bool or archiveweaver_repair_apply | bool
+  tags: [always, preflight]
+
+- name: Inspect managed filesystem anchors before any host mutation
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ archiveweaver_data_root }}"
+    - "{{ archiveweaver_log_root }}"
+    - "{{ archiveweaver_release_record | dirname }}"
+    - "{{ archiveweaver_release_record }}"
+  register: archiveweaver_managed_path_stats
+  when: archiveweaver_apply | bool or archiveweaver_run_verification | bool or archiveweaver_repair_apply | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Reject symlinked managed filesystem anchors
+  ansible.builtin.assert:
+    that:
+      - >-
+        {{ archiveweaver_managed_path_stats.results
+           | selectattr('stat.islnk', 'defined')
+           | selectattr('stat.islnk', 'equalto', true)
+           | list | length == 0 }}
+    fail_msg: "Managed data, log, and release-record anchors must not be symlinks."
+  when: archiveweaver_apply | bool or archiveweaver_run_verification | bool or archiveweaver_repair_apply | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Count the declared control-plane hosts
+  ansible.builtin.set_fact:
+    archiveweaver_control_plane_count: "{{ groups['archiveweaver_control'] | default([]) | length }}"
+  tags: [preflight]
+
+- name: Require an odd control-plane shape for consensus runtimes
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_control_plane_count | int in [3, 5]
+    fail_msg: "Three-plus-node consensus deployments require exactly 3 or 5 declared control-plane hosts."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s', 'docker-swarm']
+    - archiveweaver_nodes in ['3', '3+']
+  tags: [always, preflight]
+
+- name: Require an external quorum design for two-node consensus
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_external_consensus_ready | bool or archiveweaver_qdevice_ready | bool
+    fail_msg: "Two-node consensus requires a verified external datastore, quorum device, or witness design."
+  when:
+    - not archiveweaver_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s', 'docker-swarm']
+    - archiveweaver_nodes == '2'
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require fencing before any Pacemaker mutation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_allow_fencing_actions | bool
+      - archiveweaver_stonith_ready | bool
+      - archiveweaver_qdevice_ready | bool or archiveweaver_nodes != '2'
+    fail_msg: "Pacemaker mutation requires explicit fencing permission, verified STONITH, and a witness for two-node operation."
+  when:
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'pacemaker'
+  no_log: true
+  tags: [always, preflight]
+
+- name: Select the expected provider command and read-only probe
+  ansible.builtin.set_fact:
+    archiveweaver_runtime_argv: >-
+      {{ {'raw': ['systemctl', '--version'], 'podman-quadlet': ['podman', '--version'],
+          'docker': ['docker', '--version'], 'docker-swarm': ['docker', '--version'],
+          'pacemaker': ['pcs', '--version'], 'k3s': ['kubectl', 'version', '--client'],
+          'rke2': ['kubectl', 'version', '--client'], 'k0s': ['kubectl', 'version', '--client'],
+          'microk8s': ['kubectl', 'version', '--client']}[archiveweaver_runtime] }}
+  tags: [preflight]
+
+- name: Select hosts that must expose the provider probe
+  ansible.builtin.set_fact:
+    archiveweaver_provider_probe_hosts: >-
+      {{ (groups['archiveweaver_app'] | default([])) if archiveweaver_runtime == 'docker'
+         else ((groups['archiveweaver_control'] | default([])) if archiveweaver_runtime in ['docker-swarm', 'k3s', 'rke2', 'k0s', 'microk8s']
+         else (groups['archiveweaver_nodes'] | default([]))) }}
+  tags: [preflight]
+
+- name: Check the provider command without changing the managed host
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_runtime_argv }}"
+  register: archiveweaver_runtime_command_result
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: inventory_hostname in archiveweaver_provider_probe_hosts
+  tags: [preflight]
+
+- name: Require the provider command for an apply-capable host
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_runtime_command_result.rc == 0
+    fail_msg: "The selected underlying runtime command is missing or not executable."
+  when: inventory_hostname in archiveweaver_provider_probe_hosts
+  tags: [preflight]
+
+- name: Check the managed Python interpreter
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable | default('/usr/bin/python3') }}"
+      - --version
+  register: archiveweaver_python_result
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [preflight]
+
+- name: Require Python on managed nodes
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_python_result.rc == 0
+    fail_msg: "A supported Python 3 interpreter is required on each managed node."
+  tags: [preflight]

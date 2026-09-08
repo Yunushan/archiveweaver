@@ -1,0 +1,244 @@
+---
+- name: Inspect the raw provider unit during verification
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_verify_raw_unit_stat
+  when: archiveweaver_runtime == 'raw'
+  tags: [verify]
+
+- name: Require the verified raw provider unit to match its release digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_raw_unit_stat.stat.exists
+      - archiveweaver_verify_raw_unit_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_verify_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_bundle_sha256 is string
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_verify_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
+    fail_msg: "The verified raw provider unit has drifted from the reviewed release."
+  when: archiveweaver_runtime == 'raw'
+  no_log: true
+  tags: [verify]
+
+- name: Inspect the Quadlet provider files during verification
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - {name: network, path: /etc/containers/systemd/archiveweaver.network}
+    - {name: volume, path: /etc/containers/systemd/archiveweaver.volume}
+    - {name: container, path: "/etc/containers/systemd/{{ archiveweaver_service_name }}.container"}
+  register: archiveweaver_verify_quadlet_file_stats
+  when: archiveweaver_runtime == 'podman-quadlet'
+  tags: [verify]
+
+- name: Build the verified Quadlet digest input
+  ansible.builtin.set_fact:
+    archiveweaver_verify_quadlet_digest_input: "{{ (archiveweaver_verify_quadlet_digest_input | default([])) + [item.item.name ~ ':' ~ item.stat.checksum] }}"
+  loop: "{{ archiveweaver_verify_quadlet_file_stats.results | default([]) }}"
+  no_log: true
+  when: archiveweaver_runtime == 'podman-quadlet'
+  tags: [verify]
+
+- name: Require the verified Quadlet provider to match its release digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_quadlet_file_stats.results | length == 3
+      - archiveweaver_verify_quadlet_file_stats.results | selectattr('stat.exists', 'equalto', true) | list | length == 3
+      - archiveweaver_verify_quadlet_file_stats.results | selectattr('stat.isreg', 'equalto', true) | list | length == 3
+      - archiveweaver_verify_quadlet_file_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
+      - archiveweaver_provider_bundle_sha256 is string
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - (archiveweaver_verify_quadlet_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_provider_bundle_sha256
+    fail_msg: "The verified Quadlet provider has drifted from the reviewed release."
+  when: archiveweaver_runtime == 'podman-quadlet'
+  no_log: true
+  tags: [verify]
+
+- name: Inspect the staged Compose bundle during verification
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_verify_compose_stat
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  tags: [verify]
+
+- name: Require the verified Compose bundle to match its release digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_compose_stat.stat.exists
+      - archiveweaver_verify_compose_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_verify_compose_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_product_stack_sha256 is string
+      - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_verify_compose_stat.stat.checksum == archiveweaver_product_stack_sha256
+    fail_msg: "The verified Compose bundle is missing, symlinked, or has drifted from the reviewed release."
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  no_log: true
+  tags: [verify]
+
+- name: Re-render the verified Compose model read-only
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ archiveweaver_compose_path }}", config]
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  no_log: true
+  tags: [verify]
+
+- name: Inspect the staged Swarm bundle during verification
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_verify_swarm_stat
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Require the verified Swarm bundle to match its release digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_swarm_stat.stat.exists
+      - archiveweaver_verify_swarm_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_verify_swarm_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_product_stack_sha256 is string
+      - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_verify_swarm_stat.stat.checksum == archiveweaver_product_stack_sha256
+    fail_msg: "The verified Swarm bundle is missing, symlinked, or has drifted from the reviewed release."
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [verify]
+
+- name: Re-render the verified Swarm model read-only
+  ansible.builtin.command:
+    argv: [docker, stack, config, -c, "{{ archiveweaver_compose_path }}"]
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [verify]
+
+- name: Build a safe kubectl argv prefix for provider verification
+  ansible.builtin.set_fact:
+    archiveweaver_verify_kubectl_argv: "{{ ['kubectl'] + (['--kubeconfig', archiveweaver_kubeconfig] if archiveweaver_kubeconfig | length > 0 else []) }}"
+  when: archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+  tags: [verify]
+
+- name: Inspect the staged Kustomize bundle during verification
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_kustomize_path }}"
+    follow: false
+  register: archiveweaver_verify_kustomize_stat
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Require the verified Kustomize root to be a real directory
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_kustomize_stat.stat.exists
+      - archiveweaver_verify_kustomize_stat.stat.isdir | default(false) | bool
+      - not (archiveweaver_verify_kustomize_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The verified Kustomize bundle is missing, a file, or a symlink."
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Inspect the verified Kustomize tree for symlinks
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: link
+    hidden: true
+    follow: false
+  register: archiveweaver_verify_kustomize_links
+  no_log: true
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Reject symlinks inside the verified Kustomize bundle
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_kustomize_links.files | default([]) | length == 0
+    fail_msg: "The verified Kustomize bundle contains a symlink and is not trusted."
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [verify]
+
+- name: Hash the verified Kustomize file set
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: file
+    hidden: true
+    checksum_algorithm: sha256
+  register: archiveweaver_verify_kustomize_files
+  no_log: true
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Build the verified Kustomize digest input
+  ansible.builtin.set_fact:
+    archiveweaver_verify_kustomize_digest_input: >-
+      {{ (archiveweaver_verify_kustomize_digest_input | default([])) + [
+         (item.path | replace(archiveweaver_kustomize_path ~ '/', '', 1)) ~ ':' ~ item.checksum
+      ] }}
+  loop: "{{ archiveweaver_verify_kustomize_files.files | default([]) | sort(attribute='path') }}"
+  no_log: true
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Require the verified Kustomize bundle to match its release digest
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_kustomize_files.files | default([]) | length > 0
+      - archiveweaver_kustomize_bundle_sha256 is string
+      - archiveweaver_kustomize_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - (archiveweaver_verify_kustomize_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_kustomize_bundle_sha256
+    fail_msg: "The verified Kustomize bundle has drifted from the reviewed release."
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [verify]
+
+- name: Re-render the verified Kustomize bundle read-only
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_verify_kubectl_argv + ['kustomize', archiveweaver_kustomize_path] }}"
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [verify]

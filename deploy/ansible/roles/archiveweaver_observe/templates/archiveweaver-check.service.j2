@@ -1,0 +1,16 @@
+[Unit]
+Description=ArchiveWeaver read-only health check for {{ archiveweaver_solution_id }}
+
+[Service]
+Type=oneshot
+User=archiveweaver
+Group=archiveweaver
+EnvironmentFile=/etc/archiveweaver/check.env
+ExecStart={{ archiveweaver_check_command }} check --solution ${ARCHIVEWEAVER_SOLUTION_ID} --mode ${ARCHIVEWEAVER_MODE} --url ${ARCHIVEWEAVER_URL} --json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=archiveweaver-check

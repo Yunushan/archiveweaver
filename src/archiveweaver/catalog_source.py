@@ -19,6 +19,7 @@ MODES = [
     "k0s",
     "docker-swarm",
     "microk8s",
+    "ansible",
 ]
 
 CONTAINER_MODES = [
@@ -123,6 +124,23 @@ RUNTIMES = [
         "prerequisites": ["3 or 5 control-plane nodes for datastore HA", "CNI", "Ingress", "CSI-backed storage", "external object storage"],
         "notes": "The datastore must itself be highly available; use three or more control-plane nodes for production.",
     },
+    {
+        "id": "ansible",
+        "name": "Ansible orchestration adapter",
+        "kind": "automation",
+        "topology": {"1": "supported", "2": "supported", "3": "supported", "3+": "supported"},
+        "prerequisites": [
+            "pinned Ansible Core execution environment",
+            "SSH with host-key verification",
+            "Python 3 on managed nodes",
+            "reviewed become policy",
+            "version-controlled inventory and group variables",
+            "Ansible Vault or an approved external secret manager",
+            "an underlying raw, container, cluster, or Pacemaker runtime",
+            "external backup and restore evidence",
+        ],
+        "notes": "Ansible is an orchestration and configuration-management layer, not a scheduler or HA system. Use it to coordinate the existing provider envelopes; quorum, fencing, state replication, and application support remain the responsibility of the selected underlying runtime and product release.",
+    },
 ]
 
 
@@ -205,6 +223,7 @@ def _modes(raw: str = "native", docker: str = "validated") -> dict[str, str]:
     support["raw"] = raw
     support["docker"] = docker
     support["pacemaker"] = "conditional"
+    support["ansible"] = "portable"
     return support
 
 

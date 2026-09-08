@@ -1,0 +1,162 @@
+---
+- name: Validate the controller evidence-root boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+    fail_msg: "The controller evidence root must be an absolute, traversal-free path."
+  tags: [evidence]
+
+- name: Ensure the controller evidence root exists
+  ansible.builtin.file:
+    path: "{{ archiveweaver_evidence_root }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: not ansible_check_mode | bool
+  tags: [evidence]
+
+- name: Seal the controller evidence root with a SHA-256 index
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - -m
+      - archiveweaver
+      - evidence-index
+      - --directory
+      - "{{ archiveweaver_evidence_root }}"
+      - --output
+      - evidence-index.json
+      - --json
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: true
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Verify the sealed controller evidence index
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - -m
+      - archiveweaver
+      - evidence-index
+      - --verify
+      - "{{ archiveweaver_evidence_root }}/evidence-index.json"
+      - --json
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Derive whether production evidence publication is active
+  ansible.builtin.set_fact:
+    archiveweaver_evidence_publication_active: >-
+      {{ (archiveweaver_evidence_environment == 'production')
+         and not (ansible_check_mode | bool)
+         and (
+           (archiveweaver_apply | default(false) | bool)
+           or (archiveweaver_repair_apply | default(false) | bool)
+           or (archiveweaver_run_verification | default(false) | bool)
+           or (archiveweaver_certification_apply | default(false) | bool)
+           or (archiveweaver_restore_apply | default(false) | bool)
+           or (archiveweaver_failure_apply | default(false) | bool)
+           or (archiveweaver_rollback_apply | default(false) | bool)
+         ) }}
+  tags: [evidence]
+
+- name: Require immutable production evidence publication controls
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_publish_enabled | bool
+      - archiveweaver_evidence_publish_command is sequence
+      - archiveweaver_evidence_publish_command is not string
+      - archiveweaver_evidence_publish_command | length > 0
+      - archiveweaver_evidence_verify_command is sequence
+      - archiveweaver_evidence_verify_command is not string
+      - archiveweaver_evidence_verify_command | length > 0
+      - archiveweaver_evidence_retention_days | int > 0
+      - archiveweaver_evidence_immutable | bool
+      - archiveweaver_evidence_access_logged | bool
+    fail_msg: "Production evidence requires an approved immutable, access-logged publication and verification binding."
+  when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Require safe evidence publication argv elements
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item | length > 0
+      - item is not search('["\\r\\n]')
+  loop: "{{ (archiveweaver_evidence_publish_command | default([])) + (archiveweaver_evidence_verify_command | default([])) }}"
+  fail_msg: "Evidence publication hooks must contain safe, non-empty argument-vector elements."
+  when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Publish the sealed evidence bundle to immutable storage
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_evidence_publish_command }}"
+    expand_argument_vars: false
+  environment:
+    ARCHIVEWEAVER_EVIDENCE_ROOT: "{{ archiveweaver_evidence_root }}"
+    ARCHIVEWEAVER_EVIDENCE_INDEX: "{{ archiveweaver_evidence_root }}/evidence-index.json"
+    ARCHIVEWEAVER_EVIDENCE_RETENTION_DAYS: "{{ archiveweaver_evidence_retention_days | int }}"
+    ARCHIVEWEAVER_EVIDENCE_IMMUTABLE: "true"
+    ARCHIVEWEAVER_EVIDENCE_ACCESS_LOGGED: "true"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: archiveweaver_evidence_publish_result
+  changed_when: true
+  failed_when: false
+  check_mode: false
+  when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Verify immutable evidence retention and access logging
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_evidence_verify_command }}"
+    expand_argument_vars: false
+  environment:
+    ARCHIVEWEAVER_EVIDENCE_ROOT: "{{ archiveweaver_evidence_root }}"
+    ARCHIVEWEAVER_EVIDENCE_INDEX: "{{ archiveweaver_evidence_root }}/evidence-index.json"
+    ARCHIVEWEAVER_EVIDENCE_RETENTION_DAYS: "{{ archiveweaver_evidence_retention_days | int }}"
+    ARCHIVEWEAVER_EVIDENCE_IMMUTABLE: "true"
+    ARCHIVEWEAVER_EVIDENCE_ACCESS_LOGGED: "true"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: archiveweaver_evidence_verify_result
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Require immutable evidence publication to pass
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_publish_result.rc == 0
+      - archiveweaver_evidence_verify_result.rc == 0
+    fail_msg: "Immutable evidence publication or retention verification failed; production operation remains non-compliant."
+  when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]

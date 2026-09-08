@@ -40,3 +40,7 @@ An acceptable restore has a recorded:
 - representative format fixture result;
 - operator and change-ticket sign-off.
 
+For a production release, attach these records to the readiness manifest and
+run the 100-point gate before accepting traffic. A backup flag without a
+successful clean-environment restore and fixity record is not sufficient.
+

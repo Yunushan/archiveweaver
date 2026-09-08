@@ -24,7 +24,20 @@ COMMAND_ALIASES = {
     "CNI": ["kubectl"],
     "Ingress": ["kubectl"],
     "CSI-backed storage": ["kubectl"],
+    "Ansible Core": ["ansible-playbook"],
 }
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep health probes on the exact operator-supplied endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def _open_health_request(request: urllib.request.Request, timeout: int):
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    return opener.open(request, timeout=timeout)
 
 
 def _command(*args: str, timeout: int = 10) -> tuple[int, str, str]:
@@ -37,7 +50,7 @@ def _command(*args: str, timeout: int = 10) -> tuple[int, str, str]:
             timeout=timeout,
         )
         return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired) as exc:
         return 127, "", str(exc)
 
 
@@ -85,23 +98,104 @@ def check_service(service: str) -> dict[str, Any]:
     return _result(f"service:{service}", "skip", "service unit not found or not queryable", stderr or stdout)
 
 
+def _redacted_url(value: Any) -> str:
+    """Return a report-safe URL with userinfo, query, and fragment removed."""
+    if not isinstance(value, str):
+        return "<invalid-url>"
+    if any(ord(char) < 0x20 or char in {'"', "\\"} for char in value):
+        return "<redacted-url>"
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+        if hostname:
+            netloc = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            if port is not None:
+                netloc = f"{netloc}:{port}"
+        else:
+            netloc = "<invalid-host>"
+        return parsed._replace(netloc=netloc, query="", fragment="").geturl()
+    except (TypeError, ValueError):
+        return "<invalid-url>"
+
+
+def _url_scheme(value: Any) -> str:
+    try:
+        return urlparse(value).scheme if isinstance(value, str) else ""
+    except (TypeError, ValueError):
+        return ""
+
+
 def check_url(url: str, timeout: int = 8) -> dict[str, Any]:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return _result("http", "fail", "URL must use an http(s) scheme", {"url": url})
+    reported_url = _redacted_url(url)
+    if not isinstance(url, str) or any(ord(char) < 0x20 or char in {'"', "\\"} for char in url):
+        return _result("http", "fail", "health URLs must not contain control, quoting, or backslash characters", {"url": reported_url})
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        return _result("http", "fail", "URL could not be parsed", {"url": reported_url, "error": type(exc).__name__})
+    try:
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        return _result("http", "fail", "URL host or port could not be parsed", {"url": reported_url, "error": type(exc).__name__})
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
+        return _result("http", "fail", "URL must use an http(s) scheme", {"url": reported_url})
+    if parsed.username or parsed.password:
+        return _result("http", "fail", "health URLs must not contain credentials", {"url": reported_url})
+    if parsed.query or parsed.fragment:
+        return _result("http", "fail", "health URLs must not contain query or fragment data", {"url": reported_url})
     request = urllib.request.Request(url, headers={"User-Agent": "ArchiveWeaver/0.1 health-check"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_health_request(request, timeout) as response:
             status = getattr(response, "status", 200)
-            if 200 <= status < 400:
-                return _result("http", "pass", f"HTTP {status}", {"url": url, "status": status})
-            return _result("http", "warn", f"HTTP {status}", {"url": url, "status": status})
+            final_url = response.geturl()
+            final_scheme = _url_scheme(final_url)
+            if parsed.scheme == "https" and final_scheme != "https":
+                return _result(
+                    "http",
+                    "fail",
+                    "HTTPS health check redirected to a non-HTTPS URL",
+                    {"url": reported_url, "final_url": _redacted_url(final_url), "status": status},
+                )
+            if 200 <= status < 300:
+                return _result(
+                    "http",
+                    "pass",
+                    f"HTTP {status}",
+                    {"url": reported_url, "final_url": _redacted_url(final_url), "status": status},
+                )
+            return _result(
+                "http",
+                "warn",
+                f"HTTP {status}; health endpoints should return 2xx",
+                {"url": reported_url, "final_url": _redacted_url(final_url), "status": status},
+            )
     except urllib.error.HTTPError as exc:
+        final_url = getattr(exc, "url", "") or ""
+        final_scheme = _url_scheme(final_url)
+        if parsed.scheme == "https" and final_scheme and final_scheme != "https":
+            return _result(
+                "http",
+                "fail",
+                "HTTPS health check redirected to a non-HTTPS URL",
+                {"url": reported_url, "final_url": _redacted_url(final_url), "status": exc.code},
+            )
+        if 300 <= exc.code < 400:
+            return _result(
+                "http",
+                "fail",
+                "health checks do not follow redirects",
+                {"url": reported_url, "status": exc.code},
+            )
         status = "warn" if 400 <= exc.code < 500 else "fail"
         detail = "authentication or access response" if status == "warn" else "server error response"
-        return _result("http", status, f"HTTP {exc.code} ({detail})", {"url": url, "status": exc.code})
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return _result("http", "fail", "request failed; TLS verification was not bypassed", {"url": url, "error": str(exc)})
+        return _result("http", status, f"HTTP {exc.code} ({detail})", {"url": reported_url, "status": exc.code})
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return _result("http", "fail", "request failed; TLS verification was not bypassed", {"url": reported_url, "error": type(exc).__name__})
 
 
 def _runtime_commands(mode: str) -> list[str]:
@@ -113,6 +207,8 @@ def _runtime_commands(mode: str) -> list[str]:
         return ["podman", "systemctl"]
     if mode == "pacemaker":
         return ["pcs", "corosync", "pacemakerd"]
+    if mode == "ansible":
+        return ["ansible-playbook"]
     return ["kubectl"]
 
 

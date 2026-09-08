@@ -1,0 +1,10 @@
+---
+# Copy this file to vault.yml, replace the empty values, then run:
+#   ansible-vault encrypt group_vars/all/vault.yml
+# The starter playbooks do not require these values. Product-specific roles
+# should consume them with no_log: true and never write them to evidence.
+archiveweaver_vault:
+  registry_username: ""
+  registry_password: ""
+  database_password: ""
+  object_storage_secret: ""

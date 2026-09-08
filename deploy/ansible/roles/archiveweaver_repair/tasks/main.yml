@@ -1,0 +1,244 @@
+---
+- name: Validate the repair evidence boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_evidence_dir is string
+      - archiveweaver_evidence_dir is match('^' ~ (archiveweaver_evidence_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_evidence_dir is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_dir is not search('\\.\\.')
+    fail_msg: "Repair evidence must stay below the configured controller evidence root."
+  tags: [repair]
+
+- name: Announce the default plan-only repair posture
+  ansible.builtin.debug:
+    msg: "ArchiveWeaver repair is plan-only; set archiveweaver_repair_apply=true only through approved change control."
+  when: not archiveweaver_repair_apply | bool
+  tags: [repair]
+
+- name: Capture current systemd service state
+  ansible.builtin.command:
+    argv: [systemctl, status, "{{ archiveweaver_service_name }}.service", --no-pager]
+  register: archiveweaver_repair_service_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: archiveweaver_runtime in ['raw', 'podman-quadlet']
+  no_log: true
+  tags: [repair, verify]
+
+- name: Restart the named systemd service
+  ansible.builtin.systemd_service:
+    name: "{{ archiveweaver_service_name }}.service"
+    state: restarted
+  no_log: true
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['raw', 'podman-quadlet']
+  tags: [repair]
+
+- name: Inspect the Compose or Swarm repair bundle
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_repair_compose_stat
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  tags: [repair]
+
+- name: Inspect the Swarm repair bundle on the manager
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_repair_swarm_stat
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [repair]
+
+- name: Require the reviewed Compose repair bundle
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_repair_compose_stat.stat.exists
+      - archiveweaver_repair_compose_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_repair_compose_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_product_stack_sha256 is string
+      - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_repair_compose_stat.stat.checksum == archiveweaver_product_stack_sha256
+    fail_msg: "The Compose repair bundle is missing, symlinked, or does not match the reviewed SHA-256 binding."
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Require the reviewed Swarm repair bundle
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_repair_swarm_stat.stat.exists
+      - archiveweaver_repair_swarm_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_repair_swarm_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_product_stack_sha256 is string
+      - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_repair_swarm_stat.stat.checksum == archiveweaver_product_stack_sha256
+    fail_msg: "The Swarm repair bundle is missing, symlinked, or does not match the reviewed SHA-256 binding."
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Validate the Compose repair target
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ archiveweaver_compose_path }}", config]
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Reconcile the named Compose workload
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ archiveweaver_compose_path }}", up, -d]
+  changed_when: true
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Validate the Swarm repair target
+  ansible.builtin.command:
+    argv: [docker, stack, config, -c, "{{ archiveweaver_compose_path }}"]
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Redeploy the named Swarm stack
+  ansible.builtin.command:
+    argv: [docker, stack, deploy, --compose-file, "{{ archiveweaver_compose_path }}", "{{ archiveweaver_solution_id }}"]
+  changed_when: true
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Build a safe kubectl argv prefix for Kubernetes repair
+  ansible.builtin.set_fact:
+    archiveweaver_repair_kubectl_argv: "{{ ['kubectl'] + (['--kubeconfig', archiveweaver_kubeconfig] if archiveweaver_kubeconfig | length > 0 else []) }}"
+  when: archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+  tags: [repair]
+
+- name: Capture Kubernetes node state
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_repair_kubectl_argv + ['get', 'nodes', '-o', 'wide'] }}"
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair, verify]
+
+- name: Restart the named Kubernetes deployment
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_repair_kubectl_argv + ['-n', archiveweaver_namespace, 'rollout', 'restart', 'deployment/' + archiveweaver_solution_id] }}"
+  changed_when: true
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Verify the named Kubernetes deployment rollout
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_repair_kubectl_argv + ['-n', archiveweaver_namespace, 'rollout', 'status', 'deployment/' + archiveweaver_solution_id] }}"
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair, verify]
+
+- name: Inspect Pacemaker state without changing it
+  ansible.builtin.command:
+    argv: [pcs, status, --full]
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_runtime == 'pacemaker'
+  no_log: true
+  tags: [repair, verify]
+
+- name: Clean up the named Pacemaker resource only after fencing approval
+  ansible.builtin.command:
+    argv: [pcs, resource, cleanup, "{{ archiveweaver_resource_name }}"]
+  changed_when: true
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'pacemaker'
+    - archiveweaver_allow_fencing_actions | bool
+    - archiveweaver_stonith_ready | bool
+  no_log: true
+  tags: [repair]
+
+- name: Build redacted repair evidence
+  ansible.builtin.set_fact:
+    archiveweaver_repair_evidence:
+      name: "repair-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      host: "{{ inventory_hostname }}"
+      solution: "{{ archiveweaver_solution_id }}"
+      runtime: ansible
+      underlying_runtime: "{{ archiveweaver_runtime }}"
+      os_id: "{{ archiveweaver_os_id }}"
+      release: "{{ archiveweaver_release }}"
+      environment: "{{ archiveweaver_evidence_environment }}"
+      execution_environment: "{{ archiveweaver_environment }}"
+      execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      recorded_at: "{{ ansible_date_time.iso8601 }}"
+      operator: "{{ archiveweaver_operator }}"
+      fixture_set: "{{ archiveweaver_fixture_set }}"
+      change_id: "{{ archiveweaver_change_id }}"
+      status: "{{ 'pass' if archiveweaver_repair_apply | bool else 'planned' }}"
+      provider: "{{ archiveweaver_runtime }}"
+  no_log: true
+  tags: [repair]
+
+- name: Create the repair evidence directory on the controller
+  ansible.builtin.file:
+    path: "{{ archiveweaver_evidence_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [repair]
+
+- name: Write redacted repair evidence on the controller
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_evidence_dir }}/repair-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+    content: "{{ archiveweaver_repair_evidence | to_nice_json }}\n"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  no_log: true
+  tags: [repair]

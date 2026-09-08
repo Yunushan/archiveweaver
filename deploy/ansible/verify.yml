@@ -1,0 +1,16 @@
+---
+- name: ArchiveWeaver read-only verification and evidence
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: true
+  serial: "{{ archiveweaver_serial }}"
+  any_errors_fatal: true
+  vars:
+    archiveweaver_run_verification: true
+  roles:
+    - role: archiveweaver_preflight
+      tags: [preflight]
+    - role: archiveweaver_verify
+      tags: [verify]
+    - role: archiveweaver_evidence
+      tags: [evidence]

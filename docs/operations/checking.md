@@ -35,6 +35,11 @@ The shell wrapper is equivalent:
 6. **Dependencies:** application-specific DB/search/queue/storage checks, implemented through an adapter or an approved external probe.
 7. **Application:** login, upload, retrieval, preview/OCR, workflow, API, export, and fixity smoke tests.
 
+The Ansible edition adds remote preflight, provider-command checks, direct
+2xx-only TLS-verified endpoint probing without redirects, service facts,
+storage-path inspection, and redacted per-host evidence. It does not replace the product-specific
+dependency and preservation smoke tests in layers 6–7.
+
 The built-in CLI implements layers 1–5. Layers 6–7 are intentionally explicit because credentials, schemas, collection data, and product release semantics differ.
 
 ## Exit status

@@ -18,10 +18,12 @@ ArchiveWeaver is designed for operators who need one consistent operational mode
 
 - 30 product catalog entries with official upstream links, dependencies, service aliases, health paths, format families, and mode support;
 - support for raw/native, Docker Compose, K3s, RKE2, Pacemaker/Corosync + STONITH, Podman Quadlet, k0s, Docker Swarm, and MicroK8s;
+- an Ansible orchestration edition with inventory, Vault/secret boundaries, fail-closed approvals, rolling execution, provider envelopes, repair gates, and evidence;
 - topology policy for standalone, two-node, three-node, and three-plus-node deployments;
 - OS catalog for Ubuntu 22.04/24.04/26.04, Rocky Linux 8/9/10, RHEL 8/9/10, AlmaLinux 8/9/10, Debian 12/13;
 - read-only host, runtime, systemd, HTTP, storage-path, and configuration checks;
 - plan-only and explicitly gated repair actions;
+- a fail-closed 100-point production-readiness evaluator and tamper-evident evidence index;
 - safe provider envelopes for systemd, Docker, Podman Quadlet, Swarm, and Kubernetes-family runtimes;
 - English default documentation plus Turkish README and operations summaries;
 - HLD, LLD, ADRs, deployment patterns, backup/restore, security, and full format-family catalog;
@@ -92,6 +94,33 @@ archiveweaver check \
   --json > reports/paperless-check.json
 ```
 
+Use the enterprise Ansible orchestration edition:
+
+```bash
+cd deploy/ansible
+cp inventory/production/hosts.yml.example inventory/production/hosts.yml
+cp inventory/staging/hosts.yml.example inventory/staging/hosts.yml
+cp inventory/restore/hosts.yml.example inventory/restore/hosts.yml
+cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+cp release-manifest.example.json release-manifest.json
+ansible-playbook site.yml --syntax-check
+ansible-playbook site.yml --check --diff -e archiveweaver_apply=true
+```
+
+To generate an Ansible entry point for a specific provider, use for example
+`archiveweaver render --solution paperless-ngx --mode ansible --underlying-mode rke2 --nodes 3 --os ubuntu-24.04 --output deploy/ansible/generated/paperless-rke2.yml`.
+
+Ansible coordinates the selected provider; it does not provide quorum,
+fencing, scheduler HA, database replication, or product-level failover. Keep
+`archiveweaver_apply: false` until the release manifest, dependency stack,
+backup evidence, and change approval are complete.
+
+Use the 100-point readiness gate before production mutation:
+`PYTHONPATH=src python3 -m archiveweaver readiness --manifest deploy/ansible/release-manifest.json --json`.
+The example intentionally fails until a real release manifest, product test
+evidence, and verified SHA-256 evidence index are supplied. The contract is
+documented in [premium readiness](docs/operations/premium-readiness.md).
+
 Create a repair plan. It will not execute until `--apply` is supplied:
 
 ```bash
@@ -130,8 +159,13 @@ The generated [product support matrix](docs/reference/support-matrix.md) and [fo
 | k0s | supported | not-recommended | supported | supported |
 | Docker Swarm | supported | not-recommended | supported | supported |
 | MicroK8s | supported | not-recommended | supported | supported |
+| Ansible orchestration adapter | supported | supported | supported | supported |
 
 Two-node Pacemaker requires a real fencing design. Two-node embedded-etcd or two-manager consensus is intentionally not treated as resilient HA. See [the runtime matrix](docs/deployment/runtime-matrix.md) and [the two-node design](docs/deployment/two-node.md).
+
+Ansible is shown in the matrix as an orchestration adapter. Its topology row
+describes the number of hosts it can coordinate, not an HA guarantee; the
+underlying runtime and application state design still determine resilience.
 
 ## Linux baseline
 
@@ -155,7 +189,9 @@ This is an ArchiveWeaver host baseline, not a blanket upstream application certi
 - [ADRs](docs/architecture/DECISIONS.md) — why the core is catalog-driven, why two-node consensus is blocked, and why envelopes are used;
 - [Standalone](docs/deployment/standalone.md), [two-node](docs/deployment/two-node.md), [three-node](docs/deployment/three-node.md), and [three-plus-node](docs/deployment/three-plus-node.md) designs;
 - [Kubernetes-family deployment](docs/deployment/kubernetes.md), [containers](docs/deployment/containers.md), and [Pacemaker](docs/deployment/pacemaker.md);
-- [Checking](docs/operations/checking.md), [repair](docs/operations/repair.md), [backup/restore](docs/operations/backup-restore.md), and [security](docs/operations/security.md);
+- [Ansible enterprise orchestration](docs/deployment/ansible.md) and the runnable [Ansible edition](deploy/ansible/README.md);
+- [Checking](docs/operations/checking.md), [repair](docs/operations/repair.md), [backup/restore](docs/operations/backup-restore.md), [product certification](docs/operations/product-certification.md), [service management](docs/operations/service-management.md), and [security](docs/operations/security.md);
+- [Supply-chain controls](docs/operations/supply-chain.md);
 - [full format catalog](docs/reference/formats.md), [format-family matrix](docs/reference/format-matrix.md), [product support matrix](docs/reference/support-matrix.md), and [upstream source links](docs/reference/upstream-sources.md).
 
 ## Format support model

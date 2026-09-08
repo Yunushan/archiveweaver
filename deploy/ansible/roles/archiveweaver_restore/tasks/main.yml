@@ -1,0 +1,158 @@
+---
+- name: Validate the restore drill boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_restore_environment in ['restore', 'staging', 'dr']
+      - archiveweaver_restore_change_id is string
+      - archiveweaver_restore_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_restore_change_id is not search('(?i)(?:replace|todo|tbd)')
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/evidence(/|$)')
+      - archiveweaver_evidence_root is not search('["\\s\\r\\n]')
+      - archiveweaver_evidence_root is not search('\\.\\.')
+      - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
+      - archiveweaver_restore_evidence_dir is string
+      - archiveweaver_restore_evidence_dir is match('^' ~ (archiveweaver_evidence_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_restore_evidence_dir is not search('\\.\\.')
+      - archiveweaver_restore_evidence_dir is not search('[\"\\s\\r\\n]')
+    fail_msg: "Restore drills are permitted only in an explicitly non-production environment."
+  tags: [restore, fixity]
+
+- name: Refuse to execute restore hooks in check mode
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode | bool
+    fail_msg: "Applied restore hooks cannot run with --check; use the non-applied preview or an approved real run."
+  when:
+    - archiveweaver_restore_apply | bool
+    - ansible_check_mode | bool
+  no_log: true
+  tags: [restore, fixity]
+
+- name: Announce plan-only restore posture
+  ansible.builtin.debug:
+    msg: "Restore and fixity hooks are not executed. Set archiveweaver_restore_apply=true only for an approved non-production drill."
+  when: not archiveweaver_restore_apply | bool
+  tags: [restore, fixity]
+
+- name: Require reviewed restore and fixity hooks for an applied drill
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_restore_source is string
+      - archiveweaver_restore_source | length > 0
+      - archiveweaver_restore_source is not search('[\"\\r\\n]')
+      - archiveweaver_restore_command is sequence
+      - archiveweaver_restore_command is not string
+      - archiveweaver_restore_command | length > 0
+      - archiveweaver_fixity_command is sequence
+      - archiveweaver_fixity_command is not string
+      - archiveweaver_fixity_command | length > 0
+      - archiveweaver_release is string
+      - archiveweaver_release | length > 0
+      - archiveweaver_release is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is string
+      - archiveweaver_operator | length > 0
+      - archiveweaver_operator is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_operator is not search('["\\s\\r\\n]')
+      - archiveweaver_fixture_set is string
+      - archiveweaver_fixture_set | length > 0
+      - archiveweaver_fixture_set is not search('(?i)(?:replace|todo|tbd|latest)')
+      - archiveweaver_fixture_set is not search('["\\s\\r\\n]')
+    fail_msg: "A restore drill requires reviewed argv hooks and a non-production backup source."
+  when: archiveweaver_restore_apply | bool
+  no_log: true
+  tags: [restore, fixity]
+
+- name: Run the reviewed product restore hook
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_restore_command }}"
+    expand_argument_vars: false
+  register: archiveweaver_restore_result
+  changed_when: true
+  failed_when: false
+  when: archiveweaver_restore_apply | bool
+  no_log: true
+  tags: [restore]
+
+- name: Run the reviewed product fixity hook
+  ansible.builtin.command:
+    argv: "{{ archiveweaver_fixity_command }}"
+    expand_argument_vars: false
+  register: archiveweaver_fixity_result
+  changed_when: true
+  failed_when: false
+  when: archiveweaver_restore_apply | bool
+  no_log: true
+  tags: [fixity]
+
+- name: Require both restore and fixity hooks to pass
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_restore_result.rc == 0
+      - archiveweaver_fixity_result.rc == 0
+    fail_msg: "The non-production restore or fixity hook failed; do not promote this release."
+  when: archiveweaver_restore_apply | bool
+  no_log: true
+  tags: [restore, fixity]
+
+- name: Build stable restore evidence filename keys
+  ansible.builtin.set_fact:
+    archiveweaver_restore_evidence_host_keys: >-
+      {{ (archiveweaver_restore_evidence_host_keys | default([]))
+         + [item | regex_replace('[^A-Za-z0-9_.-]', '_')] }}
+  loop: "{{ groups['archiveweaver_restore'] | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  tags: [restore, fixity]
+
+- name: Reject colliding restore evidence filenames
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_restore_evidence_host_keys | unique | length == archiveweaver_restore_evidence_host_keys | length
+    fail_msg: "Restore evidence hostnames collapse to the same sanitized filename."
+  no_log: true
+  tags: [restore, fixity]
+
+- name: Build redacted restore-drill evidence
+  ansible.builtin.set_fact:
+    archiveweaver_restore_evidence:
+      name: "restore-drill-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      host: "{{ inventory_hostname }}"
+      solution: "{{ archiveweaver_solution_id }}"
+      runtime: ansible
+      underlying_runtime: "{{ archiveweaver_runtime }}"
+      os_id: "{{ archiveweaver_os_id }}"
+      release: "{{ archiveweaver_release }}"
+      environment: "{{ archiveweaver_evidence_environment }}"
+      execution_environment: "{{ archiveweaver_restore_environment }}"
+      execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      recorded_at: "{{ ansible_date_time.iso8601 }}"
+      operator: "{{ archiveweaver_operator }}"
+      fixture_set: "{{ archiveweaver_fixture_set }}"
+      change_id: "{{ archiveweaver_restore_change_id }}"
+      source_configured: "{{ archiveweaver_restore_source | length > 0 }}"
+      status: "{{ 'pass' if archiveweaver_restore_apply | bool else 'planned' }}"
+      restore_returncode: "{{ archiveweaver_restore_result.rc | default('not-run') }}"
+      fixity_returncode: "{{ archiveweaver_fixity_result.rc | default('not-run') }}"
+  no_log: true
+  tags: [restore, fixity]
+
+- name: Create the restore evidence directory on the controller
+  ansible.builtin.file:
+    path: "{{ archiveweaver_restore_evidence_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [restore, fixity]
+
+- name: Write redacted restore evidence on the controller
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_restore_evidence_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+    content: "{{ archiveweaver_restore_evidence | to_nice_json }}\n"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  no_log: true
+  tags: [restore, fixity]

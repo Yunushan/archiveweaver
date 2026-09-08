@@ -16,3 +16,14 @@ build/
 reports/
 generated/
 
+# Ansible local state and operator-only inputs.
+.ansible-tmp/
+deploy/ansible/inventory/production/hosts.yml
+deploy/ansible/inventory/staging/hosts.yml
+deploy/ansible/inventory/restore/hosts.yml
+deploy/ansible/group_vars/all/vault.yml
+deploy/ansible/release-manifest.json
+deploy/ansible/release-manifest-staging.json
+deploy/ansible/evidence/
+deploy/ansible/generated/
+

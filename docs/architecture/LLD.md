@@ -12,9 +12,11 @@ archiveweaver/
 │   ├── planner.py          # support and topology policy
 │   ├── render.py           # provider envelopes
 │   ├── repair.py           # gated repair plans and executor
+│   ├── readiness.py        # 100-point release/service readiness gate
+│   ├── evidence.py         # SHA-256 evidence index builder/verifier
 │   ├── schema.py           # catalog validation
 │   └── data/*.json         # generated runtime data
-├── deploy/                 # provider examples and safe templates
+├── deploy/                 # provider examples, safe templates, and Ansible roles
 ├── docs/                   # HLD, LLD, runbooks and product pages
 ├── scripts/                # bootstrap, check and catalog generators
 └── tests/                  # stdlib unit tests
@@ -54,7 +56,8 @@ Each solution record contains:
     "podman-quadlet": "portable",
     "k0s": "portable",
     "docker-swarm": "portable",
-    "microk8s": "portable"
+    "microk8s": "portable",
+    "ansible": "portable"
   }
 }
 ```
@@ -65,9 +68,11 @@ The schema validator requires every solution to declare every mode. This prevent
 
 1. Resolve solution, runtime, and OS IDs.
 2. Normalize node count into `1`, `2`, `3`, or `3+`.
-3. Read the solution's mode fit and the runtime's topology policy.
+3. For Ansible, resolve `--underlying-mode` and read both the adapter fit and
+   the selected provider's product/topology policy; for other modes, use the
+   selected runtime directly.
 4. Add blockers for `not-recommended`, conditional modes without `--allow-conditional`, two-node consensus without external state, and Pacemaker two-node plans without `--stonith`.
-5. Add warnings for legacy/forward OS tiers, Compose multi-host assumptions, Quadlet multi-node assumptions, and missing externalized state.
+5. Add warnings for legacy/forward OS tiers, Compose multi-host assumptions, Quadlet multi-node assumptions, missing externalized state, and Ansible's lack of intrinsic HA.
 6. Emit prerequisites, stages, reference commands, and data-safety policy.
 7. Return exit code `2` for a blocked plan; a conditional plan is returned with warnings so an operator can review it.
 
@@ -111,6 +116,7 @@ The repair engine first constructs a plan. Only `--apply` executes it. Commands 
 | Pacemaker | status, resource cleanup, status | gated; no fencing bypass or cluster-wide disable |
 | Swarm | stack config, stack deploy, service status | no volume deletion or forced manager recovery |
 | Kubernetes | node check, rolling restart, rollout status | no PVC deletion, force delete, or cluster reset |
+| Ansible | syntax-check, check-mode/diff, named provider reconciliation, verification/evidence | no automatic product migration, data deletion, secret output, or Pacemaker resource invention |
 
 Pacemaker recovery is blocked unless `--allow-fencing-actions` is explicitly supplied. Operators must review quorum, STONITH devices, constraints, and the change ticket first.
 
@@ -136,8 +142,27 @@ Renderer behavior:
 - Swarm: emits a service with anti-concentration and rolling update hints;
 - K3s/RKE2/k0s/MicroK8s: emits Namespace, RWX PVC, Deployment, anti-affinity, and Service;
 - Pacemaker: uses the resource templates under `deploy/pacemaker` because fencing and resource identity are environment-specific.
+- Ansible: emits an entry point for the checked-in roles under `deploy/ansible`; `--underlying-mode` selects the provider envelope and the playbook is plan-only until explicit gates are satisfied.
 
 The envelope explicitly does not create the product's database, search engine, queue, object store, ingress TLS, backup target, or application-specific migrations. Add those from the upstream release documentation and pin them as one tested release set.
+
+## 6.1 Ansible execution contract
+
+The Ansible edition is an orchestration adapter over an underlying provider.
+`deploy/ansible/site.yml` uses `serial: 1` and `any_errors_fatal: true`, runs
+preflight checks before mutation, and keeps `archiveweaver_apply: false` by
+default. A check-mode apply is the required preview path; a real apply also
+requires a non-placeholder release, approval ticket, verified backup, verified
+release manifest, and a reviewed product dependency stack. Docker, Swarm, and
+Kubernetes adapters validate a separately staged product bundle and never
+replace it with the generic renderer output. The repair
+playbook is separate and has its own apply variable. Pacemaker deployment
+resources are never invented from placeholders.
+
+Before apply or repair, the controller must run the repository's readiness
+manifest command and receive 100/100. The manifest is evidence-backed rather
+than a trusted score field; the preflight role invokes the command with
+`check_mode: false`, `delegate_to: localhost`, and `no_log: true`.
 
 ## 7. Kubernetes details
 
@@ -196,12 +221,14 @@ Store a deployment evidence bundle outside the application data path:
 reports/<change-id>/
 ├── input.json
 ├── plan.json
+├── readiness.json
 ├── host-check.json
 ├── runtime-status.txt
 ├── deployment-manifest.yaml
 ├── smoke-test.json
 ├── backup-restore.json
 ├── fixity-summary.json
+├── evidence-index.json
 └── operator-signoff.md
 ```
 

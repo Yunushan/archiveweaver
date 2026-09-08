@@ -1,0 +1,38 @@
+---
+- name: Validate the pinned Ansible controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: archiveweaver_controller_preflight
+      tags: [always, controller]
+
+- name: ArchiveWeaver guarded release rollback
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    archiveweaver_rollback_apply: false
+    archiveweaver_rollback_environment: production
+    archiveweaver_rollback_release: ""
+    archiveweaver_rollback_artifact_digest: ""
+    archiveweaver_rollback_approval_ticket: ""
+    archiveweaver_rollback_backup_verified: false
+    archiveweaver_rollback_command: []
+    archiveweaver_rollback_verify_command: []
+    archiveweaver_rollback_change_id: RB-PLAN
+    archiveweaver_rollback_evidence_dir: "{{ archiveweaver_bundle_root }}/evidence/rollback"
+    archiveweaver_repair_apply: "{{ archiveweaver_rollback_apply | bool }}"
+    archiveweaver_approval_ticket: "{{ archiveweaver_rollback_approval_ticket }}"
+    archiveweaver_backup_verified: "{{ archiveweaver_rollback_backup_verified | bool }}"
+    archiveweaver_release_manifest_verified: "{{ archiveweaver_rollback_release_manifest_verified | bool }}"
+    archiveweaver_product_stack_ready: "{{ archiveweaver_rollback_product_stack_ready | bool }}"
+  roles:
+    - role: archiveweaver_preflight
+      tags: [preflight]
+    - role: archiveweaver_rollback
+      tags: [rollback]
+    - role: archiveweaver_evidence
+      tags: [evidence]

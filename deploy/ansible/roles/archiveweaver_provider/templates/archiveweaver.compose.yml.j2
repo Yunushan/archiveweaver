@@ -1,0 +1,18 @@
+services:
+  app:
+    image: {{ archiveweaver_image | to_json }}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:{{ archiveweaver_app_port }}:{{ archiveweaver_app_port }}"
+    environment:
+      ARCHIVEWEAVER_SOLUTION_ID: {{ archiveweaver_solution_id | to_json }}
+    volumes:
+      - {{ (archiveweaver_data_root ~ '/solution:/var/lib/archiveweaver/solution') | to_json }}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+# Add the official product database, search, queue, object-storage, ingress,
+# and migration services as the same pinned release set before production.

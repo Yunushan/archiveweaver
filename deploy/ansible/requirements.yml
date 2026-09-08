@@ -1,0 +1,6 @@
+---
+# The starter roles use ansible.builtin modules only. Keep this file as the
+# controlled content boundary: add exact collection versions here when a
+# product adapter needs a collection, and mirror/verify them in the approved
+# execution environment before production use.
+collections: []

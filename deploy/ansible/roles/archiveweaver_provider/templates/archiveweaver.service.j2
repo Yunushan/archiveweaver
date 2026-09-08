@@ -1,0 +1,21 @@
+[Unit]
+Description=ArchiveWeaver envelope for {{ archiveweaver_solution_id }}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=archiveweaver
+Group=archiveweaver
+ExecStart={{ archiveweaver_exec_start }}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ archiveweaver_data_root }} {{ archiveweaver_log_root }}
+Environment=ARCHIVEWEAVER_SOLUTION_ID={{ archiveweaver_solution_id }}
+
+[Install]
+WantedBy=multi-user.target

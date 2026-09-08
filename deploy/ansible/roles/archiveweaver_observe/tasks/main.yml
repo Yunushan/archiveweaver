@@ -1,0 +1,61 @@
+---
+- name: Validate the production observation inputs
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_health_url is string
+      - archiveweaver_health_url is match('^https://[^/\\s]+(?:/[^\\s]*)?$')
+      - archiveweaver_health_url is not search('[\"\\s\\r\\n]')
+      - archiveweaver_health_url is not search('[@?#$%&;]')
+      - archiveweaver_health_url is not search('\\')
+      - archiveweaver_check_command is string
+      - archiveweaver_check_command is match('^/')
+      - archiveweaver_check_command is not search('[\\s\\r\\n]')
+      - archiveweaver_check_interval is string
+      - archiveweaver_check_interval is match('^[1-9][0-9]*(s|min|h|d)$')
+    fail_msg: "Observation requires an HTTPS health URL, an absolute checker path, and a bounded systemd interval."
+  tags: [observe]
+
+- name: Verify the checker executable is present
+  ansible.builtin.command:
+    argv: ["{{ archiveweaver_check_command }}", --version]
+  changed_when: false
+  check_mode: false
+  tags: [observe]
+
+- name: Install the checker environment file without credentials
+  ansible.builtin.template:
+    src: archiveweaver-check.env.j2
+    dest: /etc/archiveweaver/check.env
+    owner: root
+    group: archiveweaver
+    mode: '0640'
+    diff: false
+  tags: [observe]
+
+- name: Install the read-only systemd health-check service
+  ansible.builtin.template:
+    src: archiveweaver-check.service.j2
+    dest: /etc/systemd/system/archiveweaver-check.service
+    owner: root
+    group: root
+    mode: '0644'
+    diff: false
+  tags: [observe]
+
+- name: Install the periodic systemd health-check timer
+  ansible.builtin.template:
+    src: archiveweaver-check.timer.j2
+    dest: /etc/systemd/system/archiveweaver-check.timer
+    owner: root
+    group: root
+    mode: '0644'
+    diff: false
+  tags: [observe]
+
+- name: Enable the read-only health-check timer
+  ansible.builtin.systemd_service:
+    name: archiveweaver-check.timer
+    daemon_reload: true
+    enabled: true
+    state: started
+  tags: [observe]
