@@ -1,0 +1,205 @@
+# ArchiveWeaver
+
+Deployment planning, installation envelopes, health checking, and guarded repair automation for digital-archiving platforms.
+
+ArchiveWeaver is designed for operators who need one consistent operational model across research repositories, digital-preservation systems, DMS/ECM products, DAM platforms, archival-description tools, and file-sync systems.
+
+## Recommended GitHub identity
+
+- **Project name:** ArchiveWeaver
+- **Repository name:** `archiveweaver`
+- **Recommended URL:** `https://github.com/Yunushan/archiveweaver`
+- **Short description:** `Production deployment, health-check, and safe-repair automation for open digital archiving platforms.`
+- **License:** 0BSD
+
+`archiveweaver` matches the naming style of the companion automation projects and is short enough for CLI commands, package names, and deployment labels.
+
+## What is included
+
+- 30 product catalog entries with official upstream links, dependencies, service aliases, health paths, format families, and mode support;
+- support for raw/native, Docker Compose, K3s, RKE2, Pacemaker/Corosync + STONITH, Podman Quadlet, k0s, Docker Swarm, and MicroK8s;
+- topology policy for standalone, two-node, three-node, and three-plus-node deployments;
+- OS catalog for Ubuntu 22.04/24.04/26.04, Rocky Linux 8/9/10, RHEL 8/9/10, AlmaLinux 8/9/10, Debian 12/13;
+- read-only host, runtime, systemd, HTTP, storage-path, and configuration checks;
+- plan-only and explicitly gated repair actions;
+- safe provider envelopes for systemd, Docker, Podman Quadlet, Swarm, and Kubernetes-family runtimes;
+- English default documentation plus Turkish README and operations summaries;
+- HLD, LLD, ADRs, deployment patterns, backup/restore, security, and full format-family catalog;
+- stdlib unit tests and GitHub Actions CI.
+
+## Important support boundary
+
+“Supported” has a precise meaning here:
+
+- **native:** the upstream project has a source/package/install path suitable for the mode;
+- **validated:** the upstream project documents or publishes the deployment path;
+- **portable:** ArchiveWeaver can render/check the infrastructure pattern, but the product's application-level HA and state behavior require validation;
+- **conditional:** possible only after a design review, release pin, and failure test;
+- **not-recommended:** blocked by the planner unless an exception is documented.
+
+The repository does not claim that every product has an official Helm chart, Docker image, active/active cluster mode, or vendor support on every listed OS. Frameworks such as Hyrax and Islandora need a host/application composition; Archivematica and Alfresco need multiple services; Fedora is a repository backend; OpenKM's upstream GitHub repository is archived in 2026. Those facts are visible in the catalog instead of hidden behind one generic installer.
+
+## Quick start
+
+The core has no third-party Python runtime dependency.
+
+```bash
+git clone https://github.com/Yunushan/archiveweaver.git
+cd archiveweaver
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+
+archiveweaver validate-catalog --json
+archiveweaver list-solutions
+```
+
+Plan a three-node RKE2 deployment:
+
+```bash
+archiveweaver plan \
+  --solution paperless-ngx \
+  --mode rke2 \
+  --nodes 3 \
+  --os ubuntu-24.04
+```
+
+Render a provider envelope with an immutable image reference:
+
+```bash
+archiveweaver render \
+  --solution paperless-ngx \
+  --mode rke2 \
+  --nodes 3 \
+  --os rocky-9 \
+  --image registry.example.org/paperless-ngx@sha256:<digest> \
+  --namespace archive \
+  --output generated/paperless-rke2.yaml
+```
+
+Run read-only checks:
+
+```bash
+archiveweaver check \
+  --solution paperless-ngx \
+  --mode rke2 \
+  --url https://paperless.example.org/ \
+  --service paperless \
+  --path /srv/paperless \
+  --config /etc/rancher/rke2/config.yaml \
+  --json > reports/paperless-check.json
+```
+
+Create a repair plan. It will not execute until `--apply` is supplied:
+
+```bash
+archiveweaver repair \
+  --solution paperless-ngx \
+  --mode docker \
+  --compose-file /srv/paperless/docker-compose.yml \
+  --json > reports/paperless-repair-plan.json
+```
+
+## Supported solution families
+
+| Family | Products |
+| --- | --- |
+| Research repositories | InvenioRDM, DSpace, Dataverse, EPrints |
+| Digital preservation | Archivematica, RODA Community, Asalae, Maarch RM |
+| Repository backends/frameworks | Fedora Repository, Samvera Hyrax, Islandora |
+| DMS/ECM | Mayan EDMS, Maarch Courrier, Docspell, Alfresco Community, SeedDMS, Paperless-ngx, Papermerge, OpenKM Community, Teedy, LogicalDOC Community |
+| DAM/collections/description | ResourceSpace, ArchivesSpace, AtoM, CollectiveAccess, Omeka S |
+| File sync and share | Nextcloud Server, Seafile Community |
+| Digitization workflow | Kitodo.Production, Goobi workflow |
+
+The complete catalog is in [the generated solution reference](docs/reference/solutions-catalog.md), with one page per solution under [`docs/solutions/`](docs/solutions/).
+The generated [product support matrix](docs/reference/support-matrix.md) and [format-family matrix](docs/reference/format-matrix.md) provide consolidated views.
+
+## Runtime and topology support
+
+| Runtime | Standalone | 2 nodes | 3 nodes | 3+ nodes |
+| --- | --- | --- | --- | --- |
+| Raw/native | supported | conditional | conditional | conditional |
+| Docker Compose | supported | conditional | conditional | conditional |
+| K3s | supported | not-recommended | supported | supported |
+| RKE2 | supported | not-recommended | supported | supported |
+| Pacemaker/Corosync + STONITH | supported | supported-with-stonith | supported | supported |
+| Podman Quadlet | supported | conditional | conditional | conditional |
+| k0s | supported | not-recommended | supported | supported |
+| Docker Swarm | supported | not-recommended | supported | supported |
+| MicroK8s | supported | not-recommended | supported | supported |
+
+Two-node Pacemaker requires a real fencing design. Two-node embedded-etcd or two-manager consensus is intentionally not treated as resilient HA. See [the runtime matrix](docs/deployment/runtime-matrix.md) and [the two-node design](docs/deployment/two-node.md).
+
+## Linux baseline
+
+ArchiveWeaver catalogs and checks these host families:
+
+| Debian family | Enterprise Linux family |
+| --- | --- |
+| Ubuntu 22.04 LTS | Rocky Linux 8 |
+| Ubuntu 24.04 LTS (preferred) | Rocky Linux 9 (preferred) |
+| Ubuntu 26.04 LTS (forward validation) | Rocky Linux 10 (forward validation) |
+| Debian 12 | RHEL 8 / AlmaLinux 8 (legacy conditional) |
+| Debian 13 | RHEL 9 / AlmaLinux 9 |
+|  | RHEL 10 / AlmaLinux 10 (forward validation) |
+
+This is an ArchiveWeaver host baseline, not a blanket upstream application certification. Read [the OS matrix](docs/deployment/os-matrix.md) before pinning a product release.
+
+## Architecture documentation
+
+- [HLD](docs/architecture/HLD.md) — logical architecture, HA patterns, data protection, security, and failure domains;
+- [LLD](docs/architecture/LLD.md) — catalog contract, CLI behavior, renderer details, repair safety, ports, and evidence bundles;
+- [ADRs](docs/architecture/DECISIONS.md) — why the core is catalog-driven, why two-node consensus is blocked, and why envelopes are used;
+- [Standalone](docs/deployment/standalone.md), [two-node](docs/deployment/two-node.md), [three-node](docs/deployment/three-node.md), and [three-plus-node](docs/deployment/three-plus-node.md) designs;
+- [Kubernetes-family deployment](docs/deployment/kubernetes.md), [containers](docs/deployment/containers.md), and [Pacemaker](docs/deployment/pacemaker.md);
+- [Checking](docs/operations/checking.md), [repair](docs/operations/repair.md), [backup/restore](docs/operations/backup-restore.md), and [security](docs/operations/security.md);
+- [full format catalog](docs/reference/formats.md), [format-family matrix](docs/reference/format-matrix.md), [product support matrix](docs/reference/support-matrix.md), and [upstream source links](docs/reference/upstream-sources.md).
+
+## Format support model
+
+The catalog includes documents, spreadsheets, presentations, images, audio, video, e-books, archives, e-mail exports, web/markup, scientific/geospatial, structured data, fonts, and preservation packages. It includes a broad extension and MIME inventory in [formats.md](docs/reference/formats.md).
+
+An extension is not a preview/OCR/preservation guarantee. ArchiveWeaver separates:
+
+1. intake and upload;
+2. bitstream storage;
+3. MIME/magic-byte identification;
+4. virus scanning;
+5. OCR and text extraction;
+6. derivative/preview generation;
+7. indexing and search;
+8. preservation normalization and fixity.
+
+The exact release, plugin, converter, and storage policy must be tested with representative fixtures.
+
+## Safety model
+
+- plans are read-only;
+- checks are read-only;
+- repair requires `--apply`;
+- Pacemaker repair additionally requires `--allow-fencing-actions`;
+- no built-in action runs `down -v`, deletes PVCs, purges application data, disables TLS verification, bypasses authentication, or disables STONITH;
+- generated envelopes require an explicitly pinned image and do not invent database/search/object-storage versions;
+- secrets and private documents are never generated or committed.
+
+## Development
+
+```bash
+make generate
+make validate
+make test
+make smoke
+```
+
+To add or update a product, edit `src/archiveweaver/catalog_source.py`, add upstream references and representative health/dependency facts, regenerate the catalog, add/adjust tests, and document any conditional HA behavior.
+
+## Upstream attribution
+
+ArchiveWeaver is an independent operations project. The listed products remain owned and licensed by their respective communities and organizations. Use each upstream project's current release documentation and license notices. See [upstream-sources.md](docs/reference/upstream-sources.md).
+
+## License
+
+ArchiveWeaver is released under the [Zero-Clause BSD (0BSD)](LICENSE). Upstream product licenses remain applicable to the products, images, plugins, and dependencies referenced by a deployment.
