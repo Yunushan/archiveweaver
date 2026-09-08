@@ -1,0 +1,32 @@
+# ArchiveWeaver Docker Swarm envelope.
+# Replace the image and volume driver with approved production values.
+version: "3.9"
+services:
+  app:
+    image: "${ARCHIVEWEAVER_SOLUTION_IMAGE:?set an approved pinned image reference}"
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    environment:
+      ARCHIVEWEAVER_SOLUTION_ID: "${ARCHIVEWEAVER_SOLUTION_ID:?set the catalog solution id}"
+    volumes:
+      - archiveweaver-data:/var/lib/archiveweaver/solution
+    deploy:
+      replicas: 3
+      update_config:
+        order: start-first
+        parallelism: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        max_replicas_per_node: 1
+
+volumes:
+  archiveweaver-data:
+    driver: local
+
+# A local volume is node-local. Use a tested distributed driver or externalize
+# the product state before using more than one replica.
+

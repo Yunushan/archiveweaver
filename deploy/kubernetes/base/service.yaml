@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: archiveweaver-app
+  labels:
+    app.kubernetes.io/name: archiveweaver-app
+    app.kubernetes.io/managed-by: archiveweaver
+spec:
+  selector:
+    app.kubernetes.io/name: archiveweaver-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP

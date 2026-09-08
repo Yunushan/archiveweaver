@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: archiveweaver-app
+  labels:
+    app.kubernetes.io/name: archiveweaver-app
+    app.kubernetes.io/managed-by: archiveweaver
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: archiveweaver-app

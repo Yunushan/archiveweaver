@@ -1,0 +1,23 @@
+# ArchiveWeaver single-host deployment envelope.
+# Set ARCHIVEWEAVER_SOLUTION_IMAGE to an approved immutable image reference.
+services:
+  app:
+    image: "${ARCHIVEWEAVER_SOLUTION_IMAGE:?set an approved pinned image reference}"
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${ARCHIVEWEAVER_BIND_IP:-127.0.0.1}:${ARCHIVEWEAVER_PORT:-8080}:8080"
+    environment:
+      ARCHIVEWEAVER_SOLUTION_ID: "${ARCHIVEWEAVER_SOLUTION_ID:?set the catalog solution id}"
+    volumes:
+      - archiveweaver-data:/var/lib/archiveweaver/solution
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  archiveweaver-data:
+
+# Add the product's official DB/search/queue/object-storage services separately.
+

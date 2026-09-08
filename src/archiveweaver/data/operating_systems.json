@@ -1,0 +1,86 @@
+[
+  {
+    "id": "ubuntu-22.04",
+    "name": "Ubuntu 22.04 LTS",
+    "family": "debian",
+    "tier": "validated-base"
+  },
+  {
+    "id": "ubuntu-24.04",
+    "name": "Ubuntu 24.04 LTS",
+    "family": "debian",
+    "tier": "preferred"
+  },
+  {
+    "id": "ubuntu-26.04",
+    "name": "Ubuntu 26.04 LTS",
+    "family": "debian",
+    "tier": "forward-validate"
+  },
+  {
+    "id": "rocky-8",
+    "name": "Rocky Linux 8",
+    "family": "el",
+    "tier": "legacy-conditional"
+  },
+  {
+    "id": "rocky-9",
+    "name": "Rocky Linux 9",
+    "family": "el",
+    "tier": "preferred"
+  },
+  {
+    "id": "rocky-10",
+    "name": "Rocky Linux 10",
+    "family": "el",
+    "tier": "forward-validate"
+  },
+  {
+    "id": "rhel-8",
+    "name": "Red Hat Enterprise Linux 8",
+    "family": "el",
+    "tier": "legacy-conditional"
+  },
+  {
+    "id": "rhel-9",
+    "name": "Red Hat Enterprise Linux 9",
+    "family": "el",
+    "tier": "validated-base"
+  },
+  {
+    "id": "rhel-10",
+    "name": "Red Hat Enterprise Linux 10",
+    "family": "el",
+    "tier": "forward-validate"
+  },
+  {
+    "id": "alma-8",
+    "name": "AlmaLinux 8",
+    "family": "el",
+    "tier": "legacy-conditional"
+  },
+  {
+    "id": "alma-9",
+    "name": "AlmaLinux 9",
+    "family": "el",
+    "tier": "validated-base"
+  },
+  {
+    "id": "alma-10",
+    "name": "AlmaLinux 10",
+    "family": "el",
+    "tier": "forward-validate"
+  },
+  {
+    "id": "debian-12",
+    "name": "Debian 12",
+    "family": "debian",
+    "tier": "validated-base"
+  },
+  {
+    "id": "debian-13",
+    "name": "Debian 13",
+    "family": "debian",
+    "tier": "validated-base"
+  }
+]

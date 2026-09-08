@@ -1,0 +1,30 @@
+# Example only. Replace node names, ring addresses, crypto material, and
+# transport settings with the version-specific Corosync configuration.
+totem {
+    version: 2
+    cluster_name: archiveweaver
+    secauth: on
+    crypto_hash: sha256
+    crypto_cipher: aes256
+    transport: knet
+}
+
+nodelist {
+    node {
+        ring0_addr: archive-node-a
+        name: archive-node-a
+        nodeid: 1
+    }
+    node {
+        ring0_addr: archive-node-b
+        name: archive-node-b
+        nodeid: 2
+    }
+}
+
+quorum {
+    provider: corosync_votequorum
+    # For two-node production clusters, use a qdevice/witness or an explicitly
+    # reviewed two-node policy. Never disable fencing to bypass a quorum issue.
+}
+

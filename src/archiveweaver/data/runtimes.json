@@ -1,0 +1,170 @@
+[
+  {
+    "id": "raw",
+    "name": "Raw / native installation",
+    "kind": "native",
+    "topology": {
+      "1": "supported",
+      "2": "conditional",
+      "3": "conditional",
+      "3+": "conditional"
+    },
+    "prerequisites": [
+      "systemd",
+      "package manager",
+      "TLS termination",
+      "external backup"
+    ],
+    "notes": "Use the upstream installation method. HA depends on whether the product supports clustering and on externalizing state."
+  },
+  {
+    "id": "docker",
+    "name": "Docker Compose",
+    "kind": "container",
+    "topology": {
+      "1": "supported",
+      "2": "conditional",
+      "3": "conditional",
+      "3+": "conditional"
+    },
+    "prerequisites": [
+      "Docker Engine",
+      "Docker Compose v2",
+      "persistent volumes",
+      "external backup"
+    ],
+    "notes": "Compose is a packaging format, not a multi-host consensus system. Use Swarm or Kubernetes for multi-host scheduling."
+  },
+  {
+    "id": "k3s",
+    "name": "K3s",
+    "kind": "kubernetes",
+    "topology": {
+      "1": "supported",
+      "2": "not-recommended",
+      "3": "supported",
+      "3+": "supported"
+    },
+    "prerequisites": [
+      "3 or 5 server nodes for embedded-etcd HA",
+      "CNI",
+      "Ingress",
+      "CSI-backed storage",
+      "external object storage"
+    ],
+    "notes": "Two embedded-etcd servers do not provide a resilient quorum. Three or more server nodes are the baseline."
+  },
+  {
+    "id": "rke2",
+    "name": "RKE2",
+    "kind": "kubernetes",
+    "topology": {
+      "1": "supported",
+      "2": "not-recommended",
+      "3": "supported",
+      "3+": "supported"
+    },
+    "prerequisites": [
+      "3 server nodes for embedded-etcd HA",
+      "CNI",
+      "Ingress",
+      "CSI-backed storage",
+      "external object storage"
+    ],
+    "notes": "RKE2 server nodes are schedulable by default; separate agent nodes when workload isolation is required."
+  },
+  {
+    "id": "pacemaker",
+    "name": "Pacemaker / Corosync + STONITH",
+    "kind": "cluster-manager",
+    "topology": {
+      "1": "supported",
+      "2": "supported-with-stonith",
+      "3": "supported",
+      "3+": "supported"
+    },
+    "prerequisites": [
+      "Corosync",
+      "Pacemaker",
+      "pcs",
+      "tested STONITH device",
+      "quorum or qdevice",
+      "shared or replicated storage"
+    ],
+    "notes": "Best for active/passive systemd services and VIPs. Do not use it to fake active/active application clustering."
+  },
+  {
+    "id": "podman-quadlet",
+    "name": "Podman Quadlet",
+    "kind": "container",
+    "topology": {
+      "1": "supported",
+      "2": "conditional",
+      "3": "conditional",
+      "3+": "conditional"
+    },
+    "prerequisites": [
+      "Podman 4.4+",
+      "systemd",
+      "persistent volumes",
+      "external backup"
+    ],
+    "notes": "Quadlet is a systemd-integrated single-host lifecycle mechanism. Pair it with Pacemaker for active/passive failover."
+  },
+  {
+    "id": "k0s",
+    "name": "k0s",
+    "kind": "kubernetes",
+    "topology": {
+      "1": "supported",
+      "2": "not-recommended",
+      "3": "supported",
+      "3+": "supported"
+    },
+    "prerequisites": [
+      "3 or 5 controller nodes for etcd HA",
+      "CNI",
+      "Ingress",
+      "CSI-backed storage",
+      "external object storage"
+    ],
+    "notes": "Use controllers with etcd for HA; use workers for workload isolation and a control-plane load balancer."
+  },
+  {
+    "id": "docker-swarm",
+    "name": "Docker Swarm",
+    "kind": "container-orchestrator",
+    "topology": {
+      "1": "supported",
+      "2": "not-recommended",
+      "3": "supported",
+      "3+": "supported"
+    },
+    "prerequisites": [
+      "3 or 5 manager nodes for Raft quorum",
+      "overlay network",
+      "shared or replicated storage",
+      "external backup"
+    ],
+    "notes": "Run an odd number of managers. Two managers cannot tolerate a manager failure while preserving quorum."
+  },
+  {
+    "id": "microk8s",
+    "name": "MicroK8s",
+    "kind": "kubernetes",
+    "topology": {
+      "1": "supported",
+      "2": "not-recommended",
+      "3": "supported",
+      "3+": "supported"
+    },
+    "prerequisites": [
+      "3 or 5 control-plane nodes for datastore HA",
+      "CNI",
+      "Ingress",
+      "CSI-backed storage",
+      "external object storage"
+    ],
+    "notes": "The datastore must itself be highly available; use three or more control-plane nodes for production."
+  }
+]

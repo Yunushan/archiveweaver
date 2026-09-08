@@ -1,0 +1,2459 @@
+{
+  "schema_version": 1,
+  "generated_by": "scripts/generate_catalog.py",
+  "modes": [
+    "raw",
+    "docker",
+    "k3s",
+    "rke2",
+    "pacemaker",
+    "podman-quadlet",
+    "k0s",
+    "docker-swarm",
+    "microk8s"
+  ],
+  "operating_systems": [
+    {
+      "id": "ubuntu-22.04",
+      "name": "Ubuntu 22.04 LTS",
+      "family": "debian",
+      "tier": "validated-base"
+    },
+    {
+      "id": "ubuntu-24.04",
+      "name": "Ubuntu 24.04 LTS",
+      "family": "debian",
+      "tier": "preferred"
+    },
+    {
+      "id": "ubuntu-26.04",
+      "name": "Ubuntu 26.04 LTS",
+      "family": "debian",
+      "tier": "forward-validate"
+    },
+    {
+      "id": "rocky-8",
+      "name": "Rocky Linux 8",
+      "family": "el",
+      "tier": "legacy-conditional"
+    },
+    {
+      "id": "rocky-9",
+      "name": "Rocky Linux 9",
+      "family": "el",
+      "tier": "preferred"
+    },
+    {
+      "id": "rocky-10",
+      "name": "Rocky Linux 10",
+      "family": "el",
+      "tier": "forward-validate"
+    },
+    {
+      "id": "rhel-8",
+      "name": "Red Hat Enterprise Linux 8",
+      "family": "el",
+      "tier": "legacy-conditional"
+    },
+    {
+      "id": "rhel-9",
+      "name": "Red Hat Enterprise Linux 9",
+      "family": "el",
+      "tier": "validated-base"
+    },
+    {
+      "id": "rhel-10",
+      "name": "Red Hat Enterprise Linux 10",
+      "family": "el",
+      "tier": "forward-validate"
+    },
+    {
+      "id": "alma-8",
+      "name": "AlmaLinux 8",
+      "family": "el",
+      "tier": "legacy-conditional"
+    },
+    {
+      "id": "alma-9",
+      "name": "AlmaLinux 9",
+      "family": "el",
+      "tier": "validated-base"
+    },
+    {
+      "id": "alma-10",
+      "name": "AlmaLinux 10",
+      "family": "el",
+      "tier": "forward-validate"
+    },
+    {
+      "id": "debian-12",
+      "name": "Debian 12",
+      "family": "debian",
+      "tier": "validated-base"
+    },
+    {
+      "id": "debian-13",
+      "name": "Debian 13",
+      "family": "debian",
+      "tier": "validated-base"
+    }
+  ],
+  "runtimes": [
+    {
+      "id": "raw",
+      "name": "Raw / native installation",
+      "kind": "native",
+      "topology": {
+        "1": "supported",
+        "2": "conditional",
+        "3": "conditional",
+        "3+": "conditional"
+      },
+      "prerequisites": [
+        "systemd",
+        "package manager",
+        "TLS termination",
+        "external backup"
+      ],
+      "notes": "Use the upstream installation method. HA depends on whether the product supports clustering and on externalizing state."
+    },
+    {
+      "id": "docker",
+      "name": "Docker Compose",
+      "kind": "container",
+      "topology": {
+        "1": "supported",
+        "2": "conditional",
+        "3": "conditional",
+        "3+": "conditional"
+      },
+      "prerequisites": [
+        "Docker Engine",
+        "Docker Compose v2",
+        "persistent volumes",
+        "external backup"
+      ],
+      "notes": "Compose is a packaging format, not a multi-host consensus system. Use Swarm or Kubernetes for multi-host scheduling."
+    },
+    {
+      "id": "k3s",
+      "name": "K3s",
+      "kind": "kubernetes",
+      "topology": {
+        "1": "supported",
+        "2": "not-recommended",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "3 or 5 server nodes for embedded-etcd HA",
+        "CNI",
+        "Ingress",
+        "CSI-backed storage",
+        "external object storage"
+      ],
+      "notes": "Two embedded-etcd servers do not provide a resilient quorum. Three or more server nodes are the baseline."
+    },
+    {
+      "id": "rke2",
+      "name": "RKE2",
+      "kind": "kubernetes",
+      "topology": {
+        "1": "supported",
+        "2": "not-recommended",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "3 server nodes for embedded-etcd HA",
+        "CNI",
+        "Ingress",
+        "CSI-backed storage",
+        "external object storage"
+      ],
+      "notes": "RKE2 server nodes are schedulable by default; separate agent nodes when workload isolation is required."
+    },
+    {
+      "id": "pacemaker",
+      "name": "Pacemaker / Corosync + STONITH",
+      "kind": "cluster-manager",
+      "topology": {
+        "1": "supported",
+        "2": "supported-with-stonith",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "Corosync",
+        "Pacemaker",
+        "pcs",
+        "tested STONITH device",
+        "quorum or qdevice",
+        "shared or replicated storage"
+      ],
+      "notes": "Best for active/passive systemd services and VIPs. Do not use it to fake active/active application clustering."
+    },
+    {
+      "id": "podman-quadlet",
+      "name": "Podman Quadlet",
+      "kind": "container",
+      "topology": {
+        "1": "supported",
+        "2": "conditional",
+        "3": "conditional",
+        "3+": "conditional"
+      },
+      "prerequisites": [
+        "Podman 4.4+",
+        "systemd",
+        "persistent volumes",
+        "external backup"
+      ],
+      "notes": "Quadlet is a systemd-integrated single-host lifecycle mechanism. Pair it with Pacemaker for active/passive failover."
+    },
+    {
+      "id": "k0s",
+      "name": "k0s",
+      "kind": "kubernetes",
+      "topology": {
+        "1": "supported",
+        "2": "not-recommended",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "3 or 5 controller nodes for etcd HA",
+        "CNI",
+        "Ingress",
+        "CSI-backed storage",
+        "external object storage"
+      ],
+      "notes": "Use controllers with etcd for HA; use workers for workload isolation and a control-plane load balancer."
+    },
+    {
+      "id": "docker-swarm",
+      "name": "Docker Swarm",
+      "kind": "container-orchestrator",
+      "topology": {
+        "1": "supported",
+        "2": "not-recommended",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "3 or 5 manager nodes for Raft quorum",
+        "overlay network",
+        "shared or replicated storage",
+        "external backup"
+      ],
+      "notes": "Run an odd number of managers. Two managers cannot tolerate a manager failure while preserving quorum."
+    },
+    {
+      "id": "microk8s",
+      "name": "MicroK8s",
+      "kind": "kubernetes",
+      "topology": {
+        "1": "supported",
+        "2": "not-recommended",
+        "3": "supported",
+        "3+": "supported"
+      },
+      "prerequisites": [
+        "3 or 5 control-plane nodes for datastore HA",
+        "CNI",
+        "Ingress",
+        "CSI-backed storage",
+        "external object storage"
+      ],
+      "notes": "The datastore must itself be highly available; use three or more control-plane nodes for production."
+    }
+  ],
+  "formats": {
+    "documents": {
+      "label": "Documents",
+      "extensions": "pdf,doc,docx,odt,ott,rtf,txt,md,tex,wpd,pages,xps,oxps",
+      "mime_examples": "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown"
+    },
+    "spreadsheets": {
+      "label": "Spreadsheets and tabular data",
+      "extensions": "xls,xlsx,ods,ots,csv,tsv,xml,json,parquet,feather,sav,dta",
+      "mime_examples": "text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"
+    },
+    "presentations": {
+      "label": "Presentations",
+      "extensions": "ppt,pptx,odp,otp,key",
+      "mime_examples": "application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    },
+    "images": {
+      "label": "Images and raster graphics",
+      "extensions": "jpg,jpeg,jpe,png,gif,bmp,tif,tiff,jp2,j2k,jpf,jpx,jpm,mj2,webp,avif,heic,heif,svg,eps,psd,ico,raw,dng,cr2,cr3,nef,nrw,arw,orf,rw2,raf,pef,sr2,3fr,iiq",
+      "mime_examples": "image/jpeg,image/png,image/tiff,image/jp2,image/svg+xml,image/webp,image/heic"
+    },
+    "audio": {
+      "label": "Audio",
+      "extensions": "wav,mp3,flac,ogg,oga,opus,m4a,aac,wma,aiff,aif,alac,ape,amr,midi,mid",
+      "mime_examples": "audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4,audio/aac"
+    },
+    "video": {
+      "label": "Video",
+      "extensions": "mp4,m4v,mov,avi,mkv,webm,ogv,mpg,mpeg,mpe,wmv,flv,asf,3gp,3g2,mxf,mts,m2ts,ts,vob",
+      "mime_examples": "video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm"
+    },
+    "ebooks": {
+      "label": "E-books and page-description formats",
+      "extensions": "epub,epub3,mobi,azw,azw3,fb2,djvu,cbr,cbz",
+      "mime_examples": "application/epub+zip,application/x-mobipocket-ebook,image/vnd.djvu"
+    },
+    "archives": {
+      "label": "Archives and disk/container files",
+      "extensions": "zip,7z,rar,tar,gz,tgz,bz2,xz,z,br,iso,ova,ovf,vhd,vhdx,vmdk",
+      "mime_examples": "application/zip,application/x-7z-compressed,application/gzip,application/x-tar"
+    },
+    "email": {
+      "label": "E-mail and messaging exports",
+      "extensions": "eml,msg,mbox,pst,ost,emlx,ics,vcf",
+      "mime_examples": "message/rfc822,application/vnd.ms-outlook,application/mbox,text/calendar,text/vcard"
+    },
+    "web": {
+      "label": "Web and markup",
+      "extensions": "html,htm,xhtml,css,js,ts,jsx,tsx,wasm,xml,json,yaml,yml,ttl,rdf,n3,nq,trig,nt",
+      "mime_examples": "text/html,application/xhtml+xml,application/xml,application/json,text/turtle"
+    },
+    "scientific": {
+      "label": "Scientific, research and geospatial data",
+      "extensions": "hdf,hdf5,netcdf,nc,mat,fits,fits.gz,fastq,fasta,fa,geojson,gpkg,kml,kmz,shp,shx,dbf,prj,las,laz,dcm,dicom",
+      "mime_examples": "application/x-hdf,application/netcdf,application/geo+json,application/dicom"
+    },
+    "structured": {
+      "label": "Databases, logs and machine-readable exports",
+      "extensions": "sql,sqlite,sqlite3,db,db3,log,ndjson,txt,bin,dat",
+      "mime_examples": "application/sql,application/x-sqlite3,text/plain,application/octet-stream"
+    },
+    "fonts": {
+      "label": "Fonts",
+      "extensions": "ttf,otf,woff,woff2",
+      "mime_examples": "font/ttf,font/otf,font/woff,font/woff2"
+    },
+    "preservation": {
+      "label": "Preservation packages and fixity sidecars",
+      "extensions": "bagit,bag,md5,sha1,sha256,sha512,xml,mets,premis,sip,aip,dip,war,jar",
+      "mime_examples": "application/xml,application/war,application/java-archive,application/octet-stream"
+    }
+  },
+  "solutions": [
+    {
+      "id": "invenio-rdm",
+      "name": "InvenioRDM",
+      "category": "research-data-management",
+      "upstream_repo": "https://github.com/inveniosoftware/invenio-rdm",
+      "source_repo": "https://github.com/inveniosoftware/invenio-rdm",
+      "official_docs": "https://inveniordm.docs.cern.ch/install/",
+      "homepage": "https://inveniosoftware.org/products/rdm/",
+      "license": "MIT",
+      "architecture_components": [
+        "Invenio application",
+        "PostgreSQL",
+        "OpenSearch/Elasticsearch",
+        "Redis",
+        "RabbitMQ",
+        "S3-compatible object storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "scientific",
+        "structured"
+      ],
+      "dependencies": [
+        "Python",
+        "PostgreSQL",
+        "Redis",
+        "OpenSearch/Elasticsearch",
+        "RabbitMQ",
+        "S3"
+      ],
+      "health": {
+        "service_aliases": [
+          "invenio",
+          "nginx",
+          "gunicorn"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Treat the application as a distributed service; keep object storage and database outside the web process."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "dspace",
+      "name": "DSpace",
+      "category": "institutional-repository",
+      "upstream_repo": "https://github.com/DSpace/DSpace",
+      "source_repo": "https://github.com/DSpace/DSpace",
+      "official_docs": "https://wiki.lyrasis.org/display/DSDOC10x/Installing+DSpace",
+      "homepage": "https://dspace.org/",
+      "license": "BSD-3-Clause",
+      "architecture_components": [
+        "DSpace backend",
+        "DSpace Angular UI",
+        "PostgreSQL",
+        "Solr",
+        "Tomcat",
+        "S3-compatible storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "scientific",
+        "structured"
+      ],
+      "dependencies": [
+        "Java",
+        "Maven",
+        "Ant",
+        "PostgreSQL",
+        "Solr",
+        "Tomcat"
+      ],
+      "health": {
+        "service_aliases": [
+          "dspace",
+          "tomcat",
+          "solr"
+        ],
+        "http_paths": [
+          "/server/api",
+          "/home"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [],
+      "image_hint": null
+    },
+    {
+      "id": "archivematica",
+      "name": "Archivematica",
+      "category": "digital-preservation",
+      "upstream_repo": "https://github.com/artefactual/archivematica",
+      "source_repo": "https://github.com/artefactual/archivematica",
+      "official_docs": "https://www.archivematica.org/en/docs/archivematica-latest/admin-manual/installation-setup/",
+      "homepage": "https://www.archivematica.org/",
+      "license": "AGPL-3.0",
+      "architecture_components": [
+        "Archivematica dashboard",
+        "Storage Service",
+        "MCP server",
+        "MCP client",
+        "PostgreSQL",
+        "Elasticsearch",
+        "RabbitMQ",
+        "Gearman",
+        "Bag/S3 storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "email",
+        "web",
+        "scientific",
+        "preservation"
+      ],
+      "dependencies": [
+        "Python",
+        "PostgreSQL",
+        "Elasticsearch",
+        "RabbitMQ",
+        "Gearman",
+        "FPR tools",
+        "S3/NFS"
+      ],
+      "health": {
+        "service_aliases": [
+          "archivematica",
+          "archivematica-storage-service",
+          "nginx"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Preservation workflows are multi-service; a single container health check is not enough."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "dataverse",
+      "name": "Dataverse",
+      "category": "research-data-management",
+      "upstream_repo": "https://github.com/IQSS/dataverse",
+      "source_repo": "https://github.com/IQSS/dataverse",
+      "official_docs": "https://guides.dataverse.org/en/latest/installation/",
+      "homepage": "https://dataverse.org/",
+      "license": "Apache-2.0",
+      "architecture_components": [
+        "Dataverse web application",
+        "Payara",
+        "PostgreSQL",
+        "Solr",
+        "S3/file storage",
+        "SMTP"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "scientific",
+        "structured"
+      ],
+      "dependencies": [
+        "Java",
+        "Payara",
+        "PostgreSQL",
+        "Solr",
+        "S3",
+        "SMTP"
+      ],
+      "health": {
+        "service_aliases": [
+          "dataverse",
+          "payara",
+          "solr"
+        ],
+        "http_paths": [
+          "/api/info/version"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [],
+      "image_hint": null
+    },
+    {
+      "id": "islandora",
+      "name": "Islandora",
+      "category": "digital-asset-management",
+      "upstream_repo": "https://github.com/Islandora/islandora",
+      "source_repo": "https://github.com/Islandora/islandora",
+      "official_docs": "https://islandora.github.io/documentation/installation/",
+      "homepage": "https://islandora.ca/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Drupal",
+        "Islandora modules",
+        "Fedora",
+        "Solr",
+        "Alpaca/Media",
+        "Redis",
+        "database",
+        "object storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "web",
+        "scientific",
+        "preservation"
+      ],
+      "dependencies": [
+        "PHP",
+        "Drupal",
+        "Fedora",
+        "Solr",
+        "Redis",
+        "MariaDB/PostgreSQL"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "fedora",
+          "solr"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Islandora is a framework/distribution; deployment must choose a Drupal/Fedora composition such as the official documentation path."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "mayan-edms",
+      "name": "Mayan EDMS",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/mayan-edms/Mayan-EDMS",
+      "source_repo": "https://gitlab.com/mayan-edms/mayan-edms",
+      "official_docs": "https://docs.mayan-edms.com/parts/installation.html",
+      "homepage": "https://www.mayan-edms.com/",
+      "license": "Apache-2.0",
+      "architecture_components": [
+        "Django web",
+        "Celery workers",
+        "PostgreSQL",
+        "Redis",
+        "Elasticsearch/OpenSearch",
+        "S3/file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "Python",
+        "Django",
+        "PostgreSQL",
+        "Redis",
+        "Celery",
+        "OCR tools"
+      ],
+      "health": {
+        "service_aliases": [
+          "mayan",
+          "celery",
+          "redis",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [],
+      "image_hint": "mayanedms/mayanedms"
+    },
+    {
+      "id": "fedora-repository",
+      "name": "Fedora Repository",
+      "category": "repository-backend",
+      "upstream_repo": "https://github.com/fcrepo/fcrepo",
+      "source_repo": "https://github.com/fcrepo/fcrepo",
+      "official_docs": "https://wiki.lyrasis.org/display/FEDORA6x/Installation+and+Configuration",
+      "homepage": "https://fedorarepository.org/",
+      "license": "Apache-2.0",
+      "architecture_components": [
+        "Fedora REST API",
+        "Spring Boot",
+        "Java",
+        "PostgreSQL/JDBC",
+        "binary storage",
+        "messaging/integration"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "web",
+        "scientific",
+        "structured",
+        "preservation"
+      ],
+      "dependencies": [
+        "Java",
+        "Maven",
+        "Servlet/container",
+        "database",
+        "object/filesystem storage"
+      ],
+      "health": {
+        "service_aliases": [
+          "fedora",
+          "tomcat",
+          "java"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Fedora is a repository backend, not a complete public UI; pair it with a client such as Islandora or Hyrax."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "samvera-hyrax",
+      "name": "Samvera Hyrax",
+      "category": "repository-application-framework",
+      "upstream_repo": "https://github.com/samvera/hyrax",
+      "source_repo": "https://github.com/samvera/hyrax",
+      "official_docs": "https://samvera.org/get-started/getting-started",
+      "homepage": "https://hyrax.samvera.org/",
+      "license": "Apache-2.0",
+      "architecture_components": [
+        "Rails host application",
+        "Hyrax engine",
+        "Solr",
+        "Fedora/ActiveFedora",
+        "Redis",
+        "PostgreSQL",
+        "S3 storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "scientific",
+        "structured",
+        "preservation"
+      ],
+      "dependencies": [
+        "Ruby",
+        "Rails",
+        "Solr",
+        "PostgreSQL",
+        "Redis",
+        "Fedora or ActiveFedora",
+        "S3"
+      ],
+      "health": {
+        "service_aliases": [
+          "hyrax",
+          "puma",
+          "solr",
+          "redis"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 3000,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Hyrax is a Rails engine and must be mounted in a host application; it is not a standalone web app."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "roda-community",
+      "name": "RODA Community",
+      "category": "digital-preservation",
+      "upstream_repo": "https://github.com/keeps/roda",
+      "source_repo": "https://github.com/keeps/roda",
+      "official_docs": "https://www.roda-community.org/documentation/",
+      "homepage": "https://www.roda-community.org/",
+      "license": "LGPL-3.0",
+      "architecture_components": [
+        "RODA web application",
+        "RODA-in",
+        "Java",
+        "PostgreSQL",
+        "Solr",
+        "object storage",
+        "preservation plugins"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "email",
+        "web",
+        "scientific",
+        "preservation"
+      ],
+      "dependencies": [
+        "Java",
+        "Maven",
+        "PostgreSQL",
+        "Solr",
+        "S3/filesystem",
+        "JDK tools"
+      ],
+      "health": {
+        "service_aliases": [
+          "roda",
+          "tomcat",
+          "solr"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The upstream local installation guide is single-node and testing-oriented; design production storage and database separately."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "maarch-rm",
+      "name": "Maarch RM",
+      "category": "electronic-records-management",
+      "upstream_repo": "https://labs.maarch.org/maarch/maarchRM",
+      "source_repo": "https://labs.maarch.org/maarch/maarchRM",
+      "official_docs": "https://docs.maarch.org/gitbook/html/maarchRM/",
+      "homepage": "https://maarch.com/maarch-rm/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Maarch RM",
+        "PHP web",
+        "PostgreSQL",
+        "Apache",
+        "Docker image",
+        "archive storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "email",
+        "archives",
+        "preservation"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache",
+        "PostgreSQL",
+        "Java",
+        "ImageMagick",
+        "Ghostscript",
+        "P7Zip"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The official project is hosted on Maarch Labs rather than GitHub; use the linked documentation and image registry."
+      ],
+      "image_hint": "maarch/maarchrm"
+    },
+    {
+      "id": "asalae",
+      "name": "Asalae",
+      "category": "digital-preservation",
+      "upstream_repo": "https://gitlab.adullact.net/Libriciel/archivage/asalae",
+      "source_repo": "https://gitlab.adullact.net/Libriciel/archivage/asalae",
+      "official_docs": "https://www.asalae.fr/",
+      "homepage": "https://www.asalae.fr/",
+      "license": "AGPL-3.0",
+      "architecture_components": [
+        "Asalae web",
+        "worker/queue",
+        "PostgreSQL",
+        "Elasticsearch",
+        "S3/filesystem storage",
+        "Docker Compose"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "email",
+        "web",
+        "scientific",
+        "preservation"
+      ],
+      "dependencies": [
+        "PHP/Python",
+        "PostgreSQL",
+        "Elasticsearch",
+        "Redis or queue",
+        "S3/filesystem"
+      ],
+      "health": {
+        "service_aliases": [
+          "asalae",
+          "apache2",
+          "nginx",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The official source and Compose assets are hosted on the ADULLACT GitLab instance."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "resourcespace",
+      "name": "ResourceSpace",
+      "category": "digital-asset-management",
+      "upstream_repo": "https://github.com/resourcespace/resourcespace",
+      "source_repo": "https://github.com/resourcespace/resourcespace",
+      "official_docs": "https://www.resourcespace.com/knowledge-base/systemadmin/install_overview",
+      "homepage": "https://www.resourcespace.com/",
+      "license": "BSD-3-Clause",
+      "architecture_components": [
+        "PHP web",
+        "MySQL/MariaDB",
+        "ImageMagick",
+        "FFmpeg",
+        "file storage",
+        "optional search/preview services"
+      ],
+      "format_profiles": [
+        "images",
+        "audio",
+        "video",
+        "documents",
+        "archives",
+        "fonts"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache/Nginx",
+        "MySQL/MariaDB",
+        "ImageMagick",
+        "FFmpeg",
+        "ExifTool"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "mariadb",
+          "mysql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Large media uploads require deliberate PHP, web-server, reverse-proxy, and filesystem limits."
+      ],
+      "image_hint": "resourcespace/resourcespace"
+    },
+    {
+      "id": "maarch-courrier",
+      "name": "Maarch Courrier",
+      "category": "mail-management",
+      "upstream_repo": "https://labs.maarch.org/maarch/MaarchCourrier",
+      "source_repo": "https://labs.maarch.org/maarch/MaarchCourrier",
+      "official_docs": "https://docs.maarch.org/",
+      "homepage": "https://maarch.com/maarch-courrier/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Maarch Courrier",
+        "PHP web",
+        "PostgreSQL",
+        "Apache",
+        "mail/notification services",
+        "Docker image"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "email",
+        "archives",
+        "structured"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache",
+        "PostgreSQL",
+        "Java",
+        "ImageMagick",
+        "Ghostscript"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Use the official Maarch Labs source and the current Maarch documentation; older GitHub mirrors are not authoritative."
+      ],
+      "image_hint": "maarch/maarchcourrier"
+    },
+    {
+      "id": "docspell",
+      "name": "Docspell",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/eikek/docspell",
+      "source_repo": "https://github.com/eikek/docspell",
+      "official_docs": "https://docspell.org/docs/",
+      "homepage": "https://docspell.org/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Docspell restserver",
+        "Joex workers",
+        "PostgreSQL",
+        "Solr",
+        "Tika",
+        "OCR tools",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "email",
+        "archives",
+        "structured"
+      ],
+      "dependencies": [
+        "JVM",
+        "PostgreSQL",
+        "Solr",
+        "Tika",
+        "Tesseract",
+        "OCRmyPDF",
+        "S3/filesystem"
+      ],
+      "health": {
+        "service_aliases": [
+          "docspell",
+          "solr",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 7880,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The project provides Docker Compose and Helm paths; the Debian package and Helm chart are better baselines than ad-hoc source builds."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "nextcloud-server",
+      "name": "Nextcloud Server",
+      "category": "file-sync-and-share",
+      "upstream_repo": "https://github.com/nextcloud/server",
+      "source_repo": "https://github.com/nextcloud/server",
+      "official_docs": "https://docs.nextcloud.com/server/latest/admin_manual/installation/",
+      "homepage": "https://nextcloud.com/",
+      "license": "AGPL-3.0",
+      "architecture_components": [
+        "PHP web",
+        "database",
+        "Redis",
+        "background jobs",
+        "object storage",
+        "preview/Office services"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "email",
+        "web",
+        "scientific",
+        "structured",
+        "fonts"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache/Nginx",
+        "MariaDB/PostgreSQL",
+        "Redis",
+        "cron",
+        "TLS"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "php-fpm",
+          "redis",
+          "mariadb",
+          "mysql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Use external database, Redis locking, shared or object-backed data, and a separate preview/Office strategy for HA."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "archivesspace",
+      "name": "ArchivesSpace",
+      "category": "archival-description",
+      "upstream_repo": "https://github.com/archivesspace/archivesspace",
+      "source_repo": "https://github.com/archivesspace/archivesspace",
+      "official_docs": "https://docs.archivesspace.org/administration/getting_started/",
+      "homepage": "https://archivesspace.org/",
+      "license": "EPL-2.0",
+      "architecture_components": [
+        "ArchivesSpace backend",
+        "staff interface",
+        "public interface",
+        "MySQL/MariaDB",
+        "Solr",
+        "JRuby",
+        "Docker"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "structured"
+      ],
+      "dependencies": [
+        "JRuby/Java",
+        "MySQL/MariaDB",
+        "Solr",
+        "Nginx/Apache",
+        "Docker"
+      ],
+      "health": {
+        "service_aliases": [
+          "archivesspace",
+          "solr",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8089,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The current technical documentation recommends Docker for new installations and documents clustering separately."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "atom",
+      "name": "AtoM (Access to Memory)",
+      "category": "archival-description",
+      "upstream_repo": "https://github.com/artefactual/atom",
+      "source_repo": "https://github.com/artefactual/atom",
+      "official_docs": "https://www.accesstomemory.org/docs/",
+      "homepage": "https://www.accesstomemory.org/",
+      "license": "AGPL-3.0",
+      "architecture_components": [
+        "Symfony/PHP web",
+        "MySQL/MariaDB",
+        "Elasticsearch",
+        "Gearman",
+        "Qubit",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "PHP",
+        "Symfony",
+        "MySQL/MariaDB",
+        "Elasticsearch",
+        "Gearman",
+        "ImageMagick",
+        "FFmpeg"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "elasticsearch",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "AtoM has official tarball, source, and Docker guidance; Elasticsearch compatibility must follow the selected AtoM release."
+      ],
+      "image_hint": "artefactual/atom"
+    },
+    {
+      "id": "alfresco-community",
+      "name": "Alfresco Community Edition",
+      "category": "enterprise-content-management",
+      "upstream_repo": "https://github.com/Alfresco/alfresco-community-repo",
+      "source_repo": "https://github.com/Alfresco/alfresco-community-repo",
+      "official_docs": "https://docs.hyland.com/r/Alfresco/Alfresco-Content-Services-Community-Edition/23.3/Alfresco-Content-Services-Community-Edition/Install/Overview",
+      "homepage": "https://www.alfresco.com/",
+      "license": "LGPL-3.0",
+      "architecture_components": [
+        "Repository",
+        "Share/UI",
+        "Search/Solr",
+        "PostgreSQL",
+        "ActiveMQ",
+        "Transform Service",
+        "S3/filesystem storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "email",
+        "web",
+        "structured"
+      ],
+      "dependencies": [
+        "Java",
+        "Tomcat",
+        "PostgreSQL",
+        "Solr",
+        "ActiveMQ",
+        "Transform services",
+        "Docker/Compose"
+      ],
+      "health": {
+        "service_aliases": [
+          "alfresco",
+          "tomcat",
+          "solr",
+          "postgresql",
+          "activemq"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Alfresco Community is a multi-module platform; deploy the repository, search, Share, transforms, database, and messaging as a tested release set."
+      ],
+      "image_hint": "alfresco/alfresco-content-repository-community"
+    },
+    {
+      "id": "eprints",
+      "name": "EPrints",
+      "category": "institutional-repository",
+      "upstream_repo": "https://github.com/eprints/eprints3.4",
+      "source_repo": "https://github.com/eprints/eprints3.4",
+      "official_docs": "https://wiki.eprints.org/w/Installation",
+      "homepage": "https://www.eprints.org/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "EPrints core",
+        "Perl",
+        "Apache",
+        "MySQL/MariaDB",
+        "indexer",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "structured"
+      ],
+      "dependencies": [
+        "Perl",
+        "Apache",
+        "MySQL/MariaDB",
+        "XML/XSLT",
+        "ImageMagick",
+        "Ghostscript"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "mysql",
+          "mariadb",
+          "eprints"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The official wiki distinguishes Debian/Ubuntu and RHEL/Fedora/CentOS installation paths; source Git is the production recommendation."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "kitodo-production",
+      "name": "Kitodo.Production",
+      "category": "digitization-workflow",
+      "upstream_repo": "https://github.com/kitodo/kitodo-production",
+      "source_repo": "https://github.com/kitodo/kitodo-production",
+      "official_docs": "https://www.kitodo.org/en/software/kitodoproduction",
+      "homepage": "https://www.kitodo.org/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Kitodo web app",
+        "Java/Tomcat",
+        "MySQL/MariaDB",
+        "Solr/Elasticsearch",
+        "Goobi/Kitodo scripts",
+        "METS/MODS files"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "archives",
+        "web",
+        "structured",
+        "preservation"
+      ],
+      "dependencies": [
+        "Java",
+        "Tomcat",
+        "MySQL/MariaDB",
+        "Solr/Elasticsearch",
+        "ImageMagick",
+        "OCR tools"
+      ],
+      "health": {
+        "service_aliases": [
+          "kitodo",
+          "tomcat",
+          "mysql",
+          "mariadb",
+          "solr"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Version 4 changes the Java/Tomcat baseline; pin the server version to the selected Kitodo release."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "goobi-workflow",
+      "name": "Goobi workflow",
+      "category": "digitization-workflow",
+      "upstream_repo": "https://github.com/intranda/goobi-workflow",
+      "source_repo": "https://github.com/intranda/goobi-workflow",
+      "official_docs": "https://docs.goobi.io/en/other/vocabulary/general/installation",
+      "homepage": "https://goobi.io/",
+      "license": "GPL-2.0",
+      "architecture_components": [
+        "Goobi workflow",
+        "Java/Tomcat",
+        "MySQL/MariaDB",
+        "Solr",
+        "workflow plugins",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "archives",
+        "web",
+        "structured",
+        "preservation"
+      ],
+      "dependencies": [
+        "Java",
+        "Tomcat",
+        "MySQL/MariaDB",
+        "Solr",
+        "ImageMagick",
+        "OCR tools"
+      ],
+      "health": {
+        "service_aliases": [
+          "goobi",
+          "tomcat",
+          "mysql",
+          "mariadb",
+          "solr"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Goobi uses a plugin ecosystem; application, plugin, and database versions must be released as one compatibility set."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "collectiveaccess",
+      "name": "CollectiveAccess Providence",
+      "category": "collections-management",
+      "upstream_repo": "https://github.com/collectiveaccess/providence",
+      "source_repo": "https://github.com/collectiveaccess/providence",
+      "official_docs": "https://docs.collectiveaccess.org/providence/user/setup/install/",
+      "homepage": "https://collectiveaccess.org/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Providence",
+        "Pawtucket",
+        "PHP",
+        "MySQL/MariaDB",
+        "media derivatives",
+        "IIIF integrations"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "web",
+        "structured"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache/Nginx",
+        "MySQL/MariaDB",
+        "ImageMagick",
+        "FFmpeg",
+        "ExifTool"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Providence is the cataloguing application; Pawtucket is the public web layer and should be versioned separately."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "seeddms",
+      "name": "SeedDMS",
+      "category": "document-management",
+      "upstream_repo": "https://sourceforge.net/projects/seeddms/",
+      "source_repo": "https://sourceforge.net/projects/seeddms/",
+      "official_docs": "https://www.seeddms.org/",
+      "homepage": "https://www.seeddms.org/",
+      "license": "GPL-2.0",
+      "architecture_components": [
+        "PHP web",
+        "MySQL/MariaDB or SQLite",
+        "file storage",
+        "full-text/index plugins"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache/Nginx",
+        "MySQL/MariaDB",
+        "PEAR",
+        "optional OCR/index tools"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "conditional",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The official download channel is SourceForge; GitHub mirrors are not treated as authoritative."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "paperless-ngx",
+      "name": "Paperless-ngx",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/paperless-ngx/paperless-ngx",
+      "source_repo": "https://github.com/paperless-ngx/paperless-ngx",
+      "official_docs": "https://docs.paperless-ngx.com/setup/",
+      "homepage": "https://docs.paperless-ngx.com/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "Django web",
+        "Celery workers",
+        "PostgreSQL",
+        "Redis",
+        "Tika/Gotenberg",
+        "OCRmyPDF/Tesseract",
+        "media storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "email",
+        "archives",
+        "structured"
+      ],
+      "dependencies": [
+        "Python",
+        "PostgreSQL",
+        "Redis",
+        "Tesseract",
+        "OCRmyPDF",
+        "Ghostscript",
+        "Gotenberg",
+        "Tika"
+      ],
+      "health": {
+        "service_aliases": [
+          "paperless",
+          "celery",
+          "redis",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [],
+      "image_hint": "paperlessngx/paperless-ngx"
+    },
+    {
+      "id": "omeka-s",
+      "name": "Omeka S",
+      "category": "digital-publishing",
+      "upstream_repo": "https://github.com/omeka/omeka-s",
+      "source_repo": "https://github.com/omeka/omeka-s",
+      "official_docs": "https://omeka.org/s/docs/user-manual/install/",
+      "homepage": "https://omeka.org/s/",
+      "license": "GPL-3.0",
+      "architecture_components": [
+        "PHP web",
+        "MySQL/MariaDB",
+        "Omeka modules",
+        "themes",
+        "IIIF/media services",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "web",
+        "structured"
+      ],
+      "dependencies": [
+        "PHP",
+        "Apache/Nginx",
+        "MySQL/MariaDB",
+        "ImageMagick",
+        "FFmpeg",
+        "ExifTool"
+      ],
+      "health": {
+        "service_aliases": [
+          "apache2",
+          "httpd",
+          "nginx",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Omeka S is intentionally extensible through modules; check module compatibility as part of the release manifest."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "papermerge",
+      "name": "Papermerge DMS",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/papermerge/papermerge-core",
+      "source_repo": "https://github.com/papermerge/papermerge-core",
+      "official_docs": "https://docs.papermerge.io/",
+      "homepage": "https://papermerge.com/",
+      "license": "Apache-2.0",
+      "architecture_components": [
+        "Django/FastAPI services",
+        "PostgreSQL",
+        "Redis",
+        "OCR",
+        "Celery",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "Python",
+        "PostgreSQL",
+        "Redis",
+        "Tesseract",
+        "OCRmyPDF",
+        "S3/filesystem"
+      ],
+      "health": {
+        "service_aliases": [
+          "papermerge",
+          "celery",
+          "redis",
+          "postgresql"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [],
+      "image_hint": "papermerge/papermerge"
+    },
+    {
+      "id": "openkm-community",
+      "name": "OpenKM Community",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/openkm/document-management-system",
+      "source_repo": "https://github.com/openkm/document-management-system",
+      "official_docs": "https://docs.openkm.com/kcenter/",
+      "homepage": "https://www.openkm.com/",
+      "license": "GPL-2.0",
+      "architecture_components": [
+        "OpenKM web",
+        "Java/Tomcat",
+        "database",
+        "Lucene",
+        "file storage",
+        "workflow"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "Java",
+        "Tomcat",
+        "database",
+        "Tesseract",
+        "ImageMagick",
+        "OpenOffice/LibreOffice"
+      ],
+      "health": {
+        "service_aliases": [
+          "openkm",
+          "tomcat",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "conditional",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The official GitHub repository is archived as of 2026; treat this adapter as maintenance-only and pin an audited release."
+      ],
+      "image_hint": null
+    },
+    {
+      "id": "teedy",
+      "name": "Teedy",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/sismics/docs",
+      "source_repo": "https://github.com/sismics/docs",
+      "official_docs": "https://teedy.io/en/",
+      "homepage": "https://teedy.io/",
+      "license": "GPL-2.0",
+      "architecture_components": [
+        "Java web app",
+        "Jetty",
+        "H2/PostgreSQL",
+        "Lucene",
+        "Tesseract",
+        "FFmpeg",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "Java",
+        "Maven",
+        "Jetty/Tomcat",
+        "Tesseract",
+        "FFmpeg",
+        "MediaInfo",
+        "database"
+      ],
+      "health": {
+        "service_aliases": [
+          "teedy",
+          "jetty",
+          "tomcat"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Teedy was formerly known as Sismics Docs; pin the source/release identity and avoid community images unless explicitly approved."
+      ],
+      "image_hint": "sismics/teedy"
+    },
+    {
+      "id": "logicaldoc-community",
+      "name": "LogicalDOC Community",
+      "category": "document-management",
+      "upstream_repo": "https://github.com/logicaldoc/community",
+      "source_repo": "https://github.com/logicaldoc/community",
+      "official_docs": "https://www.logicaldoc.com/download-logicaldoc-community",
+      "homepage": "https://www.logicaldoc.com/",
+      "license": "LGPL-3.0",
+      "architecture_components": [
+        "Java web app",
+        "Tomcat",
+        "database",
+        "Lucene",
+        "OCR",
+        "file storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "images",
+        "audio",
+        "video",
+        "archives",
+        "email",
+        "structured"
+      ],
+      "dependencies": [
+        "Java",
+        "Tomcat",
+        "MariaDB/MySQL",
+        "HSQLDB for demo",
+        "Tesseract",
+        "LibreOffice"
+      ],
+      "health": {
+        "service_aliases": [
+          "logicaldoc",
+          "tomcat",
+          "mysql",
+          "mariadb"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 8080,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "native",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "The project publishes separate Community and Docker repositories; do not use embedded HSQLDB for production."
+      ],
+      "image_hint": "logicaldoc/logicaldoc-ce"
+    },
+    {
+      "id": "seafile-community",
+      "name": "Seafile Community",
+      "category": "file-sync-and-share",
+      "upstream_repo": "https://github.com/haiwen/seafile",
+      "source_repo": "https://github.com/haiwen/seafile",
+      "official_docs": "https://manual.seafile.com/",
+      "homepage": "https://www.seafile.com/",
+      "license": "AGPL-3.0",
+      "architecture_components": [
+        "Seafile server",
+        "Seahub",
+        "MariaDB",
+        "Memcached/Redis",
+        "Nginx",
+        "file libraries",
+        "object storage"
+      ],
+      "format_profiles": [
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "images",
+        "audio",
+        "video",
+        "ebooks",
+        "archives",
+        "email",
+        "web",
+        "scientific",
+        "structured",
+        "fonts"
+      ],
+      "dependencies": [
+        "Seafile server",
+        "Python",
+        "MariaDB",
+        "Memcached",
+        "Nginx",
+        "Docker"
+      ],
+      "health": {
+        "service_aliases": [
+          "seafile",
+          "seahub",
+          "nginx",
+          "mariadb",
+          "memcached"
+        ],
+        "http_paths": [
+          "/"
+        ],
+        "default_port": 80,
+        "checks": [
+          "process-or-service",
+          "http",
+          "storage-paths",
+          "dependency-reachability",
+          "configuration-presence"
+        ]
+      },
+      "mode_support": {
+        "raw": "conditional",
+        "docker": "validated",
+        "k3s": "portable",
+        "rke2": "portable",
+        "pacemaker": "conditional",
+        "podman-quadlet": "portable",
+        "k0s": "portable",
+        "docker-swarm": "portable",
+        "microk8s": "portable"
+      },
+      "notes": [
+        "Current Community deployment guidance is container-first; verify the selected release's Community/Professional boundaries before applying HA automation."
+      ],
+      "image_hint": null
+    }
+  ]
+}

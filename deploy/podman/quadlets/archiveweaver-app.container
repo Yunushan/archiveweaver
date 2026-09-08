@@ -1,0 +1,22 @@
+[Unit]
+Description=ArchiveWeaver application envelope
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+# Replace this placeholder with an approved immutable product image.
+Image=registry.example.invalid/replace-me/product@sha256:replace-me
+ContainerName=archiveweaver-app
+Network=archiveweaver-network.network
+Volume=archiveweaver-data.volume:/var/lib/archiveweaver/solution:Z
+PublishPort=127.0.0.1:8080:8080
+Environment=ARCHIVEWEAVER_SOLUTION_ID=replace-me
+NoNewPrivileges=true
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+

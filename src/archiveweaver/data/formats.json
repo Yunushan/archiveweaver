@@ -1,0 +1,72 @@
+{
+  "documents": {
+    "label": "Documents",
+    "extensions": "pdf,doc,docx,odt,ott,rtf,txt,md,tex,wpd,pages,xps,oxps",
+    "mime_examples": "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown"
+  },
+  "spreadsheets": {
+    "label": "Spreadsheets and tabular data",
+    "extensions": "xls,xlsx,ods,ots,csv,tsv,xml,json,parquet,feather,sav,dta",
+    "mime_examples": "text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/json"
+  },
+  "presentations": {
+    "label": "Presentations",
+    "extensions": "ppt,pptx,odp,otp,key",
+    "mime_examples": "application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  },
+  "images": {
+    "label": "Images and raster graphics",
+    "extensions": "jpg,jpeg,jpe,png,gif,bmp,tif,tiff,jp2,j2k,jpf,jpx,jpm,mj2,webp,avif,heic,heif,svg,eps,psd,ico,raw,dng,cr2,cr3,nef,nrw,arw,orf,rw2,raf,pef,sr2,3fr,iiq",
+    "mime_examples": "image/jpeg,image/png,image/tiff,image/jp2,image/svg+xml,image/webp,image/heic"
+  },
+  "audio": {
+    "label": "Audio",
+    "extensions": "wav,mp3,flac,ogg,oga,opus,m4a,aac,wma,aiff,aif,alac,ape,amr,midi,mid",
+    "mime_examples": "audio/wav,audio/mpeg,audio/flac,audio/ogg,audio/mp4,audio/aac"
+  },
+  "video": {
+    "label": "Video",
+    "extensions": "mp4,m4v,mov,avi,mkv,webm,ogv,mpg,mpeg,mpe,wmv,flv,asf,3gp,3g2,mxf,mts,m2ts,ts,vob",
+    "mime_examples": "video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm"
+  },
+  "ebooks": {
+    "label": "E-books and page-description formats",
+    "extensions": "epub,epub3,mobi,azw,azw3,fb2,djvu,cbr,cbz",
+    "mime_examples": "application/epub+zip,application/x-mobipocket-ebook,image/vnd.djvu"
+  },
+  "archives": {
+    "label": "Archives and disk/container files",
+    "extensions": "zip,7z,rar,tar,gz,tgz,bz2,xz,z,br,iso,ova,ovf,vhd,vhdx,vmdk",
+    "mime_examples": "application/zip,application/x-7z-compressed,application/gzip,application/x-tar"
+  },
+  "email": {
+    "label": "E-mail and messaging exports",
+    "extensions": "eml,msg,mbox,pst,ost,emlx,ics,vcf",
+    "mime_examples": "message/rfc822,application/vnd.ms-outlook,application/mbox,text/calendar,text/vcard"
+  },
+  "web": {
+    "label": "Web and markup",
+    "extensions": "html,htm,xhtml,css,js,ts,jsx,tsx,wasm,xml,json,yaml,yml,ttl,rdf,n3,nq,trig,nt",
+    "mime_examples": "text/html,application/xhtml+xml,application/xml,application/json,text/turtle"
+  },
+  "scientific": {
+    "label": "Scientific, research and geospatial data",
+    "extensions": "hdf,hdf5,netcdf,nc,mat,fits,fits.gz,fastq,fasta,fa,geojson,gpkg,kml,kmz,shp,shx,dbf,prj,las,laz,dcm,dicom",
+    "mime_examples": "application/x-hdf,application/netcdf,application/geo+json,application/dicom"
+  },
+  "structured": {
+    "label": "Databases, logs and machine-readable exports",
+    "extensions": "sql,sqlite,sqlite3,db,db3,log,ndjson,txt,bin,dat",
+    "mime_examples": "application/sql,application/x-sqlite3,text/plain,application/octet-stream"
+  },
+  "fonts": {
+    "label": "Fonts",
+    "extensions": "ttf,otf,woff,woff2",
+    "mime_examples": "font/ttf,font/otf,font/woff,font/woff2"
+  },
+  "preservation": {
+    "label": "Preservation packages and fixity sidecars",
+    "extensions": "bagit,bag,md5,sha1,sha256,sha512,xml,mets,premis,sip,aip,dip,war,jar",
+    "mime_examples": "application/xml,application/war,application/java-archive,application/octet-stream"
+  }
+}
