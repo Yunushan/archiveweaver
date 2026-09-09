@@ -3,6 +3,12 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    archiveweaver_controller_target_group: archiveweaver_nodes
+  pre_tasks:
+    - name: Enable post-play rollback evidence sealing
+      ansible.builtin.set_fact:
+        archiveweaver_evidence_seal_enabled: "{{ archiveweaver_rollback_apply | default(false) | bool }}"
   roles:
     - role: archiveweaver_controller_preflight
       tags: [always, controller]
@@ -22,6 +28,8 @@
     archiveweaver_rollback_backup_verified: false
     archiveweaver_rollback_command: []
     archiveweaver_rollback_verify_command: []
+    archiveweaver_rollback_command_sha256: ""
+    archiveweaver_rollback_verify_command_sha256: ""
     archiveweaver_rollback_change_id: RB-PLAN
     archiveweaver_rollback_evidence_dir: "{{ archiveweaver_bundle_root }}/evidence/rollback"
     archiveweaver_repair_apply: "{{ archiveweaver_rollback_apply | bool }}"
@@ -34,5 +42,15 @@
       tags: [preflight]
     - role: archiveweaver_rollback
       tags: [rollback]
+
+- name: Seal rollback evidence after all managed hosts complete
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    archiveweaver_evidence_completion_fact: archiveweaver_rollback_completed
+    archiveweaver_evidence_completion_hosts: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+  roles:
     - role: archiveweaver_evidence
+      when: archiveweaver_evidence_seal_enabled | default(false) | bool
       tags: [evidence]

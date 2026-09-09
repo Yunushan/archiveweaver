@@ -5,15 +5,15 @@
     follow: false
     get_checksum: true
     checksum_algorithm: sha256
-  register: archiveweaver_swarm_stack_path_stat
+  register: archiveweaver_provider_swarm_stack_path_stat
   tags: [provider, deploy]
 
 - name: Reject missing or symlinked product Swarm content
   ansible.builtin.assert:
     that:
-      - archiveweaver_swarm_stack_path_stat.stat.exists
-      - archiveweaver_swarm_stack_path_stat.stat.isreg | default(false) | bool
-      - not (archiveweaver_swarm_stack_path_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_swarm_stack_path_stat.stat.exists
+      - archiveweaver_provider_swarm_stack_path_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_provider_swarm_stack_path_stat.stat.islnk | default(false) | bool)
     fail_msg: "Stage the reviewed, official product Swarm stack at archiveweaver_compose_path before apply."
   tags: [provider, deploy]
 
@@ -22,7 +22,7 @@
     that:
       - archiveweaver_product_stack_sha256 is string
       - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
-      - archiveweaver_swarm_stack_path_stat.stat.checksum == archiveweaver_product_stack_sha256
+      - archiveweaver_provider_swarm_stack_path_stat.stat.checksum == archiveweaver_product_stack_sha256
     fail_msg: "The staged Swarm stack does not match the reviewed SHA-256 release binding."
   no_log: true
   tags: [provider, deploy]
@@ -30,9 +30,16 @@
 - name: Validate the reviewed product Swarm stack
   ansible.builtin.command:
     argv: [docker, stack, config, -c, "{{ archiveweaver_compose_path }}"]
+  register: archiveweaver_provider_swarm_config
   changed_when: false
   check_mode: false
   no_log: true
+  tags: [provider, deploy]
+
+- name: Require immutable images in the rendered Swarm model
+  ansible.builtin.include_tasks: require-immutable-images.yml
+  vars:
+    archiveweaver_provider_rendered_content: "{{ archiveweaver_provider_swarm_config.stdout }}"
   tags: [provider, deploy]
 
 - name: Deploy the reviewed Swarm stack

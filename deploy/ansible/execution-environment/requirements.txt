@@ -1,3 +1,4 @@
 # Keep this controller image lock aligned with deploy/ansible/requirements.txt.
 ansible-core==2.21.0
 ansible-lint==26.6.0
+PyYAML==6.0.2

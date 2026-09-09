@@ -1,4 +1,28 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [evidence]
+  tags: [evidence]
+
+- name: Require the upstream managed operation to complete before sealing
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_evidence_completion_fact is string
+      - archiveweaver_evidence_completion_fact | length > 0
+      - archiveweaver_evidence_completion_hosts is sequence
+      - archiveweaver_evidence_completion_hosts is not string
+      - archiveweaver_evidence_completion_hosts | length > 0
+      - item in hostvars
+      - hostvars[item].get(archiveweaver_evidence_completion_fact, false) | bool
+    fail_msg: "Evidence sealing requires a completed, attested upstream managed operation."
+  loop: "{{ archiveweaver_evidence_completion_hosts }}"
+  loop_control:
+    label: "managed-operation"
+  no_log: true
+  tags: [evidence]
+
 - name: Validate the controller evidence-root boundary
   ansible.builtin.assert:
     that:
@@ -8,6 +32,28 @@
       - archiveweaver_evidence_root is not search('\\.\\.')
       - archiveweaver_evidence_environment in ['production', 'staging', 'restore', 'dr']
     fail_msg: "The controller evidence root must be an absolute, traversal-free path."
+  tags: [evidence]
+
+- name: Inspect the controller evidence root before writing
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_evidence_root }}"
+    follow: false
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: archiveweaver_evidence_root_stat
+  no_log: true
+  tags: [evidence]
+
+- name: Reject a symlinked controller evidence root
+  ansible.builtin.assert:
+    that:
+      - not (archiveweaver_evidence_root_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The controller evidence root must not be a symlink."
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
   tags: [evidence]
 
 - name: Ensure the controller evidence root exists
@@ -76,6 +122,7 @@
            or (archiveweaver_restore_apply | default(false) | bool)
            or (archiveweaver_failure_apply | default(false) | bool)
            or (archiveweaver_rollback_apply | default(false) | bool)
+           or (archiveweaver_evidence_seal_enabled | default(false) | bool)
          ) }}
   tags: [evidence]
 
@@ -103,9 +150,26 @@
       - item is string
       - item | length > 0
       - item is not search('["\\r\\n]')
+    fail_msg: "Evidence publication hooks must contain safe, non-empty argument-vector elements."
   loop: "{{ (archiveweaver_evidence_publish_command | default([])) + (archiveweaver_evidence_verify_command | default([])) }}"
-  fail_msg: "Evidence publication hooks must contain safe, non-empty argument-vector elements."
   when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Verify reviewed evidence publication hook executables
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+  vars:
+    archiveweaver_hook_specs:
+      - name: evidence-publish
+        command: "{{ archiveweaver_evidence_publish_command }}"
+        sha256: "{{ archiveweaver_evidence_publish_command_sha256 }}"
+      - name: evidence-verify
+        command: "{{ archiveweaver_evidence_verify_command }}"
+        sha256: "{{ archiveweaver_evidence_verify_command_sha256 }}"
+  when: archiveweaver_evidence_publication_active | bool
+  delegate_to: localhost
+  become: false
+  run_once: true
   no_log: true
   tags: [evidence]
 
@@ -125,6 +189,28 @@
   register: archiveweaver_evidence_publish_result
   changed_when: true
   failed_when: false
+  check_mode: false
+  when: archiveweaver_evidence_publication_active | bool
+  no_log: true
+  tags: [evidence]
+
+- name: Re-verify the local evidence index after publication
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - -m
+      - archiveweaver
+      - evidence-index
+      - --verify
+      - "{{ archiveweaver_evidence_root }}/evidence-index.json"
+      - --json
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: archiveweaver_evidence_post_publish_verify_result
+  changed_when: false
   check_mode: false
   when: archiveweaver_evidence_publication_active | bool
   no_log: true
@@ -156,6 +242,7 @@
     that:
       - archiveweaver_evidence_publish_result.rc == 0
       - archiveweaver_evidence_verify_result.rc == 0
+      - archiveweaver_evidence_post_publish_verify_result.rc == 0
     fail_msg: "Immutable evidence publication or retention verification failed; production operation remains non-compliant."
   when: archiveweaver_evidence_publication_active | bool
   no_log: true

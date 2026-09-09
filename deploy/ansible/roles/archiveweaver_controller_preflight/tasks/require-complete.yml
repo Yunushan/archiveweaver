@@ -1,0 +1,8 @@
+---
+- name: Require completed controller preflight
+  ansible.builtin.assert:
+    that:
+      - (ansible_skip_tags | default([]) | intersect(['always', 'controller']) | length) == 0
+      - hostvars['localhost'].archiveweaver_controller_preflight_completed | default(false) | bool
+    fail_msg: "Controller preflight must complete before this ArchiveWeaver role can run."
+  no_log: true

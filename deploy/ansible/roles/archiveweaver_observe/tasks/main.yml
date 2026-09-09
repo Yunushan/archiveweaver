@@ -1,4 +1,18 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [observe]
+  tags: [observe]
+
+- name: Require completed managed-host preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-managed-complete.yml"
+    apply:
+      tags: [observe]
+  tags: [observe]
+
 - name: Validate the production observation inputs
   ansible.builtin.assert:
     that:
@@ -12,7 +26,18 @@
       - archiveweaver_check_command is not search('[\\s\\r\\n]')
       - archiveweaver_check_interval is string
       - archiveweaver_check_interval is match('^[1-9][0-9]*(s|min|h|d)$')
-    fail_msg: "Observation requires an HTTPS health URL, an absolute checker path, and a bounded systemd interval."
+  fail_msg: "Observation requires an HTTPS health URL, an absolute checker path, and a bounded systemd interval."
+  tags: [observe]
+
+- name: Verify the reviewed health-check executable
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+  vars:
+    archiveweaver_hook_specs:
+      - name: health-check
+        command:
+          - "{{ archiveweaver_check_command }}"
+        sha256: "{{ archiveweaver_check_command_sha256 }}"
+  no_log: true
   tags: [observe]
 
 - name: Verify the checker executable is present

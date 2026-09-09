@@ -3,6 +3,12 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    archiveweaver_controller_target_group: archiveweaver_restore
+  pre_tasks:
+    - name: Enable post-play restore evidence sealing
+      ansible.builtin.set_fact:
+        archiveweaver_evidence_seal_enabled: "{{ archiveweaver_restore_apply | default(false) | bool }}"
   roles:
     - role: archiveweaver_controller_preflight
       tags: [always, controller]
@@ -19,10 +25,22 @@
     archiveweaver_restore_source: ""
     archiveweaver_restore_command: []
     archiveweaver_fixity_command: []
+    archiveweaver_restore_command_sha256: ""
+    archiveweaver_fixity_command_sha256: ""
     archiveweaver_restore_change_id: DR-PLAN
     archiveweaver_restore_evidence_dir: "{{ archiveweaver_bundle_root }}/evidence/restore-drill"
   roles:
     - role: archiveweaver_restore
       tags: [restore, fixity]
+
+- name: Seal restore evidence after all drill hosts complete
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    archiveweaver_evidence_completion_fact: archiveweaver_restore_completed
+    archiveweaver_evidence_completion_hosts: "{{ groups['archiveweaver_restore'] | default([]) }}"
+  roles:
     - role: archiveweaver_evidence
+      when: archiveweaver_evidence_seal_enabled | default(false) | bool
       tags: [evidence]

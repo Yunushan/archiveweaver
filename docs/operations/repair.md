@@ -61,9 +61,11 @@ ansible-playbook repair.yml --check --diff
 The CLI plan remains dry-run output. The playbook's
 `archiveweaver_repair_apply` flag and the backup/release/approval gates are
 separate controls. The playbook writes a redacted, identity-bound `repair-*.json`
-record into the controller evidence bundle; the subsequent verification and
-evidence-index steps make that record available to the recovery readiness
-criterion.
+record into the controller evidence bundle. Before an applied repair can
+restart or redeploy anything, it re-checks the staged provider bundle digest
+and, for containerized providers, requires immutable image digests; the
+subsequent verification and evidence-index steps make that record available to
+the recovery readiness criterion.
 Applied CLI repair results also redact subprocess stdout/stderr, because
 provider commands such as `docker compose config` can render environment values.
 Use the target system's protected logs and the redacted evidence record for

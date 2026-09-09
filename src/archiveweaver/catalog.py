@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
+
+from .json_utils import load_json_document
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 def _read(name: str) -> Any:
-    return json.loads((DATA_DIR / name).read_text(encoding="utf-8"))
+    return load_json_document((DATA_DIR / name).read_text(encoding="utf-8"))
 
 
 class Catalog:

@@ -3,6 +3,12 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    archiveweaver_controller_target_group: archiveweaver_failure
+  pre_tasks:
+    - name: Enable post-play failure evidence sealing
+      ansible.builtin.set_fact:
+        archiveweaver_evidence_seal_enabled: "{{ archiveweaver_failure_apply | default(false) | bool }}"
   roles:
     - role: archiveweaver_controller_preflight
       tags: [always, controller]
@@ -22,5 +28,15 @@
   roles:
     - role: archiveweaver_failure
       tags: [failure-drill]
+
+- name: Seal failure-drill evidence after all test hosts complete
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    archiveweaver_evidence_completion_fact: archiveweaver_failure_completed
+    archiveweaver_evidence_completion_hosts: "{{ groups['archiveweaver_failure'] | default([]) }}"
+  roles:
     - role: archiveweaver_evidence
+      when: archiveweaver_evidence_seal_enabled | default(false) | bool
       tags: [evidence]

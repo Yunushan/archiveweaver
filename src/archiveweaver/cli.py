@@ -16,6 +16,7 @@ from .repair import apply_repair, build_repair_plan
 from .readiness import assess_readiness
 from .render import render
 from .schema import validate_catalog
+from .path_utils import has_symlink_component
 
 
 RUNTIME_CHOICES = ["raw", "docker", "k3s", "rke2", "pacemaker", "podman-quadlet", "k0s", "docker-swarm", "microk8s", "ansible"]
@@ -164,9 +165,9 @@ def _print_plan(plan: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    catalog = Catalog()
 
     try:
+        catalog = Catalog()
         if args.command == "list-solutions":
             rows = [[item["id"], item["name"], item["category"], item["mode_support"]["raw"], item["mode_support"]["docker"], item["mode_support"]["ansible"]] for item in catalog.solutions.values()]
             value = {"count": len(rows), "solutions": rows} if args.json else _table(["ID", "Name", "Category", "Raw", "Docker", "Ansible"], rows)
@@ -247,7 +248,11 @@ def main(argv: list[str] | None = None) -> int:
             plan, content = render(catalog, args.solution, args.mode, args.nodes, args.os_id, namespace=args.namespace, image=args.image, allow_floating=args.allow_floating, allow_conditional=args.allow_conditional, underlying_mode=args.underlying_mode)
             if args.output:
                 output = Path(args.output)
+                if has_symlink_component(output):
+                    raise ValueError("render output must not resolve through a symlink")
                 output.parent.mkdir(parents=True, exist_ok=True)
+                if has_symlink_component(output):
+                    raise ValueError("render output must not resolve through a symlink")
                 output.write_text(content, encoding="utf-8")
                 payload = {"status": "pass", "output": str(output), "plan": plan}
                 _dump(payload, args.json)
@@ -256,7 +261,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(content, end="")
             return 0
-    except (ValueError, OSError, json.JSONDecodeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+        if getattr(args, "json", False):
+            _dump({"status": "fail", "errors": [str(exc)]}, True)
+        else:
+            print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2

@@ -1,4 +1,18 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [host, deploy]
+  tags: [host, deploy]
+
+- name: Require completed managed-host preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-managed-complete.yml"
+    apply:
+      tags: [host, deploy]
+  tags: [host, deploy]
+
 - name: Install common host prerequisites on Debian-family systems
   ansible.builtin.apt:
     name: "{{ archiveweaver_packages_debian }}"
@@ -40,17 +54,3 @@
     - {path: "{{ archiveweaver_log_root }}", owner: archiveweaver, group: archiveweaver, mode: '0750'}
     - {path: "{{ archiveweaver_release_record | dirname }}", owner: root, group: root, mode: '0755'}
   tags: [host, filesystem]
-
-- name: Record the reviewed release identity without secrets
-  ansible.builtin.copy:
-    dest: "{{ archiveweaver_release_record }}"
-    owner: root
-    group: root
-    mode: '0644'
-    content: |
-      solution: {{ archiveweaver_solution_id | to_json }}
-      release: {{ archiveweaver_release | to_json }}
-      catalog_os: {{ archiveweaver_os_id | to_json }}
-      runtime: {{ archiveweaver_runtime | to_json }}
-      change_id: {{ archiveweaver_change_id | to_json }}
-  tags: [host, release]

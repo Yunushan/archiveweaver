@@ -1,4 +1,28 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [repair]
+  tags: [repair]
+
+- name: Require completed managed-host preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-managed-complete.yml"
+    apply:
+      tags: [repair]
+  tags: [repair]
+
+- name: Verify the staged provider bundle before any repair mutation
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_provider/tasks/verify-bundle.yml"
+    apply:
+      tags: [repair]
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['raw', 'podman-quadlet', 'docker', 'docker-swarm', 'k3s', 'rke2', 'k0s', 'microk8s']
+  tags: [repair]
+
 - name: Validate the repair evidence boundary
   ansible.builtin.assert:
     that:
@@ -223,6 +247,41 @@
   no_log: true
   tags: [repair]
 
+- name: Inspect controller evidence boundaries before writing
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ archiveweaver_evidence_root }}"
+    - "{{ archiveweaver_evidence_dir }}"
+  register: archiveweaver_repair_evidence_path_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  no_log: true
+  tags: [repair]
+
+- name: Verify controller evidence path components before writing
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/path-boundary.yml"
+  vars:
+    archiveweaver_controller_path_boundary_paths:
+      - "{{ archiveweaver_evidence_root }}"
+      - "{{ archiveweaver_evidence_dir }}"
+  tags: [repair]
+
+- name: Reject symlinked controller evidence boundaries
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false) | bool)
+    fail_msg: "Repair evidence paths must not be symlinks."
+  loop: "{{ archiveweaver_repair_evidence_path_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  tags: [repair]
+
 - name: Create the repair evidence directory on the controller
   ansible.builtin.file:
     path: "{{ archiveweaver_evidence_dir }}"
@@ -241,4 +300,9 @@
   delegate_to: localhost
   become: false
   no_log: true
+  tags: [repair]
+
+- name: Attest completed repair operation
+  ansible.builtin.set_fact:
+    archiveweaver_repair_completed: true
   tags: [repair]

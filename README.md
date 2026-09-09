@@ -108,7 +108,7 @@ ansible-playbook site.yml --check --diff -e archiveweaver_apply=true
 ```
 
 To generate an Ansible entry point for a specific provider, use for example
-`archiveweaver render --solution paperless-ngx --mode ansible --underlying-mode rke2 --nodes 3 --os ubuntu-24.04 --output deploy/ansible/generated/paperless-rke2.yml`.
+`archiveweaver render --solution paperless-ngx --mode ansible --underlying-mode rke2 --nodes 3 --os ubuntu-24.04 --output generated/paperless-rke2.yml`.
 
 Ansible coordinates the selected provider; it does not provide quorum,
 fencing, scheduler HA, database replication, or product-level failover. Keep
@@ -191,6 +191,7 @@ This is an ArchiveWeaver host baseline, not a blanket upstream application certi
 - [Kubernetes-family deployment](docs/deployment/kubernetes.md), [containers](docs/deployment/containers.md), and [Pacemaker](docs/deployment/pacemaker.md);
 - [Ansible enterprise orchestration](docs/deployment/ansible.md) and the runnable [Ansible edition](deploy/ansible/README.md);
 - [Checking](docs/operations/checking.md), [repair](docs/operations/repair.md), [backup/restore](docs/operations/backup-restore.md), [product certification](docs/operations/product-certification.md), [service management](docs/operations/service-management.md), and [security](docs/operations/security.md);
+- [premium activation](docs/operations/premium-activation.md) — owner-by-owner activation inputs and the 100/100 promotion sequence;
 - [Supply-chain controls](docs/operations/supply-chain.md);
 - [full format catalog](docs/reference/formats.md), [format-family matrix](docs/reference/format-matrix.md), [product support matrix](docs/reference/support-matrix.md), and [upstream source links](docs/reference/upstream-sources.md).
 

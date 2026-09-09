@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import hashlib
 import re
 from datetime import datetime
@@ -9,6 +8,8 @@ from typing import Any, Callable
 
 from .catalog import Catalog
 from .evidence import verify_evidence_index
+from .json_utils import load_json_document
+from .path_utils import has_symlink_component
 
 
 PLACEHOLDER_RE = re.compile(r"(?:replace|todo|tbd|example\.invalid|latest)", re.IGNORECASE)
@@ -17,6 +18,9 @@ RFC3339_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:"
     r"[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 )
+IN_TOTO_STATEMENT_RE = re.compile(r"^https://in-toto\.io/Statement/v[0-9]+(?:\.[0-9]+)?$")
+SPDX_VERSION_RE = re.compile(r"^SPDX-[0-9]+\.[0-9]+$")
+CYCLONEDX_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+$")
 OCI_IMAGE_DIGEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[0-9a-f]{64}$")
 STATUS_VALUES = {"pass", "pending", "fail"}
 ENVIRONMENT_VALUES = {"production", "staging", "restore", "dr"}
@@ -36,6 +40,34 @@ REQUIRED_TOP_LEVEL = {
     "support",
 }
 EvidenceContext = tuple[Path, frozenset[str], Catalog]
+CLAIM_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
+    "security": (
+        "sbom_verification",
+        "tls_verification",
+        "secrets_provider_verification",
+    ),
+    "observability": (
+        "metrics_verification",
+        "alerts_verification",
+        "dashboards_verification",
+        "on_call_verification",
+    ),
+    "support": (
+        "service_owner_verification",
+        "on_call_verification",
+        "sla_verification",
+    ),
+}
+
+
+def _has_structured_release_execution_environment(value: Any) -> bool:
+    """Recognize the release section's nested controller-image metadata."""
+    return bool(
+        isinstance(value, dict)
+        and isinstance(value.get("execution_environment"), dict)
+        and "artifacts" in value
+        and "provider_bundle" in value
+    )
 
 
 def _is_real_text(value: Any) -> bool:
@@ -68,6 +100,8 @@ def _relative_candidate(value: Any, root: Path) -> Path | None:
     ):
         return None
     candidate_path = root / candidate
+    if has_symlink_component(root) or has_symlink_component(candidate_path):
+        return None
     try:
         current = root
         for part in candidate.parts:
@@ -136,11 +170,10 @@ def _evidence_metadata_matches(value: Any, manifest: dict[str, Any]) -> bool:
         and (
             "execution_environment" not in value
             or (
-                isinstance(value.get("execution_environment"), dict)
-                and "artifacts" in value
-                and "provider_bundle" in value
+                isinstance(value.get("execution_environment"), str)
+                and value.get("execution_environment") in ENVIRONMENT_VALUES
             )
-            or value.get("execution_environment") in ENVIRONMENT_VALUES
+            or _has_structured_release_execution_environment(value)
         )
         and _is_real_timestamp(value.get("recorded_at"))
         and _is_real_text(value.get("operator"))
@@ -155,6 +188,9 @@ def _evidence_payload_matches(value: Any, root: Path, context: EvidenceContext |
         return candidate is not None and candidate.suffix.lower() != ".json" and _indexed(candidate, context)
     return bool(
         payload.get("status") == "pass"
+        and isinstance(value, dict)
+        and payload.get("name") == value.get("name")
+        and payload.get("evidence") == value.get("evidence")
         and _evidence_metadata_matches(payload, manifest)
     )
 
@@ -166,8 +202,8 @@ def _json_evidence_payload(value: Any, root: Path, context: EvidenceContext | No
     if candidate is None or not _indexed(candidate, context) or candidate.suffix.lower() != ".json":
         return None
     try:
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = load_json_document(candidate.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -192,32 +228,226 @@ def _relative_file(value: Any, root: Path, context: EvidenceContext | None) -> b
         return False
 
 
-def _structured_json_file(
+def _path_identity(value: Any) -> str | None:
+    """Return a normalized relative spelling for cross-field path checks."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return Path(value).as_posix()
+
+
+def _artifact_proof_paths(value: Any) -> set[str]:
+    """Return the artifact, SBOM, and detached-signature path identities."""
+    if not isinstance(value, dict):
+        return set()
+    paths = {
+        _path_identity(value.get(field))
+        for field in ("path", "sbom", "signature")
+    }
+    return {path for path in paths if path is not None}
+
+
+def _execution_environment_proof_paths(value: Any) -> set[str]:
+    """Return the controller-image attestation, SBOM, and signature paths."""
+    if not isinstance(value, dict):
+        return set()
+    paths = {
+        _path_identity(value.get(field))
+        for field in ("provenance", "sbom", "signature")
+    }
+    return {path for path in paths if path is not None}
+
+
+def _release_proof_paths(value: Any) -> set[str]:
+    """Return every local proof path owned by a release section."""
+    if not isinstance(value, dict):
+        return set()
+    paths: set[str] = set()
+    artifacts = value.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            paths.update(_artifact_proof_paths(artifact))
+    paths.update(_artifact_proof_paths(value.get("provider_bundle")))
+    paths.update(_execution_environment_proof_paths(value.get("execution_environment")))
+    return paths
+
+
+def _structured_json_payload(
     value: Any,
     root: Path,
     context: EvidenceContext | None,
     required_groups: tuple[tuple[str, ...], ...],
-) -> bool:
+) -> dict[str, Any] | None:
     """Require an indexed JSON attestation with meaningful grouped content."""
     candidate = _relative_candidate(value, root)
     if candidate is None or not _indexed(candidate, context) or candidate.suffix.lower() != ".json":
-        return False
+        return None
     try:
-        payload = json.loads(candidate.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
+        payload = load_json_document(candidate.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
     if not isinstance(payload, dict):
-        return False
-    def meaningful(item: Any) -> bool:
-        return bool(
-            (isinstance(item, str) and item.strip())
-            or (isinstance(item, (list, dict)) and bool(item))
-        )
+        return None
 
-    return all(
-        any(meaningful(payload.get(key)) for key in group)
+    def meaningful_group(key: str) -> bool:
+        item = payload.get(key)
+        if key == "subject":
+            return isinstance(item, list) and any(
+                isinstance(subject, dict) and _is_real_text(subject.get("name"))
+                for subject in item
+            )
+        if key in {"packages", "components"}:
+            identity_keys = (
+                "name",
+                "SPDXID",
+                "bom-ref",
+                "purl",
+                "group",
+            )
+            return isinstance(item, list) and any(
+                isinstance(component, dict)
+                and any(_is_real_text(component.get(identity)) for identity in identity_keys)
+                for component in item
+            )
+        if isinstance(item, str):
+            return _is_real_text(item)
+        if isinstance(item, list):
+            return bool(item) and any(isinstance(child, (dict, str)) and bool(child) for child in item)
+        return isinstance(item, dict) and bool(item)
+
+    if not all(
+        any(meaningful_group(key) for key in group)
         for group in required_groups
+    ):
+        return None
+    return payload
+
+
+def _meaningful_component_list(value: Any) -> bool:
+    identity_keys = ("name", "SPDXID", "bom-ref", "purl", "group")
+    return isinstance(value, list) and any(
+        isinstance(component, dict)
+        and any(_is_real_text(component.get(identity)) for identity in identity_keys)
+        for component in value
     )
+
+
+def _sbom_payload(
+    value: Any,
+    root: Path,
+    context: EvidenceContext | None,
+) -> dict[str, Any] | None:
+    payload = _structured_json_payload(value, root, context, SBOM_GROUPS)
+    if payload is None:
+        return None
+    if (
+        isinstance(payload.get("spdxVersion"), str)
+        and SPDX_VERSION_RE.fullmatch(payload["spdxVersion"])
+        and _meaningful_component_list(payload.get("packages"))
+    ):
+        return payload
+    if (
+        payload.get("bomFormat") == "CycloneDX"
+        and isinstance(payload.get("specVersion"), str)
+        and CYCLONEDX_VERSION_RE.fullmatch(payload["specVersion"])
+        and _meaningful_component_list(payload.get("components"))
+    ):
+        return payload
+    return None
+
+
+def _sbom_file(value: Any, root: Path, context: EvidenceContext | None) -> bool:
+    return _sbom_payload(value, root, context) is not None
+
+
+def _sbom_binds_name(
+    value: Any,
+    expected_name: str,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Require the SBOM to identify the artifact it is attached to."""
+    payload = _sbom_payload(value, root, context)
+    if payload is None or not _is_real_text(expected_name):
+        return False
+    components = payload.get("packages") if "packages" in payload else payload.get("components")
+    if not isinstance(components, list):
+        return False
+    identity_keys = ("name", "SPDXID", "bom-ref", "purl", "group")
+    return any(
+        isinstance(component, dict)
+        and any(component.get(key) == expected_name for key in identity_keys)
+        for component in components
+    )
+
+
+def _provenance_payload(
+    value: Any,
+    root: Path,
+    context: EvidenceContext | None,
+) -> dict[str, Any] | None:
+    payload = _structured_json_payload(value, root, context, PROVENANCE_GROUPS)
+    if payload is None:
+        return None
+    statement_type = payload.get("_type", payload.get("type"))
+    if not (
+        isinstance(statement_type, str)
+        and IN_TOTO_STATEMENT_RE.fullmatch(statement_type)
+        and _is_real_text(payload.get("predicateType"))
+    ):
+        return None
+    return payload
+
+
+def _attestation_subject_digests(payload: dict[str, Any]) -> set[str]:
+    """Return normalized SHA-256 subject digests from an in-toto statement."""
+    subjects = payload.get("subject")
+    if not isinstance(subjects, list):
+        return set()
+    digests: set[str] = set()
+    for subject in subjects:
+        if not isinstance(subject, dict) or not isinstance(subject.get("digest"), dict):
+            continue
+        for algorithm, raw_digest in subject["digest"].items():
+            if str(algorithm).lower() != "sha256":
+                continue
+            digest = str(raw_digest).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                digests.add("sha256:" + digest)
+            elif re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                digests.add(digest)
+    return digests
+
+
+def _attestation_subject_bindings(payload: dict[str, Any]) -> set[tuple[str, str]]:
+    """Return (subject name, normalized digest) pairs from an attestation."""
+    subjects = payload.get("subject")
+    if not isinstance(subjects, list):
+        return set()
+    bindings: set[tuple[str, str]] = set()
+    for subject in subjects:
+        if not isinstance(subject, dict) or not _is_real_text(subject.get("name")):
+            continue
+        digests = subject.get("digest")
+        if not isinstance(digests, dict):
+            continue
+        name = str(subject["name"])
+        for algorithm, raw_digest in digests.items():
+            if str(algorithm).lower() != "sha256":
+                continue
+            digest = str(raw_digest).lower()
+            if re.fullmatch(r"[0-9a-f]{64}", digest):
+                bindings.add((name, "sha256:" + digest))
+            elif re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                bindings.add((name, digest))
+    return bindings
+
+
+def _provenance_binds_digests(payload: dict[str, Any] | None, expected: set[str]) -> bool:
+    return bool(payload) and bool(expected) and expected <= _attestation_subject_digests(payload)
+
+
+def _provenance_binds_subjects(payload: dict[str, Any] | None, expected: set[tuple[str, str]]) -> bool:
+    return bool(payload) and bool(expected) and expected <= _attestation_subject_bindings(payload)
 
 
 PROVENANCE_GROUPS = (("subject",), ("predicateType", "buildType", "payloadType", "materials"))
@@ -248,10 +478,17 @@ def _signed_artifact_ok(
     if not isinstance(value, dict):
         return False
     digest = str(value.get("digest", ""))
+    referenced_paths = [
+        _path_identity(value.get("path")),
+        _path_identity(value.get("sbom")),
+        _path_identity(value.get("signature")),
+    ]
     if not (
-        _is_real_text(value.get("name"))
+        all(path is not None for path in referenced_paths)
+        and len(set(referenced_paths)) == len(referenced_paths)
+        and _is_real_text(value.get("name"))
         and _digest_matches(value.get("path"), digest, root, context)
-        and _structured_json_file(value.get("sbom"), root, context, SBOM_GROUPS)
+        and _sbom_binds_name(value.get("sbom"), str(value.get("name", "")), root, context)
         and _relative_file(value.get("signature"), root, context)
         and value.get("signature_verified") is True
         and _evidence_record_exists(value.get("signature_verification"), root, context, manifest)
@@ -279,21 +516,14 @@ def _execution_environment_ok(
         return False
     if digest != "sha256:" + image.rsplit("@sha256:", 1)[1]:
         return False
+    provenance_payload = _provenance_payload(value.get("provenance"), root, context)
     if (
         not _is_real_text(value.get("name"))
         or value.get("provenance_verified") is not True
-        or not _structured_json_file(
-            value.get("provenance"),
-            root,
-            context,
-            PROVENANCE_GROUPS,
-        )
-        or not _structured_json_file(
-            value.get("sbom"),
-            root,
-            context,
-            SBOM_GROUPS,
-        )
+        or provenance_payload is None
+        or not _provenance_binds_digests(provenance_payload, {digest})
+        or not _provenance_binds_subjects(provenance_payload, {(str(value.get("name", "")), digest)})
+        or not _sbom_binds_name(value.get("sbom"), str(value.get("name", "")), root, context)
         or not _relative_file(value.get("signature"), root, context)
         or value.get("signature_verified") is not True
         or not _evidence_record_exists(value.get("signature_verification"), root, context, manifest)
@@ -315,9 +545,9 @@ def _evidence_context(manifest: dict[str, Any], root: Path, catalog: Catalog) ->
     if report.get("status") != "pass":
         return None
     try:
-        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index = load_json_document(index_path.read_text(encoding="utf-8"))
         indexed_files = frozenset(entry["path"] for entry in index["files"] if isinstance(entry, dict) and isinstance(entry.get("path"), str))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
         return None
     return index_path.parent.resolve(), indexed_files, catalog
 
@@ -342,15 +572,19 @@ def _all_pass_with_evidence(
 ) -> bool:
     if not isinstance(values, list) or not values:
         return False
-    names = {str(item.get("name", "")).lower() for item in values if isinstance(item, dict)}
+    if not all(
+        isinstance(item, dict)
+        and _is_real_text(item.get("name"))
+        and (_evidence_exists(item, root, context) if manifest is None else _evidence_record_exists(item, root, context, manifest))
+        for item in values
+    ):
+        return False
+    names = [str(item["name"]).lower() for item in values]
+    evidence_paths = [str(item["evidence"]) for item in values]
     return (
-        (not required_names or {name.lower() for name in required_names} <= names)
-        and all(
-            isinstance(item, dict)
-            and _is_real_text(item.get("name"))
-            and (_evidence_exists(item, root, context) if manifest is None else _evidence_record_exists(item, root, context, manifest))
-            for item in values
-        )
+        (not required_names or {name.lower() for name in required_names} <= set(names))
+        and len(set(names)) == len(values)
+        and len(set(evidence_paths)) == len(values)
     )
 
 
@@ -362,6 +596,77 @@ def _section_evidence_ok(section: Any, root: Path, context: EvidenceContext | No
     return _section_pass(section) and _evidence_record_exists(section, root, context, manifest)
 
 
+def _claim_evidence_ok(
+    section_name: str,
+    section: Any,
+    root: Path,
+    context: EvidenceContext | None,
+    manifest: dict[str, Any],
+) -> bool:
+    required_fields = CLAIM_EVIDENCE_FIELDS.get(section_name, ())
+    if not isinstance(section, dict):
+        return False
+    records = [section.get(field) for field in required_fields]
+    if not all(_evidence_record_exists(record, root, context, manifest) for record in records):
+        return False
+    evidence_paths = [str(record["evidence"]) for record in records if isinstance(record, dict)]
+    names = [str(record["name"]).lower() for record in records if isinstance(record, dict)]
+    return len(set(evidence_paths)) == len(records) and len(set(names)) == len(records)
+
+
+def _matching_passing_value(
+    manifest: dict[str, Any],
+    left_section_name: str,
+    left_field_name: str,
+    right_section_name: str,
+    right_field_name: str,
+    validator: Callable[[Any], bool],
+) -> bool:
+    left_section = manifest.get(left_section_name)
+    right_section = manifest.get(right_section_name)
+    if not (_section_pass(left_section) and _section_pass(right_section)):
+        return True
+    left_value = left_section.get(left_field_name)
+    right_value = right_section.get(right_field_name)
+    return not (validator(left_value) and validator(right_value)) or left_value == right_value
+
+
+def _change_control_binding_ok(manifest: dict[str, Any]) -> bool:
+    return _matching_passing_value(
+        manifest,
+        "control",
+        "change_ticket",
+        "governance",
+        "change_ticket",
+        _is_real_text,
+    )
+
+
+def _service_objectives_binding_ok(manifest: dict[str, Any]) -> bool:
+    return all(
+        _matching_passing_value(
+            manifest,
+            "data_protection",
+            field,
+            "support",
+            field,
+            lambda value: type(value) is int and value > 0,
+        )
+        for field in ("rpo_minutes", "rto_minutes")
+    )
+
+
+def _on_call_binding_ok(manifest: dict[str, Any]) -> bool:
+    return _matching_passing_value(
+        manifest,
+        "observability",
+        "on_call",
+        "support",
+        "on_call",
+        _is_real_text,
+    )
+
+
 def _control_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("control")
     return bool(
@@ -369,6 +674,8 @@ def _control_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         and _section_evidence_ok(section, root, context, manifest)
         and section.get("catalog_validated") is True
         and section.get("ci_green") is True
+        and _is_real_text(section.get("change_ticket"))
+        and _change_control_binding_ok(manifest)
     )
 
 
@@ -376,15 +683,15 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     section = manifest.get("release")
     if not _section_evidence_ok(section, root, context, manifest):
         return False
+    provenance_payload = _provenance_payload(
+        section.get("provenance") if isinstance(section, dict) else None,
+        root,
+        context,
+    )
     if (
         not _is_real_text(section.get("version"))
         or section.get("provenance_verified") is not True
-        or not _structured_json_file(
-            section.get("provenance"),
-            root,
-            context,
-            PROVENANCE_GROUPS,
-        )
+        or provenance_payload is None
     ):
         return False
     artifacts = section.get("artifacts")
@@ -394,11 +701,53 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         _signed_artifact_ok(item, root, context, manifest) for item in artifacts
     ):
         return False
+    release_artifact_proof_paths: set[str] = set()
+    for artifact in artifacts:
+        artifact_paths = _artifact_proof_paths(artifact)
+        if len(artifact_paths) != 3 or release_artifact_proof_paths.intersection(artifact_paths):
+            return False
+        release_artifact_proof_paths.update(artifact_paths)
     service = manifest.get("service")
+    artifact_names = [str(item.get("name", "")) for item in artifacts if isinstance(item, dict)]
+    artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+    if len(artifact_names) != len(set(artifact_names)) or len(artifact_paths) != len(set(artifact_paths)):
+        return False
+    expected_release_digests = {
+        str(item.get("digest", "")) for item in artifacts if isinstance(item, dict)
+    }
+    expected_release_subjects = {
+        (str(item.get("name", "")), str(item.get("digest", "")))
+        for item in artifacts
+        if isinstance(item, dict)
+    }
+    all_release_proof_paths = set(release_artifact_proof_paths)
+    if isinstance(service, dict) and service.get("runtime") == "ansible":
+        provider_bundle = section.get("provider_bundle")
+        if isinstance(provider_bundle, dict):
+            if str(provider_bundle.get("name", "")) in artifact_names:
+                return False
+            provider_paths = _artifact_proof_paths(provider_bundle)
+            if len(provider_paths) != 3 or all_release_proof_paths.intersection(provider_paths):
+                return False
+            all_release_proof_paths.update(provider_paths)
+            expected_release_digests.add(str(provider_bundle.get("digest", "")))
+            expected_release_subjects.add(
+                (str(provider_bundle.get("name", "")), str(provider_bundle.get("digest", "")))
+            )
+    if not _provenance_binds_digests(provenance_payload, expected_release_digests):
+        return False
+    if not _provenance_binds_subjects(provenance_payload, expected_release_subjects):
+        return False
     if not isinstance(service, dict) or service.get("runtime") != "ansible":
         return True
     provider_bundle = section.get("provider_bundle")
     execution_environment = section.get("execution_environment")
+    execution_environment_proof_paths = _execution_environment_proof_paths(execution_environment)
+    if (
+        len(execution_environment_proof_paths) != 3
+        or all_release_proof_paths.intersection(execution_environment_proof_paths)
+    ):
+        return False
     provider_verification = _json_evidence_payload(
         provider_bundle.get("verification") if isinstance(provider_bundle, dict) else None,
         root,
@@ -407,6 +756,7 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     return bool(
         isinstance(provider_bundle, dict)
         and _is_real_text(provider_bundle.get("name"))
+        and _signed_artifact_ok(provider_bundle, root, context, manifest)
         and _digest_matches(provider_bundle.get("path"), str(provider_bundle.get("digest", "")), root, context)
         and re.fullmatch(r"sha256:[0-9a-f]{64}", str(provider_bundle.get("remote_digest", "")))
         and _evidence_record_exists(provider_bundle.get("verification"), root, context, manifest)
@@ -477,6 +827,7 @@ def _data_protection_ok(manifest: dict[str, Any], root: Path, context: EvidenceC
         and section.get("rpo_minutes", 0) > 0
         and type(section.get("rto_minutes")) is int
         and section.get("rto_minutes", 0) > 0
+        and _service_objectives_binding_ok(manifest)
     )
 
 
@@ -485,7 +836,8 @@ def _security_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
     if not _section_evidence_ok(section, root, context, manifest):
         return False
     return bool(
-        section.get("sbom_verified") is True
+        _claim_evidence_ok("security", section, root, context, manifest)
+        and section.get("sbom_verified") is True
         and section.get("tls_verified") is True
         and _is_real_text(section.get("secrets_provider"))
         and _evidence_record_exists(section.get("vulnerability_scan"), root, context, manifest)
@@ -498,7 +850,9 @@ def _observability_ok(manifest: dict[str, Any], root: Path, context: EvidenceCon
     if not _section_evidence_ok(section, root, context, manifest):
         return False
     return bool(
-        all(_is_real_text(section.get(key)) for key in ("metrics", "alerts", "dashboards", "on_call"))
+        _claim_evidence_ok("observability", section, root, context, manifest)
+        and all(_is_real_text(section.get(key)) for key in ("metrics", "alerts", "dashboards", "on_call"))
+        and _on_call_binding_ok(manifest)
         and _evidence_record_exists(section.get("alert_delivery_test"), root, context, manifest)
     )
 
@@ -520,6 +874,9 @@ def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
         and _signed_artifact_ok(rollback_artifact, root, context, manifest)
         and _evidence_record_exists(section.get("rollback_test"), root, context, manifest)
         and _evidence_record_exists(section.get("repair_test"), root, context, manifest)
+        and not _artifact_proof_paths(rollback_artifact).intersection(
+            _release_proof_paths(release)
+        )
     )
 
 
@@ -535,6 +892,7 @@ def _governance_ok(manifest: dict[str, Any], root: Path, context: EvidenceContex
         and section.get("evidence_access_logged") is True
         and type(section.get("evidence_retention_days")) is int
         and section.get("evidence_retention_days", 0) > 0
+        and _change_control_binding_ok(manifest)
         and _evidence_record_exists(section.get("retention_control"), root, context, manifest)
         and _evidence_record_exists(section.get("risk_review"), root, context, manifest)
     )
@@ -545,13 +903,16 @@ def _support_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     if not _section_evidence_ok(section, root, context, manifest):
         return False
     return bool(
-        _is_real_text(section.get("service_owner"))
+        _claim_evidence_ok("support", section, root, context, manifest)
+        and _is_real_text(section.get("service_owner"))
         and _is_real_text(section.get("on_call"))
         and _is_real_text(section.get("sla"))
         and type(section.get("rpo_minutes")) is int
         and section.get("rpo_minutes", 0) > 0
         and type(section.get("rto_minutes")) is int
         and section.get("rto_minutes", 0) > 0
+        and _service_objectives_binding_ok(manifest)
+        and _on_call_binding_ok(manifest)
         and isinstance(section.get("runbooks"), list)
         and bool(section.get("runbooks"))
         and all(_relative_file(item, root, context) for item in section.get("runbooks", []))
@@ -619,6 +980,9 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     release = manifest.get("release", {})
     if isinstance(release, dict) and not _is_real_text(release.get("version")):
         errors.append("release.version must be a non-placeholder pinned release")
+    control = manifest.get("control")
+    if isinstance(control, dict) and control.get("status") == "pass" and not _is_real_text(control.get("change_ticket")):
+        errors.append("control.change_ticket must identify the approved change-control record")
     if isinstance(service, dict) and service.get("runtime") == "ansible" and isinstance(release, dict) and release.get("status") == "pass":
         provider_bundle = release.get("provider_bundle")
         if not isinstance(provider_bundle, dict):
@@ -632,6 +996,15 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
                 errors.append("release.provider_bundle.digest must be a SHA-256 digest")
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(provider_bundle.get("remote_digest", ""))):
                 errors.append("release.provider_bundle.remote_digest must be a SHA-256 digest")
+            if not _is_real_text(provider_bundle.get("sbom")):
+                errors.append("release.provider_bundle.sbom must identify the provider-bundle SBOM")
+            if not _is_real_text(provider_bundle.get("signature")):
+                errors.append("release.provider_bundle.signature must identify the provider-bundle signature")
+            if provider_bundle.get("signature_verified") is not True:
+                errors.append("release.provider_bundle.signature_verified must be true")
+            signature_verification = provider_bundle.get("signature_verification")
+            if not isinstance(signature_verification, dict) or signature_verification.get("status") != "pass":
+                errors.append("release.provider_bundle.signature_verification must be a passing evidence record")
             verification = provider_bundle.get("verification")
             if not isinstance(verification, dict) or verification.get("status") != "pass":
                 errors.append("release.provider_bundle.verification must be a passing evidence record")
@@ -662,12 +1035,46 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
             verification = execution_environment.get("signature_verification")
             if not isinstance(verification, dict) or verification.get("status") != "pass":
                 errors.append("release.execution_environment.signature_verification must be a passing evidence record")
+    if isinstance(release, dict) and release.get("status") == "pass":
+        artifacts = release.get("artifacts")
+        if isinstance(artifacts, list):
+            artifact_names = [str(item.get("name", "")) for item in artifacts if isinstance(item, dict)]
+            artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+            if len(artifact_names) != len(set(artifact_names)):
+                errors.append("release.artifacts must not contain duplicate artifact names")
+            if len(artifact_paths) != len(set(artifact_paths)):
+                errors.append("release.artifacts must not contain duplicate artifact paths")
+            if isinstance(service, dict) and service.get("runtime") == "ansible":
+                provider_bundle = release.get("provider_bundle")
+                if isinstance(provider_bundle, dict) and str(provider_bundle.get("name", "")) in artifact_names:
+                    errors.append("release.provider_bundle.name must be distinct from release.artifacts names")
     for section_name in sorted(REQUIRED_TOP_LEVEL - {"schema_version", "service", "evidence_index"}):
         section = manifest.get(section_name)
         if not isinstance(section, dict):
             errors.append(f"{section_name} must be an object")
         elif section.get("status") not in STATUS_VALUES:
             errors.append(f"{section_name}.status must be pass, pending, or fail")
+    for section_name, required_fields in CLAIM_EVIDENCE_FIELDS.items():
+        section = manifest.get(section_name)
+        if isinstance(section, dict) and section.get("status") == "pass":
+            for field in required_fields:
+                record = section.get(field)
+                if not isinstance(record, dict) or record.get("status") != "pass":
+                    errors.append(f"{section_name}.{field} must be a passing evidence record")
+    if not _change_control_binding_ok(manifest):
+        errors.append("control.change_ticket must match governance.change_ticket when both sections pass")
+    for field in ("rpo_minutes", "rto_minutes"):
+        if not _matching_passing_value(
+            manifest,
+            "data_protection",
+            field,
+            "support",
+            field,
+            lambda value: type(value) is int and value > 0,
+        ):
+            errors.append(f"support.{field} must match data_protection.{field} when both sections pass")
+    if not _on_call_binding_ok(manifest):
+        errors.append("observability.on_call must match support.on_call when both sections pass")
     recovery = manifest.get("recovery")
     if isinstance(recovery, dict) and recovery.get("status") == "pass":
         rollback_artifact = recovery.get("rollback_artifact")
@@ -753,10 +1160,18 @@ def _evidence_metadata_errors(manifest: dict[str, Any]) -> list[str]:
     os_id = service.get("os_id") if isinstance(service, dict) else None
     environment = service.get("environment") if isinstance(service, dict) else None
     errors: list[str] = []
+    evidence_references: dict[str, list[str]] = {}
 
     def visit(value: Any, path: str) -> None:
         if isinstance(value, dict):
             if value.get("status") == "pass" and "evidence" in value:
+                evidence = value.get("evidence")
+                if isinstance(evidence, str):
+                    # The path validator rejects traversal and absolute paths;
+                    # normalize harmless spelling differences so `./proof.json`
+                    # cannot evade the one-record/one-file rule.
+                    normalized_evidence = Path(evidence).as_posix()
+                    evidence_references.setdefault(normalized_evidence, []).append(path or "<root>")
                 if not _is_real_text(value.get("name")):
                     errors.append(f"{path}.name must identify the evidence record")
                 if value.get("solution") != solution_id:
@@ -775,12 +1190,13 @@ def _evidence_metadata_errors(manifest: dict[str, Any]) -> list[str]:
                     errors.append(f"{path}.execution_environment_digest must match release.execution_environment.digest")
                 if (
                     "execution_environment" in value
-                    and not (
-                        isinstance(value.get("execution_environment"), dict)
-                        and "artifacts" in value
-                        and "provider_bundle" in value
+                    and (
+                        not (
+                            isinstance(value.get("execution_environment"), str)
+                            and value.get("execution_environment") in ENVIRONMENT_VALUES
+                        )
+                        and not _has_structured_release_execution_environment(value)
                     )
-                    and value.get("execution_environment") not in ENVIRONMENT_VALUES
                 ):
                     errors.append(f"{path}.execution_environment must identify a supported execution environment")
                 if not _is_real_timestamp(value.get("recorded_at")):
@@ -796,15 +1212,21 @@ def _evidence_metadata_errors(manifest: dict[str, Any]) -> list[str]:
                 visit(child, f"{path}[{index}]")
 
     visit(manifest, "")
+    for evidence, references in sorted(evidence_references.items()):
+        if len(references) > 1:
+            errors.append(
+                f"passing evidence file '{evidence}' is reused by multiple records: "
+                + ", ".join(references)
+            )
     return errors
 
 
 def assess_readiness(manifest_path: Path, catalog: Catalog) -> dict[str, Any]:
     try:
-        if manifest_path.is_symlink() or not manifest_path.is_file():
+        if has_symlink_component(manifest_path) or not manifest_path.is_file():
             raise OSError("readiness manifest must be a regular, non-symlink file")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        manifest = load_json_document(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         return {
             "status": "fail",
             "score": 0,

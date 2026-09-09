@@ -11,42 +11,132 @@
     fail_msg: "Raw deployment requires a reviewed, single-line upstream ExecStart command."
   tags: [provider, deploy]
 
-- name: Install the hardened systemd unit
+- name: Inspect the existing raw service destination before rendering
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
+    follow: false
+  register: archiveweaver_provider_raw_destination_stat
+  tags: [provider, deploy]
+
+- name: Reject a symlinked raw service destination
+  ansible.builtin.assert:
+    that:
+      - not (archiveweaver_provider_raw_destination_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The raw service destination must not be a symlink."
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Render the proposed systemd unit for check-mode preview
   ansible.builtin.template:
     src: archiveweaver.service.j2
     dest: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
     owner: root
     group: root
     mode: '0644'
+    follow: false
     diff: false
+  when: ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Inspect the raw-provider staging directory before creation
+  ansible.builtin.stat:
+    path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging"
+    follow: false
+  register: archiveweaver_provider_raw_staging_dir_stat
+  when: not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Reject a symlinked raw-provider staging directory
+  ansible.builtin.assert:
+    that:
+      - not (archiveweaver_provider_raw_staging_dir_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The raw-provider staging directory must not be a symlink."
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Create a private raw-provider staging directory
+  ansible.builtin.file:
+    path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  when: not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Render the raw provider unit into staging
+  ansible.builtin.template:
+    src: archiveweaver.service.j2
+    dest: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging/{{ archiveweaver_service_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+    follow: false
+    diff: false
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Inspect the staged raw provider unit
+  ansible.builtin.stat:
+    path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging/{{ archiveweaver_service_name }}.service"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_provider_raw_unit_stat
+  when:
+    - not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Require the staged raw provider unit digest before installation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_raw_unit_stat.stat.exists
+      - archiveweaver_provider_raw_unit_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_provider_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_bundle_sha256 is string
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_provider_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
+    fail_msg: "The rendered raw provider unit does not match the reviewed SHA-256 release binding."
+  when:
+    - not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Install the verified hardened systemd unit
+  ansible.builtin.copy:
+    src: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging/{{ archiveweaver_service_name }}.service"
+    dest: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0644'
+    follow: false
+    diff: false
+  when: not ansible_check_mode | bool
   notify: Restart ArchiveWeaver service
   tags: [provider, deploy]
 
-- name: Inspect the rendered raw provider unit
+- name: Inspect the installed raw provider unit
   ansible.builtin.stat:
     path: "/etc/systemd/system/{{ archiveweaver_service_name }}.service"
     follow: false
     get_checksum: true
     checksum_algorithm: sha256
-  register: archiveweaver_raw_unit_stat
-  when:
-    - not archiveweaver_is_staging_preview | default(false) | bool
-    - not ansible_check_mode | bool
+  register: archiveweaver_provider_installed_raw_unit_stat
+  when: not ansible_check_mode | bool
   tags: [provider, deploy]
 
-- name: Require the rendered raw provider unit digest
+- name: Require the installed raw provider unit digest
   ansible.builtin.assert:
     that:
-      - archiveweaver_raw_unit_stat.stat.exists
-      - archiveweaver_raw_unit_stat.stat.isreg | default(false) | bool
-      - not (archiveweaver_raw_unit_stat.stat.islnk | default(false) | bool)
-      - archiveweaver_provider_bundle_sha256 is string
-      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
-      - archiveweaver_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
-    fail_msg: "The rendered raw provider unit does not match the reviewed SHA-256 release binding."
-  when:
-    - not archiveweaver_is_staging_preview | default(false) | bool
-    - not ansible_check_mode | bool
+      - archiveweaver_provider_installed_raw_unit_stat.stat.exists
+      - archiveweaver_provider_installed_raw_unit_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_provider_installed_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_installed_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
+    fail_msg: "The installed raw provider unit does not match the verified SHA-256 release binding."
+  when: not ansible_check_mode | bool
   no_log: true
   tags: [provider, deploy]
 

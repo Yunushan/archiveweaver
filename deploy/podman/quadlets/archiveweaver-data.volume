@@ -1,3 +1,6 @@
 [Volume]
 VolumeName=archiveweaver-data
+Device=/srv/archiveweaver/replace-me
+Type=none
+Options=bind
 

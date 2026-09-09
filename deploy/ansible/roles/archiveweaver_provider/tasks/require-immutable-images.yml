@@ -1,0 +1,29 @@
+---
+- name: Extract rendered provider image references
+  ansible.builtin.set_fact:
+    archiveweaver_provider_rendered_image_references: >-
+      {{ archiveweaver_provider_rendered_content
+         | regex_findall('(?im)^\\s*image\\s*:\\s*([^\\s#]+)') }}
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Require rendered provider content to declare images
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_rendered_image_references | length > 0
+    fail_msg: "The reviewed provider bundle must declare at least one product image."
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Require every rendered provider image to be immutable
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is not search('(?i)(?:example\\.invalid|replace|todo|tbd|latest)')
+      - item is match('^[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[0-9a-f]{64}$')
+    fail_msg: "Every rendered product image must be an approved, non-placeholder OCI digest reference."
+  loop: "{{ archiveweaver_provider_rendered_image_references }}"
+  loop_control:
+    label: immutable-image
+  no_log: true
+  tags: [provider, deploy, verify]

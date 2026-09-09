@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import urllib.error
 import unittest
 from pathlib import Path
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 from archiveweaver.catalog import Catalog
 from archiveweaver.checks import _command, check_url
-from archiveweaver.repair import apply_repair, build_repair_plan
+from archiveweaver.repair import _resolve_ansible_bundle_path, apply_repair, build_repair_plan
 
 
 class RepairTests(unittest.TestCase):
@@ -131,6 +132,27 @@ class RepairTests(unittest.TestCase):
         self.assertTrue(any("archiveweaver_fixture_set=paperless-fixtures-v1" in arg for action in bound["actions"] for arg in action["command"]))
         self.assertTrue(any("archiveweaver_execution_environment_digest=sha256:" + "a" * 64 in arg for action in bound["actions"] for arg in action["command"]))
 
+    def test_ansible_repair_defaults_work_from_ansible_directory(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        ansible_root = repository_root / "deploy" / "ansible"
+        with patch("archiveweaver.repair.Path.cwd", return_value=ansible_root):
+            plan = build_repair_plan(self.catalog, "paperless-ngx", "ansible")
+
+        self.assertEqual(
+            plan["actions"][0]["command"][2],
+            str((ansible_root / "inventory" / "production" / "hosts.yml").resolve()),
+        )
+        self.assertEqual(
+            plan["actions"][0]["command"][3],
+            str((ansible_root / "repair.yml").resolve()),
+        )
+        self.assertTrue(any(
+            "archiveweaver_readiness_manifest_path="
+            + str((ansible_root / "release-manifest.json").resolve()) in arg
+            for action in plan["actions"]
+            for arg in action["command"]
+        ))
+
     def test_ansible_repair_rejects_invalid_execution_environment_digest(self) -> None:
         with self.assertRaises(ValueError):
             build_repair_plan(
@@ -153,6 +175,26 @@ class RepairTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             outside = Path(Path.cwd().anchor) / "outside" / "release-manifest.json"
             build_repair_plan(self.catalog, "paperless-ngx", "ansible", readiness_manifest=str(outside))
+
+    def test_ansible_repair_rejects_playbook_or_inventory_outside_bundle(self) -> None:
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "ansible", playbook="../repair.yml")
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "ansible", inventory="../hosts.yml")
+
+    def test_ansible_repair_rejects_symlinked_controller_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ansible"
+            root.mkdir()
+            target = root / "reviewed.yml"
+            target.write_text("---\n", encoding="utf-8")
+            link = root / "link.yml"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"file symlinks are unavailable: {exc}")
+            with self.assertRaises(ValueError):
+                _resolve_ansible_bundle_path(str(link), root, "--playbook")
 
     def test_ansible_repair_rejects_secret_like_identity_values(self) -> None:
         with self.assertRaises(ValueError):

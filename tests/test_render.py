@@ -43,9 +43,15 @@ class RenderTests(unittest.TestCase):
         self.assertIn("archiveweaver_preflight", content)
         self.assertIn("archiveweaver_provider", content)
         self.assertIn("archiveweaver_evidence", content)
+        self.assertIn("archiveweaver_controller_preflight", content)
+        self.assertIn("archiveweaver_controller_target_group: archiveweaver_nodes", content)
+        self.assertLess(content.index("hosts: localhost"), content.index("hosts: archiveweaver_nodes"))
+        self.assertLess(content.index("hosts: archiveweaver_nodes"), content.rindex("hosts: localhost"))
         self.assertIn('archiveweaver_operator: ""', content)
         self.assertIn('archiveweaver_evidence_environment: "production"', content)
         self.assertIn("archiveweaver_run_verification: false", content)
+        self.assertIn("archiveweaver_evidence_completion_fact: archiveweaver_verification_completed", content)
+        self.assertIn("archiveweaver_evidence_completion_hosts:", content)
 
     def test_ansible_renderer_selects_underlying_provider(self) -> None:
         plan, content = render(

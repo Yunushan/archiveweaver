@@ -33,14 +33,22 @@ cp inventory/staging/hosts.yml.example inventory/staging/hosts.yml
 cp inventory/restore/hosts.yml.example inventory/restore/hosts.yml
 cp group_vars/all/vault.yml.example group_vars/all/vault.yml
 cp release-manifest.example.json release-manifest.json
+# Create release-manifest-staging.json and release-manifest-restore.json only
+# when those isolated workflows use distinct, protected manifest bindings.
 ansible-vault encrypt group_vars/all/vault.yml
 python3 -m pip install -r requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
 Every operational playbook checks the controller's live `ansible-playbook`
-Core version against `requirements.txt` before it executes. This includes
-certification, restore, failure-domain, and rollback paths.
+Core and `ansible-lint` versions against the pinned requirements before it
+executes. This includes certification, restore, failure-domain, and rollback
+paths.
+Applied operational playbooks also require the controller environment variable
+`ARCHIVEWEAVER_IMMUTABLE_REF`, the approved signer list, and the protected
+`ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` binding. They verify the signed,
+clean Git checkout and exact manifest bytes before they contact managed hosts.
+Check-mode previews remain available without that production-only source gate.
 
 Edit the copied inventory and `group_vars/all/main.yml`. Give every managed
 multi-node host an explicit `archiveweaver_failure_domain` label, and give the
@@ -57,14 +65,21 @@ SHA-256 index named by the manifest's `evidence_index` field; all referenced
 artifacts and evidence must be listed in that index. The playbooks re-run that
 controller-side check before any mutation; setting a boolean gate alone is
 insufficient.
+Controller-local readiness and evidence helpers run with the same
+`ansible_playbook_python` interpreter that launched Ansible; overriding that
+interpreter binding is rejected by controller preflight.
 Host preparation also constrains the managed data, log, and release-record
 paths to `/srv/archiveweaver/`, `/var/log/archiveweaver/`, and
 `/etc/archiveweaver/` respectively, so an inventory typo cannot redirect
 directory creation or ownership changes into a broad system path.
 For Ansible releases, the manifest's `release.provider_bundle` must identify
 the reviewed provider bundle, its artifact `digest`, and the canonical
-`remote_digest` of the content staged on managed hosts. The preflight role
-binds the latter to the staged remote content.
+`remote_digest` of the content staged on managed hosts. It must also carry an
+indexed SBOM, detached signature, and signature-verification record. Every
+release, provider, execution-environment, and rollback proof path must be
+unique so one file cannot be presented as multiple independent attestations.
+The release provenance must carry the provider bundle's artifact digest, and
+the preflight role binds the latter remote digest to the staged content.
 
 For Docker or Swarm, set `archiveweaver_product_stack_sha256` to the reviewed
 Compose/Swarm file digest and set `remote_digest` to the same digest when the
@@ -75,8 +90,13 @@ that value as `remote_digest`. Apply and
 repair reject content that does not match these release bindings. For raw
 systemd, set `archiveweaver_provider_bundle_sha256` to the SHA-256 of the
 rendered unit; for Podman Quadlet, use the deterministic digest of the three
-rendered files (`network:<sha256>`, `volume:<sha256>`, and
-`container:<sha256>` joined with newlines).
+solution-scoped rendered files (`network:<sha256>`, `volume:<sha256>`, and
+`container:<sha256>` joined with newlines). The network and volume filenames
+include the solution ID so multiple Quadlet services on one host cannot
+silently share an ArchiveWeaver network or collide on provider definitions.
+The generated Quadlet volume is a bind-backed named volume whose device is
+`archiveweaver_data_root`; it does not silently create an unmanaged node-local
+volume outside the controlled data path.
 
 The repository CLI computes these bindings without relying on
 platform-specific archive metadata:
@@ -96,9 +116,13 @@ expects the bare 64-character hexadecimal value. The staged content must be
 byte-for-byte identical to the reviewed binding.
 For raw and Quadlet, the mutation-time digest check is intentionally skipped by
 `--check` because Ansible does not write the candidate template in check mode;
-the real apply and the read-only verification playbook hash the deployed files.
+the real apply renders into a private `.provider-staging` directory, verifies
+the digest before copying anything into the active systemd/Quadlet path, and
+the read-only verification playbook hashes the deployed files again.
 Quadlet image references are additionally required to use a full SHA-256
-digest; mutable image tags are not accepted by the provider role.
+digest; the Docker, Swarm, and Kubernetes provider roles apply the same
+requirement to every image in their rendered product model. Mutable or
+placeholder image references are not accepted by the provider roles.
 
 Every passing evidence record must carry the exact solution, provider/runtime,
 OS, release, environment, operator, fixture-set, and timezone-qualified
@@ -107,6 +131,10 @@ also carry the exact `release.execution_environment.digest` used by the
 controller. JSON evidence files must
 also contain a matching `status: pass` payload; the evidence index alone does
 not make an empty or unrelated file valid.
+The readiness contract additionally requires dedicated passing evidence
+records for security SBOM/TLS/secret-provider claims, each observability
+surface and on-call rotation, and support ownership/on-call/SLA claims. The
+human-readable values are identifiers only; they cannot replace indexed proof.
 Set `archiveweaver_evidence_environment` to the release target (normally
 `production`). Certification and drill roles additionally record their actual
 isolated execution environment, so staging/restore infrastructure can prove a
@@ -209,15 +237,20 @@ execution environment through a controlled automation controller. Use signed
 and reviewed content, RBAC-separated credentials, Vault or an external secret
 manager, protected inventories, approval nodes, serial/rolling execution,
 central job history, immutable evidence storage, and scheduled restore/fixity
-tests. In every non-check-mode production evidence run, supply the reviewed
+tests. Before the controller runs tests or playbooks, verify the signed
+immutable checkout with `bash scripts/verify-source-identity.sh "$ARCHIVEWEAVER_IMMUTABLE_REF"`.
+In every non-check-mode production evidence run, supply the reviewed
 archiveweaver_evidence_publish_command and
 archiveweaver_evidence_verify_command hooks together with the retention,
 immutability, and access-logging bindings. The repository supplies the safe
-content boundary; an automation controller and operational policy provide the
+content boundary; the shared hook preflight also requires each reviewed hook
+to use an absolute regular executable whose bytes match its lowercase
+SHA-256 binding. An automation controller and operational policy provide the
 organization-level governance.
 
 Enable the managed read-only health timer with
 `archiveweaver_observe_enabled: true` only after installing the ArchiveWeaver
-checker on the host and setting an HTTPS health URL. It writes results to the
-system journal; the controller workflow is responsible for alert routing,
-retention, and escalation.
+checker on the host, binding its lowercase SHA-256 digest as
+`archiveweaver_check_command_sha256`, and setting an HTTPS health URL. It
+writes results to the system journal; the controller workflow is responsible
+for alert routing, retention, and escalation.

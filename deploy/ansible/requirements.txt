@@ -3,3 +3,4 @@
 # and image digest in their release manifest.
 ansible-core==2.21.0
 ansible-lint==26.6.0
+PyYAML==6.0.2

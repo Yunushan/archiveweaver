@@ -6,15 +6,23 @@ repo_root="$(cd -- "${script_dir}/.." && pwd)"
 ansible_root="${repo_root}/deploy/ansible"
 
 cd "${ansible_root}"
+python3 "${repo_root}/scripts/validate-controller-contract.py"
 ansible-galaxy collection install -r requirements.yml
 ansible-lint --offline site.yml verify.yml repair.yml product-certification.yml restore-drill.yml failure-drill.yml rollback.yml
 
-ansible-playbook -i inventory/production/hosts.yml.example site.yml --syntax-check
-ansible-playbook -i inventory/production/hosts.yml.example verify.yml --syntax-check
-ansible-playbook -i inventory/production/hosts.yml.example repair.yml --syntax-check
-ansible-playbook -i inventory/staging/hosts.yml.example product-certification.yml --syntax-check
-ansible-playbook -i inventory/restore/hosts.yml.example restore-drill.yml --syntax-check
-ansible-playbook -i inventory/staging/hosts.yml.example failure-drill.yml --syntax-check
-ansible-playbook -i inventory/production/hosts.yml.example rollback.yml --syntax-check
+validation_inventory_dir="$(mktemp -d)"
+trap 'rm -rf -- "${validation_inventory_dir}"' EXIT
+mkdir -p "${validation_inventory_dir}/production" "${validation_inventory_dir}/staging" "${validation_inventory_dir}/restore"
+cp inventory/production/hosts.yml.example "${validation_inventory_dir}/production/hosts.yml"
+cp inventory/staging/hosts.yml.example "${validation_inventory_dir}/staging/hosts.yml"
+cp inventory/restore/hosts.yml.example "${validation_inventory_dir}/restore/hosts.yml"
+
+ansible-playbook -i "${validation_inventory_dir}/production/hosts.yml" site.yml --syntax-check
+ansible-playbook -i "${validation_inventory_dir}/production/hosts.yml" verify.yml --syntax-check
+ansible-playbook -i "${validation_inventory_dir}/production/hosts.yml" repair.yml --syntax-check
+ansible-playbook -i "${validation_inventory_dir}/staging/hosts.yml" product-certification.yml --syntax-check
+ansible-playbook -i "${validation_inventory_dir}/restore/hosts.yml" restore-drill.yml --syntax-check
+ansible-playbook -i "${validation_inventory_dir}/staging/hosts.yml" failure-drill.yml --syntax-check
+ansible-playbook -i "${validation_inventory_dir}/production/hosts.yml" rollback.yml --syntax-check
 
 echo "Ansible lint and syntax validation: PASS"

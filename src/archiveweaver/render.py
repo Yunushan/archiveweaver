@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from textwrap import dedent
+from textwrap import dedent, indent
 
 from .catalog import Catalog
 from .planner import build_plan
@@ -256,6 +256,32 @@ def render_ansible(
     image: str = "",
 ) -> str:
     image_value = _yaml_string(image) if image else '""'
+    common_vars = dedent(f"""
+        archiveweaver_solution_id: {_yaml_string(solution_id)}
+        archiveweaver_nodes: {_yaml_string(nodes)}
+        archiveweaver_os_id: {_yaml_string(os_id)}
+        archiveweaver_namespace: {_yaml_string(namespace)}
+        archiveweaver_app_port: {port}
+        archiveweaver_ansible_core_version: "2.21.0"
+        archiveweaver_ansible_lint_version: "26.6.0"
+        archiveweaver_execution_environment_digest: ""
+        archiveweaver_environment: "production"
+        archiveweaver_evidence_environment: "production"
+        archiveweaver_runtime: {_yaml_string(underlying_mode)}
+        archiveweaver_image: {image_value}
+        archiveweaver_release: "REPLACE_WITH_PINNED_RELEASE"
+        archiveweaver_change_id: "CHG-REPLACE"
+        archiveweaver_operator: ""
+        archiveweaver_fixture_set: ""
+        # Bind the staged provider bundle to the reviewed release before
+        # enabling apply. Use a bare SHA-256 hex digest here.
+        archiveweaver_provider_bundle_sha256: ""
+        archiveweaver_product_stack_sha256: ""
+        archiveweaver_kustomize_bundle_sha256: ""
+        archiveweaver_apply: false
+        archiveweaver_run_verification: false
+    """).strip()
+    rendered_vars = indent(common_vars, "            ")
     return dedent(f"""
         ---
         # ArchiveWeaver generated Ansible entry point for {solution_id}
@@ -264,6 +290,21 @@ def render_ansible(
         # configured roles_path. It is an orchestration envelope, not a
         # universal product installer. Add the upstream product stack and
         # release-specific tasks only after staging validation.
+        - name: Validate the pinned Ansible controller
+          hosts: localhost
+          connection: local
+          gather_facts: false
+          vars:
+            archiveweaver_controller_target_group: archiveweaver_nodes
+{rendered_vars}
+          pre_tasks:
+            - name: Preserve the post-play evidence sealing decision
+              ansible.builtin.set_fact:
+                archiveweaver_evidence_seal_enabled: "{{{{ archiveweaver_run_verification | default(false) | bool }}}}"
+          roles:
+            - role: archiveweaver_controller_preflight
+              tags: [always, controller]
+
         - name: ArchiveWeaver enterprise deployment envelope
           hosts: archiveweaver_nodes
           become: true
@@ -271,37 +312,31 @@ def render_ansible(
           serial: 1
           any_errors_fatal: true
           vars:
-            archiveweaver_solution_id: {_yaml_string(solution_id)}
-            archiveweaver_nodes: {_yaml_string(nodes)}
-            archiveweaver_os_id: {_yaml_string(os_id)}
-            archiveweaver_namespace: {_yaml_string(namespace)}
-            archiveweaver_app_port: {port}
-            archiveweaver_ansible_core_version: "2.21.0"
-            archiveweaver_execution_environment_digest: ""
-            archiveweaver_environment: "production"
-            archiveweaver_evidence_environment: "production"
-            archiveweaver_runtime: {_yaml_string(underlying_mode)}
-            archiveweaver_image: {image_value}
-            archiveweaver_operator: ""
-            archiveweaver_fixture_set: ""
-            # Bind the staged provider bundle to the reviewed release before
-            # enabling apply. Use a bare SHA-256 hex digest here.
-            archiveweaver_provider_bundle_sha256: ""
-            archiveweaver_product_stack_sha256: ""
-            archiveweaver_kustomize_bundle_sha256: ""
-            archiveweaver_apply: false
-            archiveweaver_run_verification: false
+{rendered_vars}
           roles:
             - role: archiveweaver_preflight
+              tags: [preflight]
             - role: archiveweaver_host
               when: archiveweaver_apply | bool
+              tags: [host, deploy]
             - role: archiveweaver_provider
               when: archiveweaver_apply | bool
+              tags: [provider, deploy]
             - role: archiveweaver_verify
               when: archiveweaver_run_verification | bool
               tags: [verify]
+
+        - name: Seal ArchiveWeaver evidence after all managed hosts complete
+          hosts: localhost
+          connection: local
+          gather_facts: false
+          vars:
+{rendered_vars}
+            archiveweaver_evidence_completion_fact: archiveweaver_verification_completed
+            archiveweaver_evidence_completion_hosts: "{{{{ groups['archiveweaver_nodes'] | default([]) }}}}"
+          roles:
             - role: archiveweaver_evidence
-              when: archiveweaver_run_verification | bool
+              when: archiveweaver_evidence_seal_enabled | default(false) | bool
               tags: [evidence]
     """).lstrip()
 

@@ -1,4 +1,11 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [failure-drill]
+  tags: [failure-drill]
+
 - name: Validate the failure-drill boundary
   ansible.builtin.assert:
     that:
@@ -53,6 +60,26 @@
       - item.command | length > 0
     fail_msg: "Each failure test requires a named reviewed argument-vector command."
   loop: "{{ archiveweaver_failure_tests }}"
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Require safe failure-drill argv elements
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item | length > 0
+      - item is not search('["\\r\\n]')
+    fail_msg: "Failure-drill hooks must contain safe, non-empty argument-vector elements."
+  loop: "{{ archiveweaver_failure_tests | map(attribute='command') | list | flatten }}"
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
+- name: Verify reviewed failure-drill hook executables
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+  vars:
+    archiveweaver_hook_specs: "{{ archiveweaver_failure_tests }}"
   when: archiveweaver_failure_apply | bool
   no_log: true
   tags: [failure-drill]
@@ -140,6 +167,41 @@
   no_log: true
   tags: [failure-drill]
 
+- name: Inspect controller evidence boundaries before writing
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ archiveweaver_evidence_root }}"
+    - "{{ archiveweaver_failure_evidence_dir }}"
+  register: archiveweaver_failure_evidence_path_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  no_log: true
+  tags: [failure-drill]
+
+- name: Verify controller evidence path components before writing
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/path-boundary.yml"
+  vars:
+    archiveweaver_controller_path_boundary_paths:
+      - "{{ archiveweaver_evidence_root }}"
+      - "{{ archiveweaver_failure_evidence_dir }}"
+  tags: [failure-drill]
+
+- name: Reject symlinked controller evidence boundaries
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false) | bool)
+    fail_msg: "Failure-drill evidence paths must not be symlinks."
+  loop: "{{ archiveweaver_failure_evidence_path_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  tags: [failure-drill]
+
 - name: Create the failure-drill evidence directory on the controller
   ansible.builtin.file:
     path: "{{ archiveweaver_failure_evidence_dir }}"
@@ -158,4 +220,10 @@
   delegate_to: localhost
   become: false
   no_log: true
+  tags: [failure-drill]
+
+- name: Attest completed failure-domain drill
+  ansible.builtin.set_fact:
+    archiveweaver_failure_completed: true
+  when: archiveweaver_failure_apply | bool
   tags: [failure-drill]

@@ -8,6 +8,24 @@
     fail_msg: "Podman deployment requires an approved immutable image digest (registry/path@sha256:<64 hex>)."
   tags: [provider, deploy]
 
+- name: Define the canonical Quadlet provider files
+  ansible.builtin.set_fact:
+    archiveweaver_provider_quadlet_files:
+      - name: network
+        template: archiveweaver.network.j2
+        path: "/etc/containers/systemd/archiveweaver-{{ archiveweaver_solution_id }}.network"
+        staging_path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging/archiveweaver-{{ archiveweaver_solution_id }}.network"
+      - name: volume
+        template: archiveweaver.volume.j2
+        path: "/etc/containers/systemd/archiveweaver-{{ archiveweaver_solution_id }}.volume"
+        staging_path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging/archiveweaver-{{ archiveweaver_solution_id }}.volume"
+      - name: container
+        template: archiveweaver.container.j2
+        path: "/etc/containers/systemd/{{ archiveweaver_service_name }}.container"
+        staging_path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging/{{ archiveweaver_service_name }}.container"
+  no_log: true
+  tags: [provider, deploy]
+
 - name: Create the Quadlet directory
   ansible.builtin.file:
     path: /etc/containers/systemd
@@ -17,36 +35,137 @@
     mode: '0755'
   tags: [provider, deploy]
 
-- name: Install the Quadlet network definition
-  ansible.builtin.template:
-    src: archiveweaver.network.j2
-    dest: /etc/containers/systemd/archiveweaver.network
-    owner: root
-    group: root
-    mode: '0644'
-    diff: false
-  notify: Restart ArchiveWeaver service
+- name: Inspect existing Quadlet destinations before rendering
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop: "{{ archiveweaver_provider_quadlet_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_provider_quadlet_destination_stats
   tags: [provider, deploy]
 
-- name: Install the Quadlet volume definition
-  ansible.builtin.template:
-    src: archiveweaver.volume.j2
-    dest: /etc/containers/systemd/archiveweaver.volume
-    owner: root
-    group: root
-    mode: '0644'
-    diff: false
-  notify: Restart ArchiveWeaver service
+- name: Reject symlinked Quadlet destinations
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_quadlet_destination_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
+    fail_msg: "Quadlet service destinations must not be symlinks."
+  no_log: true
   tags: [provider, deploy]
 
-- name: Install the Quadlet container definition
+- name: Render the proposed Quadlet files for check-mode preview
   ansible.builtin.template:
-    src: archiveweaver.container.j2
-    dest: "/etc/containers/systemd/{{ archiveweaver_service_name }}.container"
+    src: "{{ item.template }}"
+    dest: "{{ item.path }}"
     owner: root
     group: root
     mode: '0644'
+    follow: false
     diff: false
+  loop: "{{ archiveweaver_provider_quadlet_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Inspect the Quadlet-provider staging directory before creation
+  ansible.builtin.stat:
+    path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging"
+    follow: false
+  register: archiveweaver_provider_quadlet_staging_dir_stat
+  when: not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Reject a symlinked Quadlet-provider staging directory
+  ansible.builtin.assert:
+    that:
+      - not (archiveweaver_provider_quadlet_staging_dir_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The Quadlet-provider staging directory must not be a symlink."
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Create a private Quadlet provider staging directory
+  ansible.builtin.file:
+    path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/.provider-staging"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  when: not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Render the Quadlet provider files into staging
+  ansible.builtin.template:
+    src: "{{ item.template }}"
+    dest: "{{ item.staging_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+    follow: false
+    diff: false
+  loop: "{{ archiveweaver_provider_quadlet_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Inspect the staged Quadlet provider files
+  ansible.builtin.stat:
+    path: "{{ item.staging_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop: "{{ archiveweaver_provider_quadlet_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_provider_quadlet_staged_file_stats
+  when:
+    - not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Build deterministic staged Quadlet provider digest input
+  ansible.builtin.set_fact:
+    archiveweaver_provider_quadlet_staged_digest_input: >-
+      {{ (archiveweaver_provider_quadlet_staged_digest_input | default([]))
+         + [item.item.name ~ ':' ~ item.stat.checksum] }}
+  loop: "{{ archiveweaver_provider_quadlet_staged_file_stats.results | default([]) }}"
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+  tags: [provider, deploy]
+
+- name: Require the staged Quadlet provider digest before installation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_quadlet_staged_file_stats.results | length == 3
+      - archiveweaver_provider_quadlet_staged_file_stats.results | selectattr('stat.exists', 'equalto', true) | list | length == 3
+      - archiveweaver_provider_quadlet_staged_file_stats.results | selectattr('stat.isreg', 'equalto', true) | list | length == 3
+      - archiveweaver_provider_quadlet_staged_file_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
+      - archiveweaver_provider_bundle_sha256 is string
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - (archiveweaver_provider_quadlet_staged_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_provider_bundle_sha256
+    fail_msg: "The staged Quadlet provider files do not match the reviewed SHA-256 release binding."
+  when:
+    - not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Install the verified Quadlet provider files
+  ansible.builtin.copy:
+    src: "{{ item.staging_path }}"
+    dest: "{{ item.path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0644'
+    follow: false
+    diff: false
+  loop: "{{ archiveweaver_provider_quadlet_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not ansible_check_mode | bool
   notify: Restart ArchiveWeaver service
   tags: [provider, deploy]
 
@@ -56,39 +175,37 @@
     follow: false
     get_checksum: true
     checksum_algorithm: sha256
-  loop:
-    - {name: network, path: /etc/containers/systemd/archiveweaver.network}
-    - {name: volume, path: /etc/containers/systemd/archiveweaver.volume}
-    - {name: container, path: "/etc/containers/systemd/{{ archiveweaver_service_name }}.container"}
-  register: archiveweaver_quadlet_file_stats
+  loop: "{{ archiveweaver_provider_quadlet_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_provider_quadlet_file_stats
   when:
-    - not archiveweaver_is_staging_preview | default(false) | bool
     - not ansible_check_mode | bool
   tags: [provider, deploy]
 
 - name: Build deterministic Quadlet provider digest input
   ansible.builtin.set_fact:
-    archiveweaver_quadlet_digest_input: "{{ (archiveweaver_quadlet_digest_input | default([])) + [item.item.name ~ ':' ~ item.stat.checksum] }}"
-  loop: "{{ archiveweaver_quadlet_file_stats.results | default([]) }}"
+    archiveweaver_provider_quadlet_digest_input: >-
+      {{ (archiveweaver_provider_quadlet_digest_input | default([]))
+         + [item.item.name ~ ':' ~ item.stat.checksum] }}
+  loop: "{{ archiveweaver_provider_quadlet_file_stats.results | default([]) }}"
   no_log: true
   when:
-    - not archiveweaver_is_staging_preview | default(false) | bool
     - not ansible_check_mode | bool
   tags: [provider, deploy]
 
 - name: Require the rendered Quadlet provider digest
   ansible.builtin.assert:
     that:
-      - archiveweaver_quadlet_file_stats.results | length == 3
-      - archiveweaver_quadlet_file_stats.results | selectattr('stat.exists', 'equalto', true) | list | length == 3
-      - archiveweaver_quadlet_file_stats.results | selectattr('stat.isreg', 'equalto', true) | list | length == 3
-      - archiveweaver_quadlet_file_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
+      - archiveweaver_provider_quadlet_file_stats.results | length == 3
+      - archiveweaver_provider_quadlet_file_stats.results | selectattr('stat.exists', 'equalto', true) | list | length == 3
+      - archiveweaver_provider_quadlet_file_stats.results | selectattr('stat.isreg', 'equalto', true) | list | length == 3
+      - archiveweaver_provider_quadlet_file_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
       - archiveweaver_provider_bundle_sha256 is string
       - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
-      - (archiveweaver_quadlet_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_provider_bundle_sha256
+      - (archiveweaver_provider_quadlet_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_provider_bundle_sha256
     fail_msg: "The rendered Quadlet provider files do not match the reviewed SHA-256 release binding."
   when:
-    - not archiveweaver_is_staging_preview | default(false) | bool
     - not ansible_check_mode | bool
   no_log: true
   tags: [provider, deploy]

@@ -1,4 +1,51 @@
 ---
+- name: Begin controller preflight transaction
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -c
+      - "print('archiveweaver-controller-preflight-started')"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  register: archiveweaver_controller_preflight_entrypoint
+  no_log: true
+  tags: [always, controller]
+
+- name: Require a non-empty controller target group
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_target_group | default('') is string
+      - archiveweaver_controller_target_group | default('') | length > 0
+      - (groups | default({})).get(archiveweaver_controller_target_group | default(''), []) | length > 0
+      - >-
+        ((groups | default({})).get(archiveweaver_controller_target_group | default(''), [])
+        | intersect(query('ansible.builtin.inventory_hostnames', ansible_limit | default('all', true))))
+        | length > 0
+    fail_msg: "The controller workflow must target a defined, non-empty inventory group."
+  tags: [always, controller]
+
+- name: Reject partial inventory limits for operational workflows
+  ansible.builtin.assert:
+    that:
+      - (ansible_limit | default('all', true)) is string
+      - (ansible_limit | default('all', true)) in ['all', archiveweaver_controller_target_group]
+    fail_msg: "Operational workflows must target the complete controller target group; partial --limit runs are not permitted."
+  when:
+    - not ansible_check_mode | bool
+    - >-
+      archiveweaver_apply | default(false) | bool
+      or archiveweaver_repair_apply | default(false) | bool
+      or archiveweaver_run_verification | default(false) | bool
+      or archiveweaver_certification_apply | default(false) | bool
+      or archiveweaver_restore_apply | default(false) | bool
+      or archiveweaver_failure_apply | default(false) | bool
+      or archiveweaver_rollback_apply | default(false) | bool
+      or archiveweaver_evidence_seal_enabled | default(false) | bool
+  no_log: true
+  tags: [always, controller]
+
 - name: Validate the pinned Ansible Core declaration
   ansible.builtin.assert:
     that:
@@ -10,7 +57,7 @@
 - name: Inspect the controller Ansible Core version
   ansible.builtin.command:
     argv: [ansible-playbook, --version]
-  register: archiveweaver_controller_ansible_version
+  register: archiveweaver_controller_preflight_ansible_version
   changed_when: false
   check_mode: false
   no_log: true
@@ -19,9 +66,261 @@
 - name: Require the pinned Ansible Core execution environment
   ansible.builtin.assert:
     that:
-      - archiveweaver_controller_ansible_version.rc == 0
-      - archiveweaver_controller_ansible_version.stdout is search('core ' ~ archiveweaver_ansible_core_version)
+      - archiveweaver_controller_preflight_ansible_version.rc == 0
+      - archiveweaver_controller_preflight_ansible_version.stdout is search('core ' ~ archiveweaver_ansible_core_version)
     fail_msg: "The controller is not using the pinned Ansible Core execution environment."
+  no_log: true
+  tags: [always, controller]
+
+- name: Inspect the controller Ansible Lint version
+  ansible.builtin.command:
+    argv: [ansible-lint, --version]
+  register: archiveweaver_controller_preflight_ansible_lint_version
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the pinned Ansible Lint execution environment
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_ansible_lint_version.rc == 0
+      - archiveweaver_controller_preflight_ansible_lint_version.stdout is search('ansible-lint ' ~ archiveweaver_ansible_lint_version)
+    fail_msg: "The controller is not using the pinned Ansible Lint execution environment."
+  no_log: true
+  tags: [always, controller]
+
+- name: Reject symlinked controller path components
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_python is string
+      - archiveweaver_readiness_python | length > 0
+      - archiveweaver_readiness_python == ansible_playbook_python
+      - archiveweaver_readiness_python is not search('[\"\\s\\r\\n]')
+      - archiveweaver_bundle_root is string
+      - archiveweaver_bundle_root is match('^/')
+      - archiveweaver_bundle_root is not search('[\"\\s\\r\\n]')
+      - archiveweaver_readiness_manifest_path is string
+      - archiveweaver_readiness_manifest_path is not search('[\"\\s\\r\\n]')
+      - archiveweaver_evidence_root is string
+      - archiveweaver_evidence_root is not search('[\"\\s\\r\\n]')
+    fail_msg: "Controller path-boundary verification must use Ansible's own trusted Python interpreter and safe path bindings."
+  no_log: true
+  tags: [always, controller]
+
+- name: Reject tag-filtered operational workflows
+  ansible.builtin.assert:
+    that:
+      - "'all' in (ansible_run_tags | default(['all']))"
+      - (ansible_skip_tags | default([])) is sequence
+      - (ansible_skip_tags | default([])) is not string
+      - (ansible_skip_tags | default([]) | length) == 0
+    fail_msg: "Operational workflows require an unfiltered play so mutation, verification, and evidence-sealing controls cannot be skipped."
+  when:
+    - not ansible_check_mode | bool
+    - >-
+      archiveweaver_apply | default(false) | bool
+      or archiveweaver_repair_apply | default(false) | bool
+      or archiveweaver_run_verification | default(false) | bool
+      or archiveweaver_certification_apply | default(false) | bool
+      or archiveweaver_restore_apply | default(false) | bool
+      or archiveweaver_failure_apply | default(false) | bool
+      or archiveweaver_rollback_apply | default(false) | bool
+      or archiveweaver_evidence_seal_enabled | default(false) | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Check controller path components before any local write
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-path-boundary.py"
+      - "{{ archiveweaver_bundle_root }}"
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - "{{ archiveweaver_evidence_root }}"
+    expand_argument_vars: false
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_path_boundary
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always, controller]
+
+- name: Require controller paths to stay within real directories
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_path_boundary.rc == 0
+    fail_msg: "Controller bundle, readiness, or evidence paths must not contain symlinked directory components."
+  delegate_to: localhost
+  become: false
+  no_log: true
+  tags: [always, controller]
+
+- name: Determine whether immutable source verification applies
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_source_gate_active: >-
+      {{ (not (ansible_check_mode | bool)) and (
+         archiveweaver_apply | default(false) | bool
+         or archiveweaver_repair_apply | default(false) | bool
+         or archiveweaver_run_verification | default(false) | bool
+         or archiveweaver_certification_apply | default(false) | bool
+         or archiveweaver_restore_apply | default(false) | bool
+         or archiveweaver_failure_apply | default(false) | bool
+         or archiveweaver_rollback_apply | default(false) | bool
+      ) }}
+  tags: [always, controller]
+
+- name: Define the trusted signer fingerprint pattern
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_trusted_signer_pattern: >-
+      {{ '^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})'
+         ~ '([ ,]+([0-9a-fA-F]{40}|[0-9a-fA-F]{64}))*$' }}
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  tags: [always, controller]
+
+- name: Require the controller immutable source reference
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') is string
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') is match('^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$')
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS') is string
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS') is match(archiveweaver_controller_preflight_trusted_signer_pattern)
+      - archiveweaver_bundle_root is string
+      - archiveweaver_bundle_root | length > 0
+      - archiveweaver_bundle_root is match('^/')
+    fail_msg: "Applied controller workflows require a full immutable Git commit reference."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Verify the signed immutable source checkout
+  ansible.builtin.command:
+    argv:
+      - bash
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-source-identity.sh"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') }}"
+      - "{{ archiveweaver_bundle_root }}/../.."
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_source_identity
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require signed and clean controller source
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_source_identity.rc == 0
+    fail_msg: "The controller source checkout is not the signed immutable release or contains tracked or unapproved untracked changes."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Validate the operational readiness manifest boundary
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_bundle_root is string
+      - archiveweaver_bundle_root | length > 0
+      - archiveweaver_bundle_root is match('^/')
+      - archiveweaver_bundle_root == ((ansible_config_file | default(playbook_dir ~ '/ansible.cfg', true)) | regex_replace('/[^/]+$', ''))
+      - archiveweaver_readiness_manifest_path is string
+      - archiveweaver_readiness_manifest_path | length > 0
+      - archiveweaver_readiness_manifest_path is match('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '(/|$)')
+      - archiveweaver_readiness_manifest_path is not search('["\\s\\r\\n]')
+      - archiveweaver_readiness_manifest_path is not search('\\.\\.')
+    fail_msg: "Operational workflows require a controller-local readiness manifest inside the Ansible bundle."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require a controller-protected readiness manifest digest
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') is string
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') is match('^[0-9a-f]{64}$')
+    fail_msg: "Operational workflows require the protected SHA-256 digest of the approved readiness manifest."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Inspect the operational readiness manifest digest
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_readiness_manifest_path }}"
+    follow: false
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_operational_manifest_stat
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the approved readiness manifest bytes
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_operational_manifest_stat.stat.exists | default(false) | bool
+      - archiveweaver_controller_preflight_operational_manifest_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_controller_preflight_operational_manifest_stat.stat.islnk | default(false) | bool)
+      - (archiveweaver_controller_preflight_operational_manifest_stat.stat.checksum | default('')) == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256')
+    fail_msg: "The controller readiness manifest is missing, not regular, or does not match the protected approved digest."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Verify the controller-approved operational readiness manifest
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-readiness-manifest.py"
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') }}"
+    expand_argument_vars: false
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_operational_manifest_verification
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the operational readiness manifest verifier to pass
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_operational_manifest_verification.rc == 0
+    fail_msg: "The selected operational readiness manifest does not match the controller-approved digest."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Load the controller-approved readiness identity
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_readiness_identity: >-
+      {{ lookup('ansible.builtin.file', archiveweaver_readiness_manifest_path) | from_json }}
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Bind every applied workflow to the approved readiness identity
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_readiness_identity is mapping
+      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('runtime') == 'ansible'
+      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('os_id') == archiveweaver_os_id
+      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('environment') == archiveweaver_evidence_environment
+      - archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('version') == archiveweaver_release
+      - archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('execution_environment', {}).get('digest') == archiveweaver_execution_environment_digest
+    fail_msg: "The applied workflow inputs do not match the controller-approved readiness manifest identity."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
   no_log: true
   tags: [always, controller]
 
@@ -45,7 +344,7 @@
 
 - name: Read the controller-provided execution-environment identity
   ansible.builtin.set_fact:
-    archiveweaver_controller_execution_environment_digest: "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') }}"
+    archiveweaver_controller_preflight_execution_environment_digest: "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') }}"
   when:
     - not ansible_check_mode | bool
     - archiveweaver_apply | default(false) | bool
@@ -61,8 +360,8 @@
 - name: Require the controller image identity to match the job binding
   ansible.builtin.assert:
     that:
-      - archiveweaver_controller_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
-      - archiveweaver_controller_execution_environment_digest == archiveweaver_execution_environment_digest
+      - archiveweaver_controller_preflight_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
+      - archiveweaver_controller_preflight_execution_environment_digest == archiveweaver_execution_environment_digest
     fail_msg: "The controller-provided execution-environment identity does not match the applied job binding."
   when:
     - not ansible_check_mode | bool
@@ -78,7 +377,7 @@
 
 - name: Determine whether the final readiness gate applies
   ansible.builtin.set_fact:
-    archiveweaver_controller_readiness_gate_active: >-
+    archiveweaver_controller_preflight_readiness_gate_active: >-
       {{ (not (ansible_check_mode | bool)) and (
          archiveweaver_apply | default(false) | bool
          or archiveweaver_repair_apply | default(false) | bool
@@ -105,7 +404,7 @@
       - archiveweaver_readiness_pythonpath is string
       - archiveweaver_readiness_pythonpath == (archiveweaver_bundle_root ~ '/../../src')
     fail_msg: "Applied controller workflows require a controller-local readiness manifest and repository source path."
-  when: archiveweaver_controller_readiness_gate_active | bool
+  when: archiveweaver_controller_preflight_readiness_gate_active | bool
   no_log: true
   tags: [always, controller]
 
@@ -115,19 +414,19 @@
     follow: false
   delegate_to: localhost
   become: false
-  register: archiveweaver_controller_readiness_manifest_stat
-  when: archiveweaver_controller_readiness_gate_active | bool
+  register: archiveweaver_controller_preflight_readiness_manifest_stat
+  when: archiveweaver_controller_preflight_readiness_gate_active | bool
   no_log: true
   tags: [always, controller]
 
 - name: Require a regular controller readiness manifest
   ansible.builtin.assert:
     that:
-      - archiveweaver_controller_readiness_manifest_stat.stat.exists
-      - archiveweaver_controller_readiness_manifest_stat.stat.isreg | default(false) | bool
-      - not (archiveweaver_controller_readiness_manifest_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_controller_preflight_readiness_manifest_stat.stat.exists
+      - archiveweaver_controller_preflight_readiness_manifest_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_controller_preflight_readiness_manifest_stat.stat.islnk | default(false) | bool)
     fail_msg: "The applied controller workflow readiness manifest must be a regular, non-symlink file inside the Ansible bundle."
-  when: archiveweaver_controller_readiness_gate_active | bool
+  when: archiveweaver_controller_preflight_readiness_gate_active | bool
   no_log: true
   tags: [always, controller]
 
@@ -143,35 +442,43 @@
       - --json
   environment:
     PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
-  register: archiveweaver_controller_readiness_result
+  register: archiveweaver_controller_preflight_readiness_result
   changed_when: false
   check_mode: false
-  when: archiveweaver_controller_readiness_gate_active | bool
+  when: archiveweaver_controller_preflight_readiness_gate_active | bool
   no_log: true
   tags: [always, controller]
 
 - name: Parse the applied workflow readiness report
   ansible.builtin.set_fact:
-    archiveweaver_controller_readiness_report: "{{ archiveweaver_controller_readiness_result.stdout | from_json }}"
+    archiveweaver_controller_preflight_readiness_report: "{{ archiveweaver_controller_preflight_readiness_result.stdout | from_json }}"
   when:
-    - archiveweaver_controller_readiness_gate_active | bool
-    - archiveweaver_controller_readiness_result.rc == 0
+    - archiveweaver_controller_preflight_readiness_gate_active | bool
+    - archiveweaver_controller_preflight_readiness_result.rc == 0
   no_log: true
   tags: [always, controller]
 
 - name: Require applied workflows to match the signed readiness identity
   ansible.builtin.assert:
     that:
-      - archiveweaver_controller_readiness_result.rc == 0
-      - (archiveweaver_controller_readiness_report | default({})).get('status') == 'pass'
-      - (archiveweaver_controller_readiness_report | default({})).get('score', 0) | int == 100
-      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
-      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
-      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
-      - (archiveweaver_controller_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
-      - (archiveweaver_controller_readiness_report | default({})).get('release_version') == archiveweaver_release
-      - (archiveweaver_controller_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+      - archiveweaver_controller_preflight_readiness_result.rc == 0
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('status') == 'pass'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('score', 0) | int == 100
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('release_version') == archiveweaver_release
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
     fail_msg: "Applied workflow identity or execution-environment digest does not match the signed 100/100 readiness manifest."
-  when: archiveweaver_controller_readiness_gate_active | bool
+  when: archiveweaver_controller_preflight_readiness_gate_active | bool
   no_log: true
+  tags: [always, controller]
+
+- name: Attest completed controller preflight
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_completed: true
+  when:
+    - (archiveweaver_controller_preflight_entrypoint | default({})).get('rc', 1) | int == 0
+    - (archiveweaver_controller_preflight_entrypoint | default({})).get('stdout', '') | trim == 'archiveweaver-controller-preflight-started'
   tags: [always, controller]

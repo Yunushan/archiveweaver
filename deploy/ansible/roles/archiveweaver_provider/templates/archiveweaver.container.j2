@@ -6,8 +6,8 @@ After=network-online.target
 [Container]
 Image={{ archiveweaver_image }}
 ContainerName={{ archiveweaver_solution_id }}
-Network=archiveweaver.network
-Volume=archiveweaver.volume:/var/lib/archiveweaver/solution:Z
+Network=archiveweaver-{{ archiveweaver_solution_id }}.network
+Volume=archiveweaver-{{ archiveweaver_solution_id }}.volume:/var/lib/archiveweaver/solution:Z
 PublishPort=127.0.0.1:{{ archiveweaver_app_port }}:{{ archiveweaver_app_port }}
 Environment=ARCHIVEWEAVER_SOLUTION_ID={{ archiveweaver_solution_id }}
 NoNewPrivileges=true

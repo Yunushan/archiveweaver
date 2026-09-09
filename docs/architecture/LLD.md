@@ -111,7 +111,7 @@ The repair engine first constructs a plan. Only `--apply` executes it. Commands 
 | Mode | Plan actions | Destructive actions intentionally absent |
 | --- | --- | --- |
 | Raw | capture status, restart service, verify active | no package purge, data deletion, migration, or permission reset |
-| Docker | `compose config`, `compose up -d --remove-orphans`, `compose ps` | no `down -v`, volume prune, or image deletion |
+| Docker | `compose config`, `compose up -d`, `compose ps` | no `--remove-orphans`, `down -v`, volume prune, or image deletion |
 | Quadlet | daemon reload, restart unit, verify active | no data-path cleanup |
 | Pacemaker | status, resource cleanup, status | gated; no fencing bypass or cluster-wide disable |
 | Swarm | stack config, stack deploy, service status | no volume deletion or forced manager recovery |

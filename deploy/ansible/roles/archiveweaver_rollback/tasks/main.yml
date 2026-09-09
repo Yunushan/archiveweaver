@@ -1,4 +1,11 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [rollback]
+  tags: [rollback]
+
 - name: Validate the rollback inputs
   ansible.builtin.assert:
     that:
@@ -110,8 +117,22 @@
       - item is string
       - item | length > 0
       - item is not search('["\\r\\n]')
+    fail_msg: "Rollback and post-rollback verification hooks must contain safe, non-empty argument-vector elements."
   loop: "{{ archiveweaver_rollback_command + archiveweaver_rollback_verify_command }}"
-  fail_msg: "Rollback and post-rollback verification hooks must contain safe, non-empty argument-vector elements."
+  when: archiveweaver_rollback_apply | bool
+  no_log: true
+  tags: [rollback]
+
+- name: Verify reviewed rollback hook executables
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+  vars:
+    archiveweaver_hook_specs:
+      - name: rollback
+        command: "{{ archiveweaver_rollback_command }}"
+        sha256: "{{ archiveweaver_rollback_command_sha256 }}"
+      - name: rollback-verify
+        command: "{{ archiveweaver_rollback_verify_command }}"
+        sha256: "{{ archiveweaver_rollback_verify_command_sha256 }}"
   when: archiveweaver_rollback_apply | bool
   no_log: true
   tags: [rollback]
@@ -201,6 +222,41 @@
   no_log: true
   tags: [rollback]
 
+- name: Inspect controller evidence boundaries before writing
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ archiveweaver_evidence_root }}"
+    - "{{ archiveweaver_rollback_evidence_dir }}"
+  register: archiveweaver_rollback_evidence_path_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  no_log: true
+  tags: [rollback]
+
+- name: Verify controller evidence path components before writing
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/path-boundary.yml"
+  vars:
+    archiveweaver_controller_path_boundary_paths:
+      - "{{ archiveweaver_evidence_root }}"
+      - "{{ archiveweaver_rollback_evidence_dir }}"
+  tags: [rollback]
+
+- name: Reject symlinked controller evidence boundaries
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false) | bool)
+    fail_msg: "Rollback evidence paths must not be symlinks."
+  loop: "{{ archiveweaver_rollback_evidence_path_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  tags: [rollback]
+
 - name: Create the rollback evidence directory on the controller
   ansible.builtin.file:
     path: "{{ archiveweaver_rollback_evidence_dir }}"
@@ -219,4 +275,10 @@
   delegate_to: localhost
   become: false
   no_log: true
+  tags: [rollback]
+
+- name: Attest completed rollback operation
+  ansible.builtin.set_fact:
+    archiveweaver_rollback_completed: true
+  when: archiveweaver_rollback_apply | bool
   tags: [rollback]

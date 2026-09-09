@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog
+from .path_utils import has_symlink_component
 
 
 def _safe_relative_controller_path(value: str) -> bool:
@@ -37,26 +38,86 @@ def _safe_absolute_controller_path(value: str) -> bool:
     )
 
 
-def _resolve_readiness_manifest_path(value: str, ansible_root: Path) -> str:
+def _find_ansible_root() -> Path:
+    """Locate the repository Ansible bundle without following cwd symlinks."""
+    cwd = Path(os.path.abspath(os.fspath(Path.cwd())))
+    for base in (cwd, *cwd.parents):
+        candidate = base / "deploy" / "ansible"
+        if candidate.is_dir():
+            return candidate
+
+    package_root = Path(__file__).resolve().parents[2]
+    candidate = package_root / "deploy" / "ansible"
+    if candidate.is_dir():
+        return candidate
+    raise ValueError("could not locate the repository Ansible bundle")
+
+
+def _resolve_readiness_manifest_path(
+    value: str,
+    ansible_root: Path,
+    *,
+    repository_root: Path | None = None,
+) -> str:
     """Resolve the readiness manifest into the checked-in Ansible bundle."""
-    raw = Path(value)
-    if raw.is_absolute():
-        candidate = raw.resolve()
-    else:
-        parts = raw.parts
-        if len(parts) >= 2 and parts[0].lower() == "deploy" and parts[1].lower() == "ansible":
-            candidate = (ansible_root / Path(*parts[2:])).resolve()
-        else:
-            candidate = (Path.cwd() / raw).resolve()
-            try:
-                candidate.relative_to(ansible_root)
-            except ValueError:
-                candidate = (ansible_root / raw).resolve()
+    candidate = _resolve_ansible_bundle_path(
+        value,
+        ansible_root,
+        "--readiness-manifest",
+        repository_root=repository_root,
+    )
     try:
         candidate.relative_to(ansible_root)
     except ValueError as exc:
         raise ValueError("--readiness-manifest must resolve inside the Ansible playbook directory") from exc
     return str(candidate)
+
+
+def _resolve_ansible_bundle_path(
+    value: str,
+    ansible_root: Path,
+    label: str,
+    *,
+    repository_root: Path | None = None,
+) -> Path:
+    """Resolve a controller input below the reviewed Ansible bundle."""
+    if not (_safe_relative_controller_path(value) or _safe_absolute_controller_path(value)):
+        raise ValueError(f"{label} must be a safe controller path without traversal or whitespace")
+    if has_symlink_component(ansible_root):
+        raise ValueError(f"{label} cannot be checked below a symlinked Ansible bundle")
+    raw = Path(value)
+    if raw.is_absolute():
+        unresolved = raw
+    else:
+        repository_root = repository_root or ansible_root.parent.parent
+        repository_relative = raw.parts[:2] == ("deploy", "ansible")
+        if repository_relative:
+            unresolved = repository_root / raw
+        else:
+            cwd = Path(os.path.abspath(os.fspath(Path.cwd())))
+            cwd_candidate = cwd / raw
+            try:
+                cwd_candidate.relative_to(ansible_root)
+            except ValueError:
+                unresolved = ansible_root / raw
+            else:
+                unresolved = cwd_candidate
+    if has_symlink_component(unresolved):
+        raise ValueError(f"{label} must not resolve through a symlink")
+    candidate = unresolved.resolve()
+    try:
+        relative = candidate.relative_to(ansible_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} must resolve inside the Ansible playbook directory") from exc
+    current = ansible_root
+    try:
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError(f"{label} must not resolve through a symlink")
+    except OSError as exc:
+        raise ValueError(f"{label} could not be inspected safely") from exc
+    return candidate
 
 
 def _safe_identity(value: str) -> bool:
@@ -176,11 +237,26 @@ def build_repair_plan(
         # Resolve this path into the Ansible bundle so the generated action is
         # independent of the caller's current working directory. The Ansible
         # preflight repeats the same boundary check on the controller.
+        ansible_root = _find_ansible_root()
+        repository_root = ansible_root.parent.parent
+        playbook_path = _resolve_ansible_bundle_path(
+            playbook,
+            ansible_root,
+            "--playbook",
+            repository_root=repository_root,
+        )
+        inventory_path = _resolve_ansible_bundle_path(
+            inventory,
+            ansible_root,
+            "--inventory",
+            repository_root=repository_root,
+        )
         manifest_path = readiness_manifest or "deploy/ansible/release-manifest.json"
-        if not (_safe_relative_controller_path(manifest_path) or _safe_absolute_controller_path(manifest_path)):
-            raise ValueError("--readiness-manifest must be a safe controller path without traversal or whitespace")
-        ansible_root = Path(playbook).resolve().parent
-        manifest_path = _resolve_readiness_manifest_path(manifest_path, ansible_root)
+        manifest_path = _resolve_readiness_manifest_path(
+            manifest_path,
+            ansible_root,
+            repository_root=repository_root,
+        )
         provider_args = [
             "-e",
             f"archiveweaver_runtime={selected_underlying_mode}",
@@ -201,10 +277,10 @@ def build_repair_plan(
             "ANSIBLE_ROLES_PATH": str(ansible_root / "roles"),
         }
         actions.extend([
-            RepairAction("validate-playbook", ["ansible-playbook", "-i", inventory, playbook, "--syntax-check"], "read-only", "Validate the reviewed Ansible repair playbook before contacting managed nodes.", environment=controller_environment),
-            RepairAction("plan-repair", ["ansible-playbook", "-i", inventory, playbook, "--check", "--diff", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Produce an Ansible check-mode diff; no remote changes are allowed in this action.", environment=controller_environment),
-            RepairAction("apply-repair", ["ansible-playbook", "-i", inventory, playbook, "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "orchestrator-restart", "Run the explicitly approved Ansible repair playbook. The playbook itself has a separate apply gate.", environment=controller_environment),
-            RepairAction("verify-repair", ["ansible-playbook", "-i", inventory, playbook, "--tags", "verify,evidence", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Collect post-repair service, endpoint, storage, and sealed evidence results.", environment=controller_environment),
+            RepairAction("validate-playbook", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "--syntax-check"], "read-only", "Validate the reviewed Ansible repair playbook before contacting managed nodes.", environment=controller_environment),
+            RepairAction("plan-repair", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "--check", "--diff", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Produce an Ansible check-mode diff; no remote changes are allowed in this action.", environment=controller_environment),
+            RepairAction("apply-repair", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "orchestrator-restart", "Run the explicitly approved Ansible repair playbook. The playbook itself has a separate apply gate.", environment=controller_environment),
+            RepairAction("verify-repair", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "--tags", "verify,evidence", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Collect post-repair service, endpoint, storage, and sealed evidence results.", environment=controller_environment),
         ])
     else:
         actions.extend([

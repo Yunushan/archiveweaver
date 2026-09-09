@@ -1,4 +1,18 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [verify]
+  tags: [verify]
+
+- name: Require completed managed-host preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-managed-complete.yml"
+    apply:
+      tags: [verify]
+  tags: [verify]
+
 - name: Validate the verification evidence boundary
   ansible.builtin.assert:
     that:
@@ -16,18 +30,82 @@
 
 - name: Verify the staged provider bundle before collecting service evidence
   ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_provider/tasks/verify-bundle.yml"
-  when: archiveweaver_runtime in ['docker', 'docker-swarm', 'k3s', 'rke2', 'k0s', 'microk8s']
+  when: archiveweaver_runtime in ['raw', 'podman-quadlet', 'docker', 'docker-swarm', 'k3s', 'rke2', 'k0s', 'microk8s']
   tags: [verify]
 
 - name: Collect service facts
   ansible.builtin.service_facts:
   tags: [verify]
 
+- name: Inspect the managed release record
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_release_record }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_verify_release_record_stat
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [verify]
+
+- name: Require an intact managed release record
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_release_record_stat.stat.exists
+      - archiveweaver_verify_release_record_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_verify_release_record_stat.stat.islnk | default(false) | bool)
+    fail_msg: "The managed release record is missing, non-regular, or symlinked."
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [verify]
+
+- name: Read the managed release record
+  ansible.builtin.slurp:
+    src: "{{ archiveweaver_release_record }}"
+  register: archiveweaver_verify_release_record_raw
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [verify]
+
+- name: Parse the managed release record
+  ansible.builtin.set_fact:
+    archiveweaver_verify_release_record: "{{ archiveweaver_verify_release_record_raw.content | b64decode | from_yaml }}"
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [verify]
+
+- name: Bind the managed release record to the approved identity
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_verify_release_record is mapping
+      - >-
+        archiveweaver_verify_release_record.keys() | list | sort ==
+        ['catalog_os', 'change_id', 'execution_environment_digest',
+         'kustomize_bundle_sha256', 'orchestration_runtime',
+         'product_stack_sha256', 'provider_bundle_sha256', 'readiness_manifest_sha256',
+         'release', 'runtime', 'solution', 'source_commit', 'underlying_runtime']
+      - archiveweaver_verify_release_record.solution == archiveweaver_solution_id
+      - archiveweaver_verify_release_record.release == archiveweaver_release
+      - archiveweaver_verify_release_record.catalog_os == archiveweaver_os_id
+      - archiveweaver_verify_release_record.runtime == archiveweaver_runtime
+      - archiveweaver_verify_release_record.orchestration_runtime == 'ansible'
+      - archiveweaver_verify_release_record.underlying_runtime == archiveweaver_runtime
+      - archiveweaver_verify_release_record.source_commit == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF')
+      - archiveweaver_verify_release_record.readiness_manifest_sha256 == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256')
+      - archiveweaver_verify_release_record.execution_environment_digest == archiveweaver_execution_environment_digest
+      - archiveweaver_verify_release_record.provider_bundle_sha256 == archiveweaver_provider_bundle_sha256
+      - archiveweaver_verify_release_record.product_stack_sha256 == archiveweaver_product_stack_sha256
+      - archiveweaver_verify_release_record.kustomize_bundle_sha256 == archiveweaver_kustomize_bundle_sha256
+    fail_msg: "The managed release record does not match the approved source, manifest, or runtime identity."
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [verify]
+
 - name: Inspect the application data path
   ansible.builtin.stat:
     path: "{{ archiveweaver_data_root }}"
     follow: false
-  register: archiveweaver_data_stat
+  register: archiveweaver_verify_data_stat
   tags: [verify]
 
 - name: Probe the configured health endpoint with TLS verification
@@ -39,21 +117,21 @@
     status_code: [200, 201, 202, 204]
     follow_redirects: none
     timeout: 8
-  register: archiveweaver_health_result
+  register: archiveweaver_verify_health_result
   when: archiveweaver_health_url | length > 0
   no_log: true
   tags: [verify]
 
 - name: Build a redacted per-host evidence record
   ansible.builtin.set_fact:
-    archiveweaver_evidence:
+    archiveweaver_verify_evidence:
       name: "host-verification-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
       status: >-
         {{ 'pass' if
-           (archiveweaver_data_stat.stat.isdir | default(false) | bool)
+           (archiveweaver_verify_data_stat.stat.isdir | default(false) | bool)
            and (
              ((archiveweaver_health_url | length > 0) and
-             ((archiveweaver_health_result.status | default(0) | int) in [200, 201, 202, 204]))
+             ((archiveweaver_verify_health_result.status | default(0) | int) in [200, 201, 202, 204]))
              or
              ((archiveweaver_health_url | length == 0) and
               (ansible_facts.services.get(archiveweaver_service_name + '.service', {}).get('state', 'unknown') in ['active', 'running']))
@@ -69,25 +147,61 @@
       environment: "{{ archiveweaver_evidence_environment }}"
       execution_environment: "{{ archiveweaver_environment }}"
       execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      release_record_sha256: "{{ archiveweaver_verify_release_record_stat.stat.checksum | default('not-checked') }}"
       recorded_at: "{{ ansible_date_time.iso8601 }}"
       operator: "{{ archiveweaver_operator }}"
       fixture_set: "{{ archiveweaver_fixture_set }}"
       change_id: "{{ archiveweaver_change_id }}"
       os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
       data_path:
-        exists: "{{ archiveweaver_data_stat.stat.exists | bool }}"
-        directory: "{{ archiveweaver_data_stat.stat.isdir | default(false) | bool }}"
+        exists: "{{ archiveweaver_verify_data_stat.stat.exists | bool }}"
+        directory: "{{ archiveweaver_verify_data_stat.stat.isdir | default(false) | bool }}"
       service_state: "{{ ansible_facts.services.get(archiveweaver_service_name + '.service', {}).get('state', 'unknown') }}"
       health:
         configured: "{{ archiveweaver_health_url | length > 0 }}"
-        status: "{{ archiveweaver_health_result.status | default('not-configured') }}"
+        status: "{{ archiveweaver_verify_health_result.status | default('not-configured') }}"
   tags: [verify]
 
 - name: Require the service verification evidence to pass
   ansible.builtin.assert:
     that:
-      - archiveweaver_evidence.status == 'pass'
+      - archiveweaver_verify_evidence.status == 'pass'
     fail_msg: "Service verification did not pass; no passing evidence may be sealed."
+  no_log: true
+  tags: [verify]
+
+- name: Inspect controller evidence boundaries before writing
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ archiveweaver_evidence_root }}"
+    - "{{ archiveweaver_evidence_dir }}"
+  register: archiveweaver_verify_evidence_path_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  no_log: true
+  tags: [verify]
+
+- name: Verify controller evidence path components before writing
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/path-boundary.yml"
+  vars:
+    archiveweaver_controller_path_boundary_paths:
+      - "{{ archiveweaver_evidence_root }}"
+      - "{{ archiveweaver_evidence_dir }}"
+  tags: [verify]
+
+- name: Reject symlinked controller evidence boundaries
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false) | bool)
+    fail_msg: "Verification evidence paths must not be symlinks."
+  loop: "{{ archiveweaver_verify_evidence_path_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
   no_log: true
   tags: [verify]
 
@@ -104,8 +218,13 @@
 - name: Write the per-host evidence record on the controller
   ansible.builtin.copy:
     dest: "{{ archiveweaver_evidence_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
-    content: "{{ archiveweaver_evidence | to_nice_json }}\n"
+    content: "{{ archiveweaver_verify_evidence | to_nice_json }}\n"
     mode: '0600'
   delegate_to: localhost
   become: false
+  tags: [verify]
+
+- name: Attest completed service verification
+  ansible.builtin.set_fact:
+    archiveweaver_verification_completed: true
   tags: [verify]

@@ -40,7 +40,7 @@ archiveweaver render \
   --underlying-mode rke2 \
   --nodes 3 \
   --os ubuntu-24.04 \
-  --output deploy/ansible/generated/paperless-rke2.yml
+  --output generated/paperless-rke2.yml
 ```
 
 Use the same provider binding when reviewing a plan so the topology policy is
@@ -66,7 +66,12 @@ configured Compose or Kustomize path before setting
 `archiveweaver_product_stack_ready: true`; the Ansible provider refuses to
 overwrite or apply the generic envelope as a substitute. Docker/Swarm stacks
 and Kubernetes Kustomize bundles must also match their configured SHA-256
-release binding before apply or repair.
+release binding before apply or repair, and every rendered product image must
+use an approved full `@sha256:` digest rather than a mutable or placeholder
+tag.
+Raw systemd and Quadlet templates are rendered into a private host staging
+directory and hash-checked before they are copied into the active service path;
+an apply cannot leave a newly rendered live unit behind a failed digest gate.
 
 In the readiness manifest, identify this deployment as
 `service.runtime: ansible` and set `service.underlying_runtime` to the selected
@@ -83,6 +88,7 @@ Ansible will not mutate a target while the following are not explicitly ready:
 - verified restorable backup;
 - verified release manifest;
 - verified product dependency/application stack;
+- for non-systemd providers, an HTTPS health endpoint with certificate validation;
 - for Pacemaker repair, explicit fencing permission and verified STONITH.
 
 Topology exceptions are separate gates: set
@@ -159,3 +165,5 @@ on-call, incident, SLA, and evidence lifecycle is in
 
 The pinned controller-image and artifact promotion contract is in
 [`supply-chain.md`](../operations/supply-chain.md).
+The owner-by-owner activation checklist is in
+[`premium-activation.md`](../operations/premium-activation.md).

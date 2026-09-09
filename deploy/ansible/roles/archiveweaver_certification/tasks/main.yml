@@ -1,4 +1,11 @@
 ---
+- name: Require completed controller preflight
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/require-complete.yml"
+    apply:
+      tags: [certification]
+  tags: [certification]
+
 - name: Validate the product-certification boundary
   ansible.builtin.assert:
     that:
@@ -65,6 +72,26 @@
   no_log: true
   tags: [certification]
 
+- name: Require safe product certification argv elements
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item | length > 0
+      - item is not search('["\\r\\n]')
+    fail_msg: "Product certification hooks must contain safe, non-empty argument-vector elements."
+  loop: "{{ archiveweaver_certification_tests | map(attribute='command') | list | flatten }}"
+  when: archiveweaver_certification_apply | bool
+  no_log: true
+  tags: [certification]
+
+- name: Verify reviewed product certification hook executables
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+  vars:
+    archiveweaver_hook_specs: "{{ archiveweaver_certification_tests }}"
+  when: archiveweaver_certification_apply | bool
+  no_log: true
+  tags: [certification]
+
 - name: Announce plan-only product certification posture
   ansible.builtin.debug:
     msg: "Product certification hooks are not executed. Set archiveweaver_certification_apply=true only for an approved isolated test environment."
@@ -97,6 +124,50 @@
     - archiveweaver_certification_apply | bool
     - inventory_hostname == groups['archiveweaver_certification'][0]
   no_log: true
+  tags: [certification]
+
+- name: Inspect controller evidence boundaries before writing
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ archiveweaver_evidence_root }}"
+    - "{{ archiveweaver_certification_evidence_dir }}"
+  register: archiveweaver_certification_evidence_path_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  no_log: true
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  tags: [certification]
+
+- name: Verify controller evidence path components before writing
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/path-boundary.yml"
+  vars:
+    archiveweaver_controller_path_boundary_paths:
+      - "{{ archiveweaver_evidence_root }}"
+      - "{{ archiveweaver_certification_evidence_dir }}"
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  tags: [certification]
+
+- name: Reject symlinked controller evidence boundaries
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false) | bool)
+    fail_msg: "Certification evidence paths must not be symlinks."
+  loop: "{{ archiveweaver_certification_evidence_path_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
   tags: [certification]
 
 - name: Create the product-certification evidence directory on the controller
@@ -137,6 +208,14 @@
   delegate_to: localhost
   become: false
   no_log: true
+  when:
+    - archiveweaver_certification_apply | bool
+    - inventory_hostname == groups['archiveweaver_certification'][0]
+  tags: [certification]
+
+- name: Attest completed product certification
+  ansible.builtin.set_fact:
+    archiveweaver_certification_completed: true
   when:
     - archiveweaver_certification_apply | bool
     - inventory_hostname == groups['archiveweaver_certification'][0]

@@ -14,7 +14,34 @@ digest, source commit, package lock, SBOM, signature, and vulnerability-scan
 result in the release manifest's Ansible execution-environment object. The
 controller must inject the same immutable digest into applied jobs and expose
 the trusted value as `ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST`; preflight
-compares both bindings with the manifest before proceeding.
+compares both bindings with the manifest before proceeding. Controller
+preflight also checks the live Ansible Core and `ansible-lint` versions against
+the pinned execution-environment requirements.
+
+Before running tests or any playbook, the controller must also verify that its
+checkout is the approved signed commit and has no tracked or unapproved
+untracked worktree changes:
+
+```bash
+bash scripts/verify-source-identity.sh "$ARCHIVEWEAVER_IMMUTABLE_REF"
+```
+
+The verifier accepts only a full commit SHA, resolves it as a commit, compares
+it with `HEAD`, rejects tracked and non-approved untracked worktree changes, and
+requires a valid Git commit signature. Ignored files are not a bypass: only the
+selected inventory files, encrypted Vault file, release manifests, and the
+evidence bundle are permitted as operator inputs. Controller code, Ansible
+configuration, generated playbooks, and tooling caches cannot be smuggled
+through ignored files, and permitted operator files must be regular files with
+no symlinked path components. The controller should inject
+`ARCHIVEWEAVER_IMMUTABLE_REF` from the signed project metadata; do not
+substitute a branch, tag, or floating ref. The readiness and evidence controls
+still govern the permitted operator inputs.
+
+The source verifier also requires the controller to provide
+ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS and to match the signed commit's
+VALIDSIG fingerprint against that allowlist. A valid signature from an
+unapproved key is not sufficient for production.
 
 ## Product artifacts
 
@@ -29,6 +56,12 @@ For every image or package in `release.artifacts`:
   Quadlet, the same field binds the rendered unit or deterministic file set
   (with Kustomize paths canonicalized relative to the bundle root);
 - attach the SBOM and detached signature;
+- attach an SBOM and detached signature to the reviewed Ansible provider
+  bundle as well as to each product artifact;
+- ensure the in-toto provenance subject digest matches the bytes of each
+  referenced product artifact and, for Ansible, the reviewed provider bundle
+  artifact (and the immutable image digest for the controller execution
+  environment's separate attestation);
 - verify the signature using the approved cosign, GPG, or registry policy;
 - attach the verification output as `signature_verification.evidence`.
 
@@ -45,6 +78,11 @@ PYTHONPATH=src python3 -m archiveweaver provider-digest --kind quadlet \
 The command returns the `sha256:`-prefixed manifest form. Store that full form
 as `release.provider_bundle.remote_digest`; Ansible's provider group variables
 use the same digest without the prefix.
+
+For Quadlet, the reviewed directory must contain
+`archiveweaver-<solution-id>.network`, `archiveweaver-<solution-id>.volume`,
+and `<solution-id>.container`; the network and volume are deliberately
+solution-scoped to prevent cross-service collisions on a shared host.
 
 Do not use floating tags, unreviewed collections, mutable Git branches, or
 credentials in build arguments. The readiness gate rejects placeholders,

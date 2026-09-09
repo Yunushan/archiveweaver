@@ -1,9 +1,10 @@
-.PHONY: help generate validate test lint smoke ansible-validate
+.PHONY: help generate validate test lint smoke ansible-validate controller-validate
 
 help:
 	@printf '%s\n' 'make generate  - regenerate catalog JSON and reference pages' \
 	              'make validate  - validate catalog and compile Python' \
 	              'make test      - run stdlib unit tests' \
+	              'make controller-validate - validate the Ansible controller contract' \
 	              'make ansible-validate - run pinned Ansible lint and syntax checks' \
 	              'make smoke     - exercise CLI planning/checking commands'
 
@@ -19,6 +20,9 @@ test: validate
 
 lint:
 	python3 -m compileall -q src scripts tests
+
+controller-validate:
+	python3 scripts/validate-controller-contract.py
 
 ansible-validate:
 	bash scripts/validate-ansible.sh

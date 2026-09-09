@@ -1,5 +1,7 @@
 ---
-# Copy to hosts.yml and replace every example host before use.
+# Copy to hosts.yml and replace every example host and address before use.
+# Production preflight rejects the documentation-only names and RFC 5737 IPs
+# below until they are replaced with the approved inventory.
 all:
   vars:
     ansible_user: archiveweaver-admin

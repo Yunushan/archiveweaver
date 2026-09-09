@@ -1,0 +1,70 @@
+---
+- name: Require reviewed hook executable specifications
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_hook_specs is sequence
+      - archiveweaver_hook_specs is not string
+      - archiveweaver_hook_specs | length > 0
+      - item is mapping
+      - item.name is string
+      - item.name is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - item.command is sequence
+      - item.command is not string
+      - item.command | length > 0
+      - item.command[0] is string
+      - item.command[0] is match('^/')
+      - item.command[0] is not search('["\\s\\r\\n]')
+      - item.command[0] is not search('\\.\\.')
+      - item.sha256 is string
+      - item.sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: "Reviewed hooks must use an absolute executable path and a lowercase SHA-256 binding."
+  loop: "{{ archiveweaver_hook_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Inspect reviewed hook executable bytes
+  ansible.builtin.stat:
+    path: "{{ item.command[0] }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop: "{{ archiveweaver_hook_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_hook_executable_stats
+  changed_when: false
+  no_log: true
+
+- name: Resolve reviewed hook executable path components
+  ansible.builtin.command:
+    argv: [realpath, -e, --, "{{ item.command[0] }}"]
+  loop: "{{ archiveweaver_hook_specs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: archiveweaver_hook_realpath_results
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require reviewed hook executable bytes
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | default(false) | bool
+      - item.stat.isreg | default(false) | bool
+      - not (item.stat.islnk | default(false) | bool)
+      - item.stat.mode is match('^0[0-7]{3}$')
+      - item.stat.mode[0] == '0'
+      - item.stat.mode[-3] in ['1', '3', '5', '7']
+      - item.stat.mode[-2] not in ['2', '3', '6', '7']
+      - item.stat.mode[-1] not in ['2', '3', '6', '7']
+      - item.stat.checksum | default('') == item.item.sha256
+      - archiveweaver_hook_realpath_results.results[ansible_loop.index0].rc == 0
+      - archiveweaver_hook_realpath_results.results[ansible_loop.index0].stdout == item.item.command[0]
+    fail_msg: "A reviewed hook executable is missing, unsafe, redirected, non-regular, or has changed bytes."
+  loop: "{{ archiveweaver_hook_executable_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+    extended: true
+  no_log: true

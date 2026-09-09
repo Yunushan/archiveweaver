@@ -8,7 +8,7 @@ services:
     environment:
       ARCHIVEWEAVER_SOLUTION_ID: {{ archiveweaver_solution_id | to_json }}
     volumes:
-      - {{ (archiveweaver_data_root ~ '/solution:/var/lib/archiveweaver/solution') | to_json }}
+      - {{ (archiveweaver_data_root ~ ':/var/lib/archiveweaver/solution') | to_json }}
     security_opt:
       - no-new-privileges:true
     cap_drop:

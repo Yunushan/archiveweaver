@@ -4,6 +4,7 @@ all:
   vars:
     ansible_user: archiveweaver-restore
     ansible_become: true
+    archiveweaver_readiness_manifest_path: "{{ playbook_dir }}/release-manifest-restore.json"
   children:
     archiveweaver_restore:
       hosts:

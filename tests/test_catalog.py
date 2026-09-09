@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from archiveweaver.catalog import Catalog
+from archiveweaver.json_utils import load_json_document
 from archiveweaver.schema import validate_catalog
 
 
@@ -33,4 +34,8 @@ class CatalogTests(unittest.TestCase):
         self.catalog.solutions["paperless-ngx"]["dependencies"] = "PostgreSQL"
         errors = validate_catalog(self.catalog)
         self.assertIn("solution 'paperless-ngx' field 'dependencies' must be a list of non-empty strings", errors)
+
+    def test_json_loader_rejects_duplicate_object_keys(self) -> None:
+        with self.assertRaisesRegex(ValueError, "duplicate JSON object key"):
+            load_json_document('{"runtime": "raw", "runtime": "docker"}')
 

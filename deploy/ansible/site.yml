@@ -1,9 +1,23 @@
 ---
+- name: Validate the pinned Ansible controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    archiveweaver_controller_target_group: archiveweaver_nodes
+  pre_tasks:
+    - name: Preserve the post-play evidence sealing decision
+      ansible.builtin.set_fact:
+        archiveweaver_evidence_seal_enabled: "{{ archiveweaver_run_verification | default(false) | bool }}"
+  roles:
+    - role: archiveweaver_controller_preflight
+      tags: [always, controller]
+
 - name: ArchiveWeaver enterprise deployment envelope
   hosts: archiveweaver_nodes
   become: true
   gather_facts: true
-  serial: "{{ archiveweaver_serial }}"
+  serial: "{{ archiveweaver_serial | default(1) }}"
   any_errors_fatal: true
   roles:
     - role: archiveweaver_preflight
@@ -22,6 +36,15 @@
     - role: archiveweaver_verify
       when: archiveweaver_run_verification | bool
       tags: [verify]
+
+- name: Seal ArchiveWeaver evidence after all managed hosts complete
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    archiveweaver_evidence_completion_fact: archiveweaver_verification_completed
+    archiveweaver_evidence_completion_hosts: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+  roles:
     - role: archiveweaver_evidence
-      when: archiveweaver_run_verification | bool
+      when: archiveweaver_evidence_seal_enabled | default(false) | bool
       tags: [evidence]

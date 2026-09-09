@@ -6,7 +6,7 @@ Use Compose for a single host or as the product's upstream development/packaging
 
 ## Podman Quadlet
 
-Quadlet turns declarative `.container`, `.volume`, `.network`, and related files into systemd units. Place system-level files under `/etc/containers/systemd/`, run `systemctl daemon-reload`, and enable the generated unit. Quadlet is not a multi-host scheduler. For a two-node active/passive design, combine it with Pacemaker and STONITH after testing the data path.
+Quadlet turns declarative `.container`, `.volume`, `.network`, and related files into systemd units. Place system-level files under `/etc/containers/systemd/`, run `systemctl daemon-reload`, and enable the generated unit. For an operated deployment, use a bind-backed volume that points at the reviewed data path instead of an implicit node-local volume. Quadlet is not a multi-host scheduler. For a two-node active/passive design, combine it with Pacemaker and STONITH after testing the data path.
 
 ## Docker Swarm
 

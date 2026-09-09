@@ -8,6 +8,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .json_utils import load_json_document
+from .path_utils import has_symlink_component
+
 
 WINDOWS_ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{2})")
 
@@ -55,9 +58,9 @@ def _sha256(path: Path) -> str:
 
 def build_evidence_index(directory: Path, output: Path) -> dict[str, Any]:
     root = directory.resolve()
-    if directory.is_symlink() or not root.is_dir():
+    if has_symlink_component(directory) or not root.is_dir():
         raise ValueError(f"evidence directory does not exist: {directory}")
-    if output.is_symlink():
+    if has_symlink_component(output):
         raise ValueError("evidence index output must not be a symlink")
     output_resolved = output.resolve()
     try:
@@ -67,7 +70,9 @@ def build_evidence_index(directory: Path, output: Path) -> dict[str, Any]:
 
     files: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink() or path.resolve() == output_resolved:
+        if has_symlink_component(path):
+            raise ValueError(f"evidence bundle must not contain symlinked paths: {path}")
+        if not path.is_file() or path.resolve() == output_resolved:
             continue
         relative = path.relative_to(root).as_posix()
         files.append({"path": relative, "bytes": path.stat().st_size, "sha256": _sha256(path)})
@@ -99,11 +104,11 @@ def build_evidence_index(directory: Path, output: Path) -> dict[str, Any]:
 
 
 def verify_evidence_index(index_path: Path) -> dict[str, Any]:
-    if index_path.is_symlink() or not index_path.is_file():
+    if has_symlink_component(index_path) or not index_path.is_file():
         return {"status": "fail", "errors": ["evidence index must be a regular, non-symlink file"]}
     try:
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        index = load_json_document(index_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
         return {"status": "fail", "errors": [f"cannot read evidence index: {exc}"]}
     if not isinstance(index, dict) or index.get("schema_version") != 1 or index.get("algorithm") != "sha256":
         return {"status": "fail", "errors": ["unsupported evidence index schema"]}
@@ -134,7 +139,7 @@ def verify_evidence_index(index_path: Path) -> dict[str, Any]:
 
     actual: set[str] = set()
     for path in root.rglob("*"):
-        if path.is_symlink():
+        if has_symlink_component(path):
             errors.append(f"symlink is not permitted in evidence bundle: {path.relative_to(root).as_posix()}")
         elif path.is_file() and path.resolve() != index_path.resolve():
             actual.add(path.relative_to(root).as_posix())
