@@ -47,7 +47,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-input --no-deps dist/*.whl
           python -m archiveweaver validate-catalog --json
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@55dc4ee22412511ee8c3142cbea40418e6cec693 # v0.17.8
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: dist
           format: spdx-json
