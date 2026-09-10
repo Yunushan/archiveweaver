@@ -47,6 +47,25 @@ The preflight attestation is tied to a current-run entrypoint, so
 operational workflows also reject partial `--limit` runs and tag-filtered runs;
 the shared evidence role requires an attested completion fact from every
 upstream managed host before it can seal or publish evidence.
+Every controller playbook command must use the repository's
+`scripts/run-ansible-operational.sh` runner. It allowlists the seven approved
+operational playbooks and rejects `--limit`, `--tags`, `--skip-tags`,
+`--start-at-task`, and `--step` (plus the `-l`/`-t` aliases), including their
+value-bearing forms. It also rejects credential, transport, and module-path
+overrides, and pins the reviewed `ansible.cfg` and role tree. The runner clears
+ambient Ansible configuration, credentials, transport, inventory, module,
+collection, plugin, and Vault-path variables, plus `PYTHONPATH` and
+`PYTHONHOME`, before exporting the reviewed config and role path. It requires
+exactly one of the three protected operator inventories (`production`, `staging`, or `restore`),
+rejects arbitrary inventory paths and inventory directories, and accepts only
+explicit `archiveweaver_*` key/value bindings. Extra-vars files, raw YAML/JSON
+documents, protected controller identity/parallelism values, and
+`ansible_*` connection or privilege values are rejected. The
+controller job template must not expose an alternate raw `ansible-playbook`
+command for these workflows. After the approved playbook, the runner accepts
+only check/diff/syntax-check flags, the single approved inventory binding, and
+explicit `archiveweaver_*` extra variables; extra positional playbooks,
+`--`, and all other unreviewed options are rejected.
 
 The playbook verifies the controller's `ansible-playbook --version` and
 `ansible-lint --version` outputs against the pinned Core and Lint versions
@@ -116,4 +135,6 @@ common inputs. A raw preview requires the reviewed `ExecStart` and raw bundle
 digest; Quadlet requires its immutable image and rendered-unit digest; Docker
 and Swarm require the staged Compose path and product-stack digest; and each
 Kubernetes-family preview requires the Kustomize path, deterministic bundle
-digest, and explicit kubeconfig. The generic preview marks Pacemaker+unsupported because this edition deliberately does not invent cluster+resources; use the separately reviewed Pacemaker procedure for that runtime.
+digest, and explicit kubeconfig. The generic preview marks Pacemaker
+unsupported because this edition deliberately does not invent cluster
+resources; use the separately reviewed Pacemaker procedure for that runtime.

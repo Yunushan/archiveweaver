@@ -15,6 +15,9 @@
       - archiveweaver_provider_verify_raw_unit_stat.stat.exists
       - archiveweaver_provider_verify_raw_unit_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_provider_verify_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_verify_raw_unit_stat.stat.uid | int == 0
+      - archiveweaver_provider_verify_raw_unit_stat.stat.gid | int == 0
+      - archiveweaver_provider_verify_raw_unit_stat.stat.mode == '0644'
       - archiveweaver_provider_bundle_sha256 is string
       - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
       - archiveweaver_provider_verify_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
@@ -73,6 +76,20 @@
   no_log: true
   tags: [verify]
 
+- name: Require verified Quadlet files to be root-owned and non-writable by others
+  ansible.builtin.assert:
+    that:
+      - item.stat.uid | int == 0
+      - item.stat.gid | int == 0
+      - item.stat.mode == '0644'
+    fail_msg: "Verified Quadlet provider files must be root-owned with mode 0644."
+  loop: "{{ archiveweaver_provider_verify_quadlet_file_stats.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('quadlet') }}"
+  when: archiveweaver_runtime == 'podman-quadlet'
+  no_log: true
+  tags: [verify]
+
 - name: Inspect the staged Compose bundle during verification
   ansible.builtin.stat:
     path: "{{ archiveweaver_compose_path }}"
@@ -91,6 +108,9 @@
       - archiveweaver_provider_verify_compose_stat.stat.exists
       - archiveweaver_provider_verify_compose_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_provider_verify_compose_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_verify_compose_stat.stat.uid | int == 0
+      - archiveweaver_provider_verify_compose_stat.stat.gid | int == 0
+      - archiveweaver_provider_verify_compose_stat.stat.mode is match('^0[0-7][0-5][0-5]$')
       - archiveweaver_product_stack_sha256 is string
       - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
       - archiveweaver_provider_verify_compose_stat.stat.checksum == archiveweaver_product_stack_sha256
@@ -140,6 +160,9 @@
       - archiveweaver_provider_verify_swarm_stat.stat.exists
       - archiveweaver_provider_verify_swarm_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_provider_verify_swarm_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_verify_swarm_stat.stat.uid | int == 0
+      - archiveweaver_provider_verify_swarm_stat.stat.gid | int == 0
+      - archiveweaver_provider_verify_swarm_stat.stat.mode is match('^0[0-7][0-5][0-5]$')
       - archiveweaver_product_stack_sha256 is string
       - archiveweaver_product_stack_sha256 is match('^[0-9a-f]{64}$')
       - archiveweaver_provider_verify_swarm_stat.stat.checksum == archiveweaver_product_stack_sha256
@@ -195,6 +218,9 @@
       - archiveweaver_provider_verify_kustomize_stat.stat.exists
       - archiveweaver_provider_verify_kustomize_stat.stat.isdir | default(false) | bool
       - not (archiveweaver_provider_verify_kustomize_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_verify_kustomize_stat.stat.uid | int == 0
+      - archiveweaver_provider_verify_kustomize_stat.stat.gid | int == 0
+      - archiveweaver_provider_verify_kustomize_stat.stat.mode is match('^0[0-7][0-5][0-5]$')
     fail_msg: "The verified Kustomize bundle is missing, a file, or a symlink."
   when:
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']

@@ -45,6 +45,7 @@
     argv: ["{{ archiveweaver_check_command }}", --version]
   changed_when: false
   check_mode: false
+  no_log: true
   tags: [observe]
 
 - name: Install the checker environment file without credentials

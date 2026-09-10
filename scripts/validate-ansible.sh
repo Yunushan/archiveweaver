@@ -7,6 +7,10 @@ ansible_root="${repo_root}/deploy/ansible"
 
 cd "${ansible_root}"
 python3 "${repo_root}/scripts/validate-controller-contract.py"
+if ! cmp -s requirements.txt execution-environment/requirements.txt; then
+  echo "Ansible controller and execution-environment requirement locks differ" >&2
+  exit 1
+fi
 ansible-galaxy collection install -r requirements.yml
 ansible-lint --offline site.yml verify.yml repair.yml product-certification.yml restore-drill.yml failure-drill.yml rollback.yml
 

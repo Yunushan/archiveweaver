@@ -14,6 +14,9 @@
       - archiveweaver_provider_swarm_stack_path_stat.stat.exists
       - archiveweaver_provider_swarm_stack_path_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_provider_swarm_stack_path_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_swarm_stack_path_stat.stat.uid | int == 0
+      - archiveweaver_provider_swarm_stack_path_stat.stat.gid | int == 0
+      - archiveweaver_provider_swarm_stack_path_stat.stat.mode is match('^0[0-7][0-5][0-5]$')
     fail_msg: "Stage the reviewed, official product Swarm stack at archiveweaver_compose_path before apply."
   tags: [provider, deploy]
 

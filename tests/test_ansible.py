@@ -30,7 +30,10 @@ class AnsibleEditionTests(unittest.TestCase):
             "execution-environment/Containerfile",
             "execution-environment/requirements.txt",
             "execution-environment/README.md",
+            "../../scripts/build-ansible-execution-environment.sh",
             "../../scripts/validate-ansible.sh",
+            "../../scripts/run-ansible-operational.sh",
+            "../../tests/test-operational-runner.sh",
             "../../scripts/verify-source-identity.sh",
             "../../scripts/verify-readiness-manifest.py",
             "../../scripts/verify-path-boundary.py",
@@ -63,6 +66,24 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("ARG BASE_IMAGE", containerfile)
         self.assertIn("@sha256:[0-9a-f]{64}", containerfile)
         self.assertIn("BASE_IMAGE must be an OCI reference with a 64-character SHA-256 digest", containerfile)
+
+        self.assertEqual(
+            (ANSIBLE_ROOT / "requirements.txt").read_bytes(),
+            (ANSIBLE_ROOT / "execution-environment/requirements.txt").read_bytes(),
+        )
+        builder = (ROOT / "scripts/build-ansible-execution-environment.sh").read_text(encoding="utf-8")
+        self.assertIn("--base-image", builder)
+        self.assertIn("--engine podman|docker", builder)
+        self.assertIn("--build-arg", builder)
+        self.assertIn("--tag", builder)
+        self.assertIn("latest", builder)
+        validator = (ROOT / "scripts/validate-ansible.sh").read_text(encoding="utf-8")
+        self.assertIn("cmp -s requirements.txt execution-environment/requirements.txt", validator)
+
+    def test_core_operational_playbooks_pin_serial_execution(self) -> None:
+        for playbook in ("site.yml", "verify.yml", "repair.yml", "restore-drill.yml", "failure-drill.yml", "rollback.yml", "product-certification.yml"):
+            content = (ANSIBLE_ROOT / playbook).read_text(encoding="utf-8")
+            self.assertIn("serial: 1", content, playbook)
 
     def test_apply_and_repair_defaults_are_fail_closed(self) -> None:
         main_vars = (ANSIBLE_ROOT / "group_vars/all/main.yml").read_text(encoding="utf-8")
@@ -250,6 +271,13 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Check controller path components before any local write", controller_preflight)
         self.assertIn("verify-path-boundary.py", controller_preflight)
         self.assertIn("Require controller paths to stay within real directories", controller_preflight)
+        provider_probe = preflight.split("- name: Check the provider command without changing the managed host", 1)[1].split("- name:", 1)[0]
+        self.assertIn("no_log: true", provider_probe)
+        python_probe = preflight.split("- name: Check the managed Python interpreter", 1)[1].split("- name:", 1)[0]
+        self.assertIn("no_log: true", python_probe)
+        observe = (ANSIBLE_ROOT / "roles/archiveweaver_observe/tasks/main.yml").read_text(encoding="utf-8")
+        checker_probe = observe.split("- name: Verify the checker executable is present", 1)[1].split("- name:", 1)[0]
+        self.assertIn("no_log: true", checker_probe)
         controller_path_boundary = (ANSIBLE_ROOT / "roles/archiveweaver_controller_preflight/tasks/path-boundary.yml").read_text(encoding="utf-8")
         self.assertIn("archiveweaver_controller_path_boundary_paths", controller_path_boundary)
         completion_guard = (ANSIBLE_ROOT / "roles/archiveweaver_controller_preflight/tasks/require-complete.yml").read_text(encoding="utf-8")
@@ -329,6 +357,8 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertGreaterEqual((ANSIBLE_ROOT / "roles/archiveweaver_observe/tasks/main.yml").read_text(encoding="utf-8").count("diff: false"), 3)
         failure = (ANSIBLE_ROOT / "roles/archiveweaver_failure/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("'node' in (archiveweaver_failure_tests | map(attribute='name') | list)", failure)
+        self.assertIn("Reject duplicate failure-drill hook names", failure)
+        self.assertIn("| unique | length", failure)
         self.assertIn("execution_environment_digest", failure)
         docker = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/docker.yml").read_text(encoding="utf-8")
         self.assertIn("Require a staged product Compose stack", docker)
@@ -497,6 +527,23 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("depends_on:", workflow)
         self.assertIn("required_extra_vars", workflow)
         self.assertIn("source-integrity", workflow)
+        self.assertIn("operational_runner:", workflow)
+        self.assertIn("path: scripts/run-ansible-operational.sh", workflow)
+        self.assertIn("--start-at-task", workflow)
+        self.assertIn("--step", workflow)
+        for workflow_id in (
+            "staging-preview",
+            "product-certification",
+            "failure-domain-drill",
+            "backup-and-restore-gate",
+            "production-apply",
+            "production-post-apply-verify",
+            "production-verify",
+            "production-repair",
+            "production-rollback",
+        ):
+            workflow_section = workflow.split(f"  - id: {workflow_id}\n", 1)[1].split("\n  - id:", 1)[0]
+            self.assertIn("bash ../../scripts/run-ansible-operational.sh", workflow_section)
         self.assertIn("ARCHIVEWEAVER_IMMUTABLE_REF", workflow)
         self.assertIn("ARCHIVEWEAVER_READINESS_MANIFEST_SHA256", workflow)
         self.assertIn("scripts/verify-readiness-manifest.py", workflow)
@@ -682,3 +729,12 @@ class AnsibleEditionTests(unittest.TestCase):
     def test_provider_digest_stat_checks_use_sha256(self) -> None:
         content = "\n".join(path.read_text(encoding="utf-8") for path in ANSIBLE_ROOT.rglob("*.yml"))
         self.assertNotRegex(content, r"get_checksum: true(?!\s+checksum_algorithm: sha256)")
+
+    def test_provider_definitions_require_safe_file_identity(self) -> None:
+        provider = "\n".join(
+            (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks" / name).read_text(encoding="utf-8")
+            for name in ("raw.yml", "podman-quadlet.yml", "docker.yml", "docker-swarm.yml", "verify-bundle.yml")
+        )
+        self.assertGreaterEqual(provider.count("stat.uid | int == 0"), 6)
+        self.assertGreaterEqual(provider.count("stat.gid | int == 0"), 6)
+        self.assertGreaterEqual(provider.count("stat.mode == '0644'"), 6)

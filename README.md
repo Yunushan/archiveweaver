@@ -103,12 +103,23 @@ cp inventory/staging/hosts.yml.example inventory/staging/hosts.yml
 cp inventory/restore/hosts.yml.example inventory/restore/hosts.yml
 cp group_vars/all/vault.yml.example group_vars/all/vault.yml
 cp release-manifest.example.json release-manifest.json
-ansible-playbook site.yml --syntax-check
-ansible-playbook site.yml --check --diff -e archiveweaver_apply=true
+bash ../../scripts/run-ansible-operational.sh site.yml --syntax-check -i inventory/production/hosts.yml
+bash ../../scripts/run-ansible-operational.sh site.yml --check --diff -i inventory/production/hosts.yml -e archiveweaver_apply=true
 ```
 
-To generate an Ansible entry point for a specific provider, use for example
+To generate a review-only Ansible entry point for a specific provider, use for example
 `archiveweaver render --solution paperless-ngx --mode ansible --underlying-mode rke2 --nodes 3 --os ubuntu-24.04 --output generated/paperless-rke2.yml`.
+Production operations use the fixed approved playbooks through
+`scripts/run-ansible-operational.sh`.
+Build the controller execution environment only through
+`scripts/build-ansible-execution-environment.sh`; it requires an immutable
+base-image digest before Podman or Docker is invoked.
+
+The operational runner requires exactly one of the protected production,
+staging, or restore inventories and accepts only explicit
+`archiveweaver_*` key/value bindings; inventory directories, extra-vars files,
+raw YAML/JSON variables, controller/transport overrides, ambient Ansible
+plugin paths, and Python import-path overrides are rejected or cleared.
 
 Ansible coordinates the selected provider; it does not provide quorum,
 fencing, scheduler HA, database replication, or product-level failover. Keep

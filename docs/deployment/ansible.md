@@ -55,9 +55,12 @@ archiveweaver plan \
   --os ubuntu-24.04
 ```
 
-Generated entry points keep both mutation and verification disabled by default;
-enable them only after binding the release manifest, operator, fixture set, and
-provider content, or use the dedicated `verify.yml` workflow.
+Generated entry points keep both mutation and verification disabled by default
+and are review artifacts. Production controller and CLI operations use the
+fixed approved playbooks through `scripts/run-ansible-operational.sh`; do not
+invoke a generated path directly for a production mutation. Bind the release
+manifest, operator, fixture set, and provider content through the approved
+inventory and workflow, or use the dedicated `verify.yml` workflow.
 
 The generic provider renderer is intentionally incomplete. Stage the upstream
 product's official application, database, search, queue, object-storage,

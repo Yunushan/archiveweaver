@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,132 @@ PRODUCTION_WORKFLOWS = {
     "production-verify",
     "production-repair",
     "production-rollback",
+}
+OPERATIONAL_RUNNER_WORKFLOWS = {
+    "staging-preview",
+    "product-certification",
+    "failure-domain-drill",
+    "backup-and-restore-gate",
+    *PRODUCTION_WORKFLOWS,
+}
+OPERATIONAL_RUNNER_PATH = "scripts/run-ansible-operational.sh"
+OPERATIONAL_RUNNER_COMMAND_TOKEN = "../../scripts/run-ansible-operational.sh"
+OPERATIONAL_RUNNER_SHELL_MARKERS = (";", "|", "&", "<", ">", "`", "$(")
+OPERATIONAL_RUNNER_PLAYBOOKS = [
+    "site.yml",
+    "verify.yml",
+    "repair.yml",
+    "product-certification.yml",
+    "restore-drill.yml",
+    "failure-drill.yml",
+    "rollback.yml",
+]
+OPERATIONAL_RUNNER_ALLOWED_OPTIONS = [
+    "--check",
+    "-C",
+    "--diff",
+    "-D",
+    "--syntax-check",
+]
+OPERATIONAL_RUNNER_REJECTED_OPTIONS = [
+    "--limit",
+    "-l",
+    "--tags",
+    "-t",
+    "--skip-tags",
+    "--start-at-task",
+    "--step",
+    "--ask-vault-pass",
+    "--ask-pass",
+    "-k",
+    "--vault-password-file",
+    "--vault-id",
+    "--ask-become-pass",
+    "-K",
+    "--become-password-file",
+    "--become",
+    "-b",
+    "--become-method",
+    "--become-user",
+    "--private-key",
+    "--key-file",
+    "--user",
+    "-u",
+    "--connection",
+    "-c",
+    "--module-path",
+    "--ssh-common-args",
+    "--ssh-extra-args",
+    "--sftp-extra-args",
+    "--scp-extra-args",
+    "--forks",
+    "-f",
+    "--timeout",
+    "--inventory-file",
+]
+OPERATIONAL_RUNNER_ALLOWED_INVENTORIES = [
+    "inventory/production/hosts.yml",
+    "inventory/staging/hosts.yml",
+    "inventory/restore/hosts.yml",
+]
+OPERATIONAL_RUNNER_ENVIRONMENT_POLICY = {
+    "clear_ambient_ansible": True,
+    "clear_python_import_path": True,
+}
+OPERATIONAL_RUNNER_INVENTORIES_BY_WORKFLOW = {
+    "staging-preview": {"inventory/staging/hosts.yml"},
+    "product-certification": {"inventory/staging/hosts.yml"},
+    "failure-domain-drill": {"inventory/staging/hosts.yml"},
+    "backup-and-restore-gate": {"inventory/restore/hosts.yml"},
+    "production-apply": {"inventory/production/hosts.yml"},
+    "production-post-apply-verify": {"inventory/production/hosts.yml"},
+    "production-verify": {"inventory/production/hosts.yml"},
+    "production-repair": {"inventory/production/hosts.yml"},
+    "production-rollback": {"inventory/production/hosts.yml"},
+}
+OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS = [
+    "archiveweaver_serial",
+    "archiveweaver_environment",
+    "archiveweaver_ansible_core_version",
+    "archiveweaver_ansible_lint_version",
+    "archiveweaver_bundle_root",
+    "archiveweaver_readiness_python",
+    "archiveweaver_readiness_pythonpath",
+    "archiveweaver_evidence_root",
+    "archiveweaver_evidence_dir",
+    "archiveweaver_data_root",
+    "archiveweaver_log_root",
+    "archiveweaver_release_record",
+    "archiveweaver_service_name",
+    "archiveweaver_resource_name",
+    "archiveweaver_namespace",
+    "archiveweaver_health_validate_certs",
+    "archiveweaver_controller_target_group",
+    "archiveweaver_evidence_seal_enabled",
+    "ansible_connection",
+    "ansible_user",
+    "ansible_become",
+    "ansible_become_method",
+    "ansible_become_user",
+    "ansible_host",
+    "ansible_port",
+    "ansible_private_key_file",
+    "ansible_python_interpreter",
+    "ansible_ssh_common_args",
+    "ansible_ssh_extra_args",
+    "ansible_sftp_extra_args",
+    "ansible_scp_extra_args",
+]
+OPERATIONAL_RUNNER_PLAYBOOKS_BY_WORKFLOW = {
+    "staging-preview": {"site.yml"},
+    "product-certification": {"product-certification.yml"},
+    "failure-domain-drill": {"failure-drill.yml"},
+    "backup-and-restore-gate": {"restore-drill.yml"},
+    "production-apply": {"site.yml"},
+    "production-post-apply-verify": {"verify.yml"},
+    "production-verify": {"verify.yml"},
+    "production-repair": {"repair.yml"},
+    "production-rollback": {"rollback.yml"},
 }
 SOURCE_GATED_WORKFLOWS = PRODUCTION_WORKFLOWS | {
     "product-certification",
@@ -449,6 +576,189 @@ def _required_extra_vars_by_runtime(
     )
 
 
+def _validate_runner_extra_var(workflow_id: str, payload: str, errors: list[str]) -> None:
+    if payload.startswith("@") or payload.startswith("{") or payload.startswith("[") or "=" not in payload:
+        errors.append(
+            f"workflow.{workflow_id} operational extra-vars must be explicit archiveweaver_* key=value bindings"
+        )
+        return
+    key = payload.split("=", 1)[0]
+    if not re.fullmatch(r"archiveweaver_[A-Za-z0-9_]+", key):
+        errors.append(f"workflow.{workflow_id} operational extra-vars contain an unapproved key {key!r}")
+    if re.search(r",\s*[A-Za-z_][A-Za-z0-9_]*=", payload):
+        errors.append(f"workflow.{workflow_id} operational extra-vars must carry one binding per option")
+    protected_pattern = r"(?:^|,)\s*(?:" + "|".join(
+        re.escape(value) for value in OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS
+    ) + r")="
+    if re.search(protected_pattern, payload):
+        errors.append(f"workflow.{workflow_id} operational extra-vars contain a protected controller binding")
+
+
+def _validate_runner_command_bindings(
+    workflow_id: str,
+    tokens: list[str],
+    expected_inventory: set[str],
+    errors: list[str],
+) -> None:
+    inventories: list[str] = []
+    extra_var_payloads: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-i", "--inventory"}:
+            if index + 1 >= len(tokens):
+                errors.append(f"workflow.{workflow_id} inventory option is missing its value")
+            else:
+                inventories.append(tokens[index + 1])
+                index += 1
+        elif token.startswith("--inventory="):
+            inventories.append(token.split("=", 1)[1])
+        elif token.startswith("-i") and token != "-i":
+            inventories.append(token[2:])
+        elif token in {"-e", "--extra-vars"}:
+            if index + 1 >= len(tokens):
+                errors.append(f"workflow.{workflow_id} extra-vars option is missing its value")
+            else:
+                extra_var_payloads.append(tokens[index + 1])
+                index += 1
+        elif token.startswith("--extra-vars="):
+            extra_var_payloads.append(token.split("=", 1)[1])
+        elif token.startswith("-e") and token != "-e":
+            extra_var_payloads.append(token[2:])
+        index += 1
+
+    if len(inventories) != 1 or set(inventories) != expected_inventory:
+        errors.append(
+            f"workflow.{workflow_id} must provide exactly one approved inventory: "
+            + ", ".join(sorted(expected_inventory))
+        )
+    for payload in extra_var_payloads:
+        _validate_runner_extra_var(workflow_id, payload, errors)
+
+
+def _validate_runner_option_shape(
+    workflow_id: str,
+    tokens: list[str],
+    errors: list[str],
+) -> None:
+    """Reject extra playbooks and options outside the reviewed runner API."""
+
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in OPERATIONAL_RUNNER_ALLOWED_OPTIONS:
+            index += 1
+            continue
+        if token in {"-i", "--inventory", "-e", "--extra-vars"}:
+            if index + 1 >= len(tokens):
+                errors.append(f"workflow.{workflow_id} operational option {token} is missing its value")
+                index += 1
+            else:
+                index += 2
+            continue
+        if token.startswith("--inventory=") or token.startswith("--extra-vars="):
+            index += 1
+            continue
+        if token.startswith("-i") and token != "-i":
+            index += 1
+            continue
+        if token.startswith("-e") and token != "-e":
+            index += 1
+            continue
+        errors.append(
+            f"workflow.{workflow_id} contains an unapproved operational argument after the playbook"
+        )
+        index += 1
+
+
+def _validate_operational_runner(
+    contract: dict[str, Any],
+    workflows: dict[str, dict[str, Any]],
+    errors: list[str],
+) -> None:
+    runner = _mapping(contract.get("operational_runner"), "operational_runner", errors)
+    if runner.get("path") != OPERATIONAL_RUNNER_PATH:
+        errors.append(f"operational_runner.path must be {OPERATIONAL_RUNNER_PATH}")
+    else:
+        runner_file = Path(__file__).resolve().parents[1] / OPERATIONAL_RUNNER_PATH
+        if not runner_file.is_file():
+            errors.append(f"operational_runner.path does not exist: {OPERATIONAL_RUNNER_PATH}")
+    if runner.get("allowed_playbooks") != OPERATIONAL_RUNNER_PLAYBOOKS:
+        errors.append("operational_runner.allowed_playbooks must match the approved playbook allowlist")
+    if runner.get("allowed_options") != OPERATIONAL_RUNNER_ALLOWED_OPTIONS:
+        errors.append("operational_runner.allowed_options must match the reviewed runner option allowlist")
+    if runner.get("rejected_options") != OPERATIONAL_RUNNER_REJECTED_OPTIONS:
+        errors.append("operational_runner.rejected_options must match the task-selection, credential, transport, and code-loading denylist")
+    if runner.get("required_inventory") is not True:
+        errors.append("operational_runner.required_inventory must be true")
+    if runner.get("allowed_inventories") != OPERATIONAL_RUNNER_ALLOWED_INVENTORIES:
+        errors.append("operational_runner.allowed_inventories must match the protected inventory allowlist")
+    if runner.get("environment_policy") != OPERATIONAL_RUNNER_ENVIRONMENT_POLICY:
+        errors.append("operational_runner.environment_policy must clear ambient Ansible and Python import overrides")
+    expected_extra_vars_policy = {
+        "key_prefix": "archiveweaver_",
+        "reject_sources": ["@file", "raw-yaml", "raw-json"],
+        "protected_keys": OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS,
+    }
+    if runner.get("extra_vars") != expected_extra_vars_policy:
+        errors.append("operational_runner.extra_vars must match the explicit binding and protected-key policy")
+    if not isinstance(runner.get("invocation"), str) or OPERATIONAL_RUNNER_PATH not in runner["invocation"]:
+        errors.append("operational_runner.invocation must name the approved runner")
+
+    for workflow_id in OPERATIONAL_RUNNER_WORKFLOWS:
+        item = workflows.get(workflow_id, {})
+        if item.get("working_directory") != "deploy/ansible":
+            errors.append(f"workflow.{workflow_id} must run from the reviewed deploy/ansible directory")
+        commands = item.get("commands")
+        if commands is None:
+            commands = [item.get("command")]
+        if not isinstance(commands, list) or not all(isinstance(command, str) for command in commands):
+            errors.append(f"workflow.{workflow_id} must expose string command(s) through the operational runner")
+            continue
+        if not commands or any(OPERATIONAL_RUNNER_PATH not in command for command in commands):
+            errors.append(f"workflow.{workflow_id} must invoke {OPERATIONAL_RUNNER_PATH} for every playbook command")
+            continue
+        expected_playbooks = OPERATIONAL_RUNNER_PLAYBOOKS_BY_WORKFLOW[workflow_id]
+        expected_inventory = OPERATIONAL_RUNNER_INVENTORIES_BY_WORKFLOW[workflow_id]
+        for command in commands:
+            try:
+                tokens = shlex.split(command, posix=True)
+            except ValueError as exc:
+                errors.append(f"workflow.{workflow_id} contains an invalid shell command: {exc}")
+                continue
+            if any(marker in command for marker in OPERATIONAL_RUNNER_SHELL_MARKERS) or any(
+                marker in token for token in tokens for marker in OPERATIONAL_RUNNER_SHELL_MARKERS
+            ):
+                errors.append(f"workflow.{workflow_id} must not contain shell control or substitution markers")
+            runner_indexes = [
+                index for index, token in enumerate(tokens) if token == OPERATIONAL_RUNNER_COMMAND_TOKEN
+            ]
+            if len(runner_indexes) != 1:
+                errors.append(f"workflow.{workflow_id} must invoke exactly one approved operational runner token")
+                continue
+            runner_index = runner_indexes[0]
+            if runner_index != 1 or tokens[:runner_index] != ["bash"]:
+                errors.append(f"workflow.{workflow_id} must start with bash and the exact operational runner token")
+            if runner_index + 1 >= len(tokens) or tokens[runner_index + 1] not in expected_playbooks:
+                errors.append(
+                    f"workflow.{workflow_id} must invoke only its approved playbook(s): "
+                    + ", ".join(sorted(expected_playbooks))
+                )
+            if "ansible-playbook" in tokens:
+                errors.append(f"workflow.{workflow_id} must not invoke raw ansible-playbook")
+            option_tokens = tokens[runner_index + 2 :]
+            _validate_runner_option_shape(workflow_id, option_tokens, errors)
+            _validate_runner_command_bindings(workflow_id, option_tokens, expected_inventory, errors)
+            for token in tokens:
+                if any(
+                    token == option
+                    or (option.startswith("--") and token.startswith(option + "="))
+                    or (option in {"-l", "-t", "-u", "-c", "-f", "-b", "-k", "-K"} and token.startswith(option) and token != option)
+                    for option in OPERATIONAL_RUNNER_REJECTED_OPTIONS
+                ):
+                    errors.append(f"workflow.{workflow_id} contains rejected operational option {token}")
+
+
 def _walk_keys(value: Any) -> list[str]:
     keys: list[str] = []
     if isinstance(value, dict):
@@ -516,6 +826,7 @@ def validate(contract: Any) -> list[str]:
 
     workflows = _workflow_map(contract, errors)
     _validate_workflow_dependencies(workflows, errors)
+    _validate_operational_runner(contract, workflows, errors)
     source = workflows.get("source-integrity", {})
     source_command = source.get("command", "")
     if not isinstance(source_command, str) or "verify-source-identity.sh" not in source_command:

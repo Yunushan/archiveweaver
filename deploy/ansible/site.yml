@@ -17,7 +17,7 @@
   hosts: archiveweaver_nodes
   become: true
   gather_facts: true
-  serial: "{{ archiveweaver_serial | default(1) }}"
+  serial: 1
   any_errors_fatal: true
   roles:
     - role: archiveweaver_preflight

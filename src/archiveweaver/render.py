@@ -286,6 +286,10 @@ def render_ansible(
         ---
         # ArchiveWeaver generated Ansible entry point for {solution_id}
         #
+        # This generated file is a review artifact. Production controller and
+        # CLI operations use the fixed approved playbooks through
+        # scripts/run-ansible-operational.sh; do not invoke this path directly
+        # for a production mutation.
         # Run this file from deploy/ansible so the checked-in roles are on the
         # configured roles_path. It is an orchestration envelope, not a
         # universal product installer. Add the upstream product stack and

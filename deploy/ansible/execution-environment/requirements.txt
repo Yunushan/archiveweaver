@@ -1,4 +1,6 @@
-# Keep this controller image lock aligned with deploy/ansible/requirements.txt.
+# Pin the controller dependency in the repository. Production execution
+# environments should mirror this exact version and record the resulting lock
+# and image digest in their release manifest.
 ansible-core==2.21.0
 ansible-lint==26.6.0
 PyYAML==6.0.2

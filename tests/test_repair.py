@@ -117,7 +117,9 @@ class RepairTests(unittest.TestCase):
         self.assertTrue(any("archiveweaver_readiness_manifest_path=" in arg and "release-manifest.json" in arg for action in plan["actions"] for arg in action["command"]))
         self.assertTrue(all("ANSIBLE_CONFIG" in action["environment"] for action in plan["actions"]))
         self.assertTrue(all("ANSIBLE_ROLES_PATH" in action["environment"] for action in plan["actions"]))
-        self.assertIn("verify,evidence", plan["actions"][-1]["command"])
+        self.assertTrue(all("run-ansible-operational.sh" in action["command"][1] for action in plan["actions"]))
+        self.assertTrue(all("--tags" not in action["command"] for action in plan["actions"]))
+        self.assertNotIn("verify,evidence", plan["actions"][-1]["command"])
 
         bound = build_repair_plan(
             self.catalog,
@@ -139,12 +141,16 @@ class RepairTests(unittest.TestCase):
             plan = build_repair_plan(self.catalog, "paperless-ngx", "ansible")
 
         self.assertEqual(
-            plan["actions"][0]["command"][2],
+            plan["actions"][0]["command"][4],
             str((ansible_root / "inventory" / "production" / "hosts.yml").resolve()),
         )
         self.assertEqual(
-            plan["actions"][0]["command"][3],
-            str((ansible_root / "repair.yml").resolve()),
+            plan["actions"][0]["command"][:3],
+            [
+                "bash",
+                str((repository_root / "scripts" / "run-ansible-operational.sh").resolve()),
+                "repair.yml",
+            ],
         )
         self.assertTrue(any(
             "archiveweaver_readiness_manifest_path="
@@ -199,3 +205,17 @@ class RepairTests(unittest.TestCase):
     def test_ansible_repair_rejects_secret_like_identity_values(self) -> None:
         with self.assertRaises(ValueError):
             build_repair_plan(self.catalog, "paperless-ngx", "ansible", operator="bad operator")
+
+    def test_repair_rejects_unsafe_target_identifiers(self) -> None:
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "raw", service="--user")
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "docker", compose_file="--env-file")
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "podman-quadlet", unit="--all")
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "nextcloud-server", "pacemaker", resource="resource;cleanup", allow_fencing_actions=True)
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", namespace="archive;weaver")
+        with self.assertRaises(ValueError):
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", deployment="deployment/name")

@@ -142,10 +142,16 @@ immediately before writing. The evidence role also requires an attested
 completion fact from every upstream managed target before sealing; production
 mutations and repairs reject tag-filtered runs so verification and evidence
 cannot be skipped accidentally. The controller and managed preflight
-attestations are tied to a current-run entrypoint, and every non-check-mode
-operational workflow rejects partial `--limit` runs as well as `--tags` and
-`--skip-tags`; this prevents an operator from selecting a mutation while
-omitting verification, evidence sealing, or part of the target group.
+attestations are tied to a current-run entrypoint, and the operational runner
+rejects partial `--limit` runs as well as `--tags`, `--skip-tags`, `--step`,
+credential, transport, and module-path overrides. This prevents an operator
+from selecting a mutation while omitting verification, evidence sealing, or
+part of the target group, or from replacing the controller-bound execution
+identity. It also requires exactly one protected production, staging, or
+restore inventory and accepts only explicit `archiveweaver_*` key/value
+bindings; extra-vars files, raw YAML/JSON documents, protected controller
+identity/parallelism values, and `ansible_*` transport or privilege values are
+rejected.
 
 `failure-drill.yml` follows the same boundary for node, service, dependency,
 and storage failure hooks. `rollback.yml` is separately approval-gated and

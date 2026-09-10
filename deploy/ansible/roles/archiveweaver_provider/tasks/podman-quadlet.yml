@@ -152,6 +152,20 @@
   no_log: true
   tags: [provider, deploy]
 
+- name: Require staged Quadlet files to be root-owned and non-writable by others
+  ansible.builtin.assert:
+    that:
+      - item.stat.uid | int == 0
+      - item.stat.gid | int == 0
+      - item.stat.mode == '0644'
+    fail_msg: "Staged Quadlet provider files must be root-owned with mode 0644."
+  loop: "{{ archiveweaver_provider_quadlet_staged_file_stats.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('quadlet') }}"
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
 - name: Install the verified Quadlet provider files
   ansible.builtin.copy:
     src: "{{ item.staging_path }}"
@@ -207,6 +221,20 @@
     fail_msg: "The rendered Quadlet provider files do not match the reviewed SHA-256 release binding."
   when:
     - not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require installed Quadlet files to be root-owned and non-writable by others
+  ansible.builtin.assert:
+    that:
+      - item.stat.uid | int == 0
+      - item.stat.gid | int == 0
+      - item.stat.mode == '0644'
+    fail_msg: "Installed Quadlet provider files must be root-owned with mode 0644."
+  loop: "{{ archiveweaver_provider_quadlet_file_stats.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('quadlet') }}"
+  when: not ansible_check_mode | bool
   no_log: true
   tags: [provider, deploy]
 

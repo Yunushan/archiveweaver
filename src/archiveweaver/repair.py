@@ -11,6 +11,10 @@ from .catalog import Catalog
 from .path_utils import has_symlink_component
 
 
+_SAFE_TARGET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$")
+_SAFE_KUBERNETES_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?$")
+
+
 def _safe_relative_controller_path(value: str) -> bool:
     if not isinstance(value, str):
         return False
@@ -129,6 +133,30 @@ def _safe_identity(value: str) -> bool:
     )
 
 
+def _require_safe_target_identifier(value: str, label: str) -> str:
+    if not isinstance(value, str) or not _SAFE_TARGET_IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(f"{label} must be a non-empty command-safe identifier")
+    return value
+
+
+def _require_safe_kubernetes_name(value: str, label: str) -> str:
+    if not isinstance(value, str) or not _SAFE_KUBERNETES_NAME_RE.fullmatch(value):
+        raise ValueError(f"{label} must be a lowercase Kubernetes name of at most 63 characters")
+    return value
+
+
+def _require_safe_path_argument(value: str, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or value.startswith("-")
+        or re.search(r"[\x00\r\n]", value)
+    ):
+        raise ValueError(f"{label} must be a non-empty path without control characters or option syntax")
+    return value
+
+
 @dataclass
 class RepairAction:
     name: str
@@ -193,12 +221,15 @@ def build_repair_plan(
         }
 
     if mode == "raw":
+        _require_safe_target_identifier(target_service, "--service")
         actions.extend([
             RepairAction("validate-unit", ["systemctl", "status", target_service, "--no-pager"], "read-only", "Capture current state before a restart."),
             RepairAction("restart-service", ["systemctl", "restart", target_service], "service-restart", "Restart the named systemd service after confirming the incident and backup state."),
             RepairAction("verify-unit", ["systemctl", "is-active", target_service], "read-only", "Confirm that systemd reports the service active."),
         ])
     elif mode == "docker":
+        _require_safe_target_identifier(target_service, "--service")
+        _require_safe_path_argument(compose_file, "--compose-file")
         actions.extend([
             RepairAction("validate-compose", ["docker", "compose", "-f", compose_file, "config"], "read-only", "Validate the Compose model before changing containers."),
             RepairAction("reconcile-compose", ["docker", "compose", "-f", compose_file, "up", "-d"], "container-reconcile", "Reconcile only the declared Compose workload; unrelated project containers and volumes are left untouched."),
@@ -206,6 +237,7 @@ def build_repair_plan(
         ])
     elif mode == "podman-quadlet":
         target_unit = unit or f"{solution_id}.service"
+        _require_safe_target_identifier(target_unit, "--unit")
         actions.extend([
             RepairAction("reload-quadlets", ["systemctl", "daemon-reload"], "unit-reload", "Regenerate systemd units from Quadlet definitions."),
             RepairAction("restart-quadlet", ["systemctl", "restart", target_unit], "service-restart", "Restart the named Quadlet service."),
@@ -222,12 +254,14 @@ def build_repair_plan(
                 "blockers": ["Pacemaker repair is gated. Pass --allow-fencing-actions only after reviewing quorum, STONITH, constraints, and the change ticket."],
             }
         target_resource = resource or target_service
+        _require_safe_target_identifier(target_resource, "--resource")
         actions.extend([
             RepairAction("cluster-status", ["pcs", "status", "--full"], "read-only", "Verify cluster membership and resource state."),
             RepairAction("resource-cleanup", ["pcs", "resource", "cleanup", target_resource], "cluster-recovery", "Clear a failed resource operation so Pacemaker can retry according to constraints."),
             RepairAction("cluster-status-after", ["pcs", "status", "--full"], "read-only", "Verify recovery and fencing state."),
         ])
     elif mode == "docker-swarm":
+        _require_safe_path_argument(compose_file, "--compose-file")
         actions.extend([
             RepairAction("validate-stack", ["docker", "stack", "config", "-c", compose_file], "read-only", "Validate the Swarm stack model."),
             RepairAction("redeploy-stack", ["docker", "stack", "deploy", "--compose-file", compose_file, solution_id], "orchestrator-reconcile", "Reconcile services without deleting named volumes."),
@@ -245,6 +279,11 @@ def build_repair_plan(
             "--playbook",
             repository_root=repository_root,
         )
+        if playbook_path.name != "repair.yml":
+            raise ValueError("--playbook must resolve to the approved Ansible repair.yml")
+        runner_path = repository_root / "scripts" / "run-ansible-operational.sh"
+        if has_symlink_component(runner_path) or runner_path.is_symlink() or not runner_path.is_file():
+            raise ValueError("the approved Ansible operational runner is missing or unsafe")
         inventory_path = _resolve_ansible_bundle_path(
             inventory,
             ansible_root,
@@ -276,13 +315,16 @@ def build_repair_plan(
             "ANSIBLE_CONFIG": str(ansible_root / "ansible.cfg"),
             "ANSIBLE_ROLES_PATH": str(ansible_root / "roles"),
         }
+        runner_command = ["bash", str(runner_path), "repair.yml", "-i", str(inventory_path)]
         actions.extend([
-            RepairAction("validate-playbook", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "--syntax-check"], "read-only", "Validate the reviewed Ansible repair playbook before contacting managed nodes.", environment=controller_environment),
-            RepairAction("plan-repair", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "--check", "--diff", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Produce an Ansible check-mode diff; no remote changes are allowed in this action.", environment=controller_environment),
-            RepairAction("apply-repair", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "orchestrator-restart", "Run the explicitly approved Ansible repair playbook. The playbook itself has a separate apply gate.", environment=controller_environment),
-            RepairAction("verify-repair", ["ansible-playbook", "-i", str(inventory_path), str(playbook_path), "--tags", "verify,evidence", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Collect post-repair service, endpoint, storage, and sealed evidence results.", environment=controller_environment),
+            RepairAction("validate-playbook", [*runner_command, "--syntax-check"], "read-only", "Validate the approved Ansible repair playbook before contacting managed nodes.", environment=controller_environment),
+            RepairAction("plan-repair", [*runner_command, "--check", "--diff", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Produce an Ansible check-mode diff; no remote changes are allowed in this action.", environment=controller_environment),
+            RepairAction("apply-repair", [*runner_command, "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "orchestrator-restart", "Run the explicitly approved Ansible repair playbook. The playbook itself has a separate apply gate.", environment=controller_environment),
+            RepairAction("verify-repair", [*runner_command, "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Collect post-repair service, endpoint, storage, and sealed evidence results through an unfiltered play.", environment=controller_environment),
         ])
     else:
+        _require_safe_kubernetes_name(namespace, "--namespace")
+        _require_safe_kubernetes_name(target_deployment, "--deployment")
         actions.extend([
             RepairAction("verify-cluster", ["kubectl", "get", "nodes", "-o", "wide"], "read-only", "Check control-plane and worker readiness."),
             RepairAction("rollout-restart", ["kubectl", "-n", namespace, "rollout", "restart", f"deployment/{target_deployment}"], "orchestrator-restart", "Perform a rolling restart of the named deployment."),

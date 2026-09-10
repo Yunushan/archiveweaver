@@ -6,9 +6,11 @@ content contract; the organization supplies the signing and registry policy.
 
 ## Controller image
 
-Build `deploy/ansible/execution-environment/Containerfile` with an approved
-base image digest; the Containerfile rejects a tag-only or malformed base
-image. The image must contain the exact Ansible Core and
+Build `deploy/ansible/execution-environment/Containerfile` through
+`scripts/build-ansible-execution-environment.sh` with an approved base image
+digest. The wrapper rejects a tag-only or malformed base image before the
+container engine resolves `FROM`; the Containerfile repeats the same check as
+defense in depth. The image must contain the exact Ansible Core and
 ansible-lint versions in both requirements files. Record the final image
 digest, source commit, package lock, SBOM, signature, and vulnerability-scan
 result in the release manifest's Ansible execution-environment object. The

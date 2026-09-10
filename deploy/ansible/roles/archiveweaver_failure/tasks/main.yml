@@ -64,6 +64,15 @@
   no_log: true
   tags: [failure-drill]
 
+- name: Reject duplicate failure-drill hook names
+  ansible.builtin.assert:
+    that:
+      - (archiveweaver_failure_tests | map(attribute='name') | list | unique | length) == (archiveweaver_failure_tests | length)
+    fail_msg: "Failure-drill hook names must be unique so results and evidence remain attributable."
+  when: archiveweaver_failure_apply | bool
+  no_log: true
+  tags: [failure-drill]
+
 - name: Require safe failure-drill argv elements
   ansible.builtin.assert:
     that:

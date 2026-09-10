@@ -3,7 +3,7 @@
 help:
 	@printf '%s\n' 'make generate  - regenerate catalog JSON and reference pages' \
 	              'make validate  - validate catalog and compile Python' \
-	              'make test      - run stdlib unit tests' \
+	              'make test      - run validation, runner, contract, and unit tests' \
 	              'make controller-validate - validate the Ansible controller contract' \
 	              'make ansible-validate - run pinned Ansible lint and syntax checks' \
 	              'make smoke     - exercise CLI planning/checking commands'
@@ -15,7 +15,10 @@ validate: generate
 	PYTHONPATH=src python3 -m archiveweaver validate-catalog --json
 	python3 -m compileall -q src scripts tests
 
-test: validate
+test: validate controller-validate
+	bash -n scripts/*.sh tests/*.sh
+	bash tests/test-operational-runner.sh
+	bash tests/test-execution-environment.sh
 	PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 lint:

@@ -715,6 +715,7 @@
   failed_when: false
   check_mode: false
   when: inventory_hostname in archiveweaver_preflight_provider_probe_hosts
+  no_log: true
   tags: [preflight]
 
 - name: Require the provider command for an apply-capable host
@@ -734,6 +735,7 @@
   changed_when: false
   failed_when: false
   check_mode: false
+  no_log: true
   tags: [preflight]
 
 - name: Require Python on managed nodes

@@ -42,7 +42,8 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan.support_level, "portable")
         self.assertEqual(plan.underlying_mode, "raw")
         self.assertTrue(any("not an HA runtime" in item for item in plan.warnings))
-        self.assertTrue(any("ansible-playbook" in item for item in plan.commands))
+        self.assertTrue(any("run-ansible-operational.sh site.yml" in item for item in plan.commands))
+        self.assertTrue(all("ansible-playbook" not in item for item in plan.commands))
         self.assertTrue(all("--ask-vault-pass" not in item for item in plan.commands))
 
     def test_ansible_uses_underlying_topology_policy(self) -> None:

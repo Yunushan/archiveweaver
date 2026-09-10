@@ -55,7 +55,7 @@ PYTHONPATH=src python3 -m archiveweaver repair \
   --json
 
 cd deploy/ansible
-ansible-playbook repair.yml --check --diff
+bash ../../scripts/run-ansible-operational.sh repair.yml --check --diff -i inventory/production/hosts.yml
 ```
 
 The CLI plan remains dry-run output. The playbook's
@@ -76,8 +76,8 @@ explicitly bound to the selected playbook's `ansible.cfg` and local `roles`
 directory, and the selected readiness manifest is passed as an absolute
 controller path. This keeps a repair run from silently resolving a different
 role tree or manifest because the CLI was launched from another working
-directory. Override it with `--readiness-manifest` when the operator manifest
-is stored elsewhere.
+directory. Override it with `--readiness-manifest` only when the approved
+manifest is another regular file inside the reviewed Ansible bundle.
 
 ## Incident sequence
 

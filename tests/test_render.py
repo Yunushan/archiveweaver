@@ -45,6 +45,8 @@ class RenderTests(unittest.TestCase):
         self.assertIn("archiveweaver_evidence", content)
         self.assertIn("archiveweaver_controller_preflight", content)
         self.assertIn("archiveweaver_controller_target_group: archiveweaver_nodes", content)
+        self.assertIn("scripts/run-ansible-operational.sh", content)
+        self.assertIn("review artifact", content)
         self.assertLess(content.index("hosts: localhost"), content.index("hosts: archiveweaver_nodes"))
         self.assertLess(content.index("hosts: archiveweaver_nodes"), content.rindex("hosts: localhost"))
         self.assertIn('archiveweaver_operator: ""', content)

@@ -95,6 +95,9 @@
       - archiveweaver_provider_raw_unit_stat.stat.exists
       - archiveweaver_provider_raw_unit_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_provider_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_raw_unit_stat.stat.uid | int == 0
+      - archiveweaver_provider_raw_unit_stat.stat.gid | int == 0
+      - archiveweaver_provider_raw_unit_stat.stat.mode == '0644'
       - archiveweaver_provider_bundle_sha256 is string
       - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
       - archiveweaver_provider_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
@@ -134,6 +137,9 @@
       - archiveweaver_provider_installed_raw_unit_stat.stat.exists
       - archiveweaver_provider_installed_raw_unit_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_provider_installed_raw_unit_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_installed_raw_unit_stat.stat.uid | int == 0
+      - archiveweaver_provider_installed_raw_unit_stat.stat.gid | int == 0
+      - archiveweaver_provider_installed_raw_unit_stat.stat.mode == '0644'
       - archiveweaver_provider_installed_raw_unit_stat.stat.checksum == archiveweaver_provider_bundle_sha256
     fail_msg: "The installed raw provider unit does not match the verified SHA-256 release binding."
   when: not ansible_check_mode | bool

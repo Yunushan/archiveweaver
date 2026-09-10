@@ -86,9 +86,9 @@ def _base_commands(mode: str, solution_id: str, nodes: str, namespace: str, os_i
     if mode == "ansible":
         provider = underlying_mode or "raw"
         return [
-            "cd deploy/ansible && ansible-playbook -i inventory/production/hosts.yml site.yml --syntax-check",
-            f"cd deploy/ansible && ansible-playbook -i inventory/production/hosts.yml site.yml --check --diff -e archiveweaver_apply=true -e archiveweaver_solution_id={solution_id} -e archiveweaver_nodes={nodes} -e archiveweaver_os_id={os_id} -e archiveweaver_runtime={provider}",
-            f"cd deploy/ansible && ansible-playbook -i inventory/production/hosts.yml site.yml -e archiveweaver_apply=true -e archiveweaver_runtime={provider}",
+            "cd deploy/ansible && bash ../../scripts/run-ansible-operational.sh site.yml --syntax-check -i inventory/production/hosts.yml",
+            f"cd deploy/ansible && bash ../../scripts/run-ansible-operational.sh site.yml --check --diff -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_solution_id={solution_id} -e archiveweaver_nodes={nodes} -e archiveweaver_os_id={os_id} -e archiveweaver_runtime={provider}",
+            f"cd deploy/ansible && bash ../../scripts/run-ansible-operational.sh site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_runtime={provider}",
         ]
     return [
         f"kubectl --context <{mode}-context> get nodes",
@@ -198,7 +198,7 @@ def build_plan(
         steps = [
             "Pin the Ansible Core execution environment and required collection content.",
             "Review the production inventory, Vault/secret-manager binding, release manifest, and change ticket.",
-            "Run ansible-playbook --syntax-check, ansible-lint, and ansible-playbook --check --diff against a staging target.",
+            "Run the approved operational runner for syntax-check, ansible-lint, and check-mode diff against a staging target.",
             "Apply with the approved operator identity using serial execution and fail-closed approval gates.",
             "Collect per-host service, endpoint, storage, and release evidence and run the product smoke/fixity tests.",
         ]

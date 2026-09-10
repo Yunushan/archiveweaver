@@ -14,6 +14,104 @@ project:
   trusted_signer_env: ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
   readiness_manifest_digest_env: ARCHIVEWEAVER_READINESS_MANIFEST_SHA256
   source_verification: signed-commit-and-clean-checkout
+operational_runner:
+  path: scripts/run-ansible-operational.sh
+  invocation: bash scripts/run-ansible-operational.sh <approved-playbook> [ansible options]
+  required_inventory: true
+  allowed_inventories:
+    - inventory/production/hosts.yml
+    - inventory/staging/hosts.yml
+    - inventory/restore/hosts.yml
+  environment_policy:
+    clear_ambient_ansible: true
+    clear_python_import_path: true
+  extra_vars:
+    key_prefix: archiveweaver_
+    reject_sources:
+      - '@file'
+      - raw-yaml
+      - raw-json
+    protected_keys:
+      - archiveweaver_serial
+      - archiveweaver_environment
+      - archiveweaver_ansible_core_version
+      - archiveweaver_ansible_lint_version
+      - archiveweaver_bundle_root
+      - archiveweaver_readiness_python
+      - archiveweaver_readiness_pythonpath
+      - archiveweaver_evidence_root
+      - archiveweaver_evidence_dir
+      - archiveweaver_data_root
+      - archiveweaver_log_root
+      - archiveweaver_release_record
+      - archiveweaver_service_name
+      - archiveweaver_resource_name
+      - archiveweaver_namespace
+      - archiveweaver_health_validate_certs
+      - archiveweaver_controller_target_group
+      - archiveweaver_evidence_seal_enabled
+      - ansible_connection
+      - ansible_user
+      - ansible_become
+      - ansible_become_method
+      - ansible_become_user
+      - ansible_host
+      - ansible_port
+      - ansible_private_key_file
+      - ansible_python_interpreter
+      - ansible_ssh_common_args
+      - ansible_ssh_extra_args
+      - ansible_sftp_extra_args
+      - ansible_scp_extra_args
+  allowed_playbooks:
+    - site.yml
+    - verify.yml
+    - repair.yml
+    - product-certification.yml
+    - restore-drill.yml
+    - failure-drill.yml
+    - rollback.yml
+  allowed_options:
+    - --check
+    - -C
+    - --diff
+    - -D
+    - --syntax-check
+  rejected_options:
+    - --limit
+    - -l
+    - --tags
+    - -t
+    - --skip-tags
+    - --start-at-task
+    - --step
+    - --ask-vault-pass
+    - --ask-pass
+    - -k
+    - --vault-password-file
+    - --vault-id
+    - --ask-become-pass
+    - -K
+    - --become-password-file
+    - --become
+    - -b
+    - --become-method
+    - --become-user
+    - --private-key
+    - --key-file
+    - --user
+    - -u
+    - --connection
+    - -c
+    - --module-path
+    - --ssh-common-args
+    - --ssh-extra-args
+    - --sftp-extra-args
+    - --scp-extra-args
+    - --forks
+    - -f
+    - --timeout
+    - --inventory-file
 execution_environment:
   image: REPLACE_WITH_APPROVED_EXECUTION_ENVIRONMENT_IMAGE@sha256:REPLACE_WITH_64_HEX_DIGEST
   digest: sha256:REPLACE_WITH_64_HEX_DIGEST
@@ -58,7 +156,7 @@ workflow:
     depends_on:
       - ansible-quality
     working_directory: deploy/ansible
-    command: ansible-playbook -i inventory/staging/hosts.yml site.yml --check --diff -e archiveweaver_apply=true -e archiveweaver_staging_preview=true
+    command: bash ../../scripts/run-ansible-operational.sh site.yml -i inventory/staging/hosts.yml --check --diff -e archiveweaver_apply=true -e archiveweaver_staging_preview=true
     required_extra_vars:
       - archiveweaver_solution_id
       - archiveweaver_release
@@ -108,9 +206,10 @@ workflow:
       - staging-preview
     working_directory: deploy/ansible
     commands:
-      - ansible-playbook -i inventory/staging/hosts.yml product-certification.yml --check --diff
+      - bash ../../scripts/run-ansible-operational.sh product-certification.yml --check --diff -i inventory/staging/hosts.yml
       - >-
-        ansible-playbook -i inventory/staging/hosts.yml product-certification.yml
+        bash ../../scripts/run-ansible-operational.sh product-certification.yml
+        -i inventory/staging/hosts.yml
         -e archiveweaver_certification_apply=true
         -e archiveweaver_evidence_environment=production
     required_extra_vars:
@@ -141,9 +240,10 @@ workflow:
       - product-certification
     working_directory: deploy/ansible
     commands:
-      - ansible-playbook -i inventory/staging/hosts.yml failure-drill.yml --check --diff
+      - bash ../../scripts/run-ansible-operational.sh failure-drill.yml --check --diff -i inventory/staging/hosts.yml
       - >-
-        ansible-playbook -i inventory/staging/hosts.yml failure-drill.yml
+        bash ../../scripts/run-ansible-operational.sh failure-drill.yml
+        -i inventory/staging/hosts.yml
         -e archiveweaver_failure_apply=true
         -e archiveweaver_evidence_environment=production
     required_extra_vars:
@@ -174,8 +274,8 @@ workflow:
       - failure-domain-drill
     working_directory: deploy/ansible
     commands:
-      - ansible-playbook -i inventory/restore/hosts.yml restore-drill.yml --check --diff
-      - ansible-playbook -i inventory/restore/hosts.yml restore-drill.yml -e archiveweaver_restore_apply=true -e archiveweaver_evidence_environment=production
+      - bash ../../scripts/run-ansible-operational.sh restore-drill.yml --check --diff -i inventory/restore/hosts.yml
+      - bash ../../scripts/run-ansible-operational.sh restore-drill.yml -i inventory/restore/hosts.yml -e archiveweaver_restore_apply=true -e archiveweaver_evidence_environment=production
     required_extra_vars:
       - archiveweaver_release
       - archiveweaver_restore_change_id
@@ -229,7 +329,7 @@ workflow:
     depends_on:
       - production-approval
     working_directory: deploy/ansible
-    command: ansible-playbook -i inventory/production/hosts.yml site.yml -e archiveweaver_apply=true
+    command: bash ../../scripts/run-ansible-operational.sh site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true
     required_extra_vars:
       - archiveweaver_release
       - archiveweaver_change_id
@@ -264,7 +364,7 @@ workflow:
     depends_on:
       - production-apply
     working_directory: deploy/ansible
-    command: ansible-playbook -i inventory/production/hosts.yml verify.yml -e archiveweaver_evidence_environment=production
+    command: bash ../../scripts/run-ansible-operational.sh verify.yml -i inventory/production/hosts.yml -e archiveweaver_evidence_environment=production
     required_extra_vars:
       - archiveweaver_release
       - archiveweaver_change_id
@@ -300,7 +400,7 @@ workflow:
     depends_on:
       - readiness
     working_directory: deploy/ansible
-    command: ansible-playbook -i inventory/production/hosts.yml verify.yml -e archiveweaver_evidence_environment=production
+    command: bash ../../scripts/run-ansible-operational.sh verify.yml -i inventory/production/hosts.yml -e archiveweaver_evidence_environment=production
     required_extra_vars:
       - archiveweaver_release
       - archiveweaver_change_id
@@ -343,7 +443,7 @@ workflow:
       - production-repair-approval
     trigger: on-demand
     working_directory: deploy/ansible
-    command: ansible-playbook -i inventory/production/hosts.yml repair.yml -e archiveweaver_repair_apply=true -e archiveweaver_evidence_environment=production
+    command: bash ../../scripts/run-ansible-operational.sh repair.yml -i inventory/production/hosts.yml -e archiveweaver_repair_apply=true -e archiveweaver_evidence_environment=production
     required_extra_vars:
       - archiveweaver_release
       - archiveweaver_change_id
@@ -391,7 +491,7 @@ workflow:
       - production-rollback-approval
     trigger: on-demand
     working_directory: deploy/ansible
-    command: ansible-playbook -i inventory/production/hosts.yml rollback.yml -e archiveweaver_rollback_apply=true -e archiveweaver_evidence_environment=production
+    command: bash ../../scripts/run-ansible-operational.sh rollback.yml -i inventory/production/hosts.yml -e archiveweaver_rollback_apply=true -e archiveweaver_evidence_environment=production
     required_extra_vars:
       - archiveweaver_release
       - archiveweaver_change_id

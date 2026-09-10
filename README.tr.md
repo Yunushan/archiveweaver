@@ -81,12 +81,22 @@ Enterprise Ansible orchestration edition:
 ```bash
 cd deploy/ansible
 cp inventory/production/hosts.yml.example inventory/production/hosts.yml
-ansible-playbook site.yml --syntax-check
-ansible-playbook site.yml --check --diff -e archiveweaver_apply=true
+bash ../../scripts/run-ansible-operational.sh site.yml --syntax-check -i inventory/production/hosts.yml
+bash ../../scripts/run-ansible-operational.sh site.yml --check --diff -i inventory/production/hosts.yml -e archiveweaver_apply=true
 ```
 
-Belirli bir provider için Ansible entry point üretmek üzere örneğin
+Belirli bir provider için inceleme amaçlı Ansible entry point üretmek üzere örneğin
 `archiveweaver render --solution paperless-ngx --mode ansible --underlying-mode rke2 --nodes 3 --os ubuntu-24.04 --output deploy/ansible/generated/paperless-rke2.yml` kullanılabilir.
+Üretim işlemleri sabit onaylı playbook'ları
+`scripts/run-ansible-operational.sh` üzerinden kullanır.
+Controller execution environment imajını yalnızca
+`scripts/build-ansible-execution-environment.sh` ile oluşturun; Podman veya
+Docker çalıştırılmadan önce değişmez base-image digest'i zorunlu kılar.
+
+Operasyon runner'ı tam olarak bir production, staging veya restore envanteri
+ister; yalnızca açık `archiveweaver_*` anahtar/değer bağlarını kabul eder.
+Envanter dizinleri, extra-vars dosyaları, ham YAML/JSON değişkenleri ve
+controller/transport override'ları reddedilir.
 
 Ansible seçilen provider'ı koordine eder; quorum, fencing, scheduler HA,
 database replication veya ürün seviyesinde failover sağlamaz. Release

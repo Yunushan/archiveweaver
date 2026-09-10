@@ -1,5 +1,6 @@
-# Build with an immutable approved base image digest:
-# podman build --build-arg BASE_IMAGE=registry.example/ansible-ee@sha256:<digest> .
+# Build with scripts/build-ansible-execution-environment.sh. The wrapper
+# validates the digest before the engine resolves FROM; this check remains as
+# defense in depth inside the image build.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 

@@ -44,6 +44,30 @@ Every operational playbook checks the controller's live `ansible-playbook`
 Core and `ansible-lint` versions against the pinned requirements before it
 executes. This includes certification, restore, failure-domain, and rollback
 paths.
+Keep `requirements.txt` and `execution-environment/requirements.txt` aligned;
+`scripts/validate-ansible.sh` rejects lock drift. Build the controller image
+with `scripts/build-ansible-execution-environment.sh` so the immutable base
+digest is validated before the container engine resolves `FROM`.
+Controller workflows must invoke `bash ../../scripts/run-ansible-operational.sh`
+from this directory for every operational playbook. The runner allowlists the
+approved playbooks and rejects partial-target, task-selection, credential,
+transport, and code-loading overrides (including `--limit`/`-l`, `--tags`/`-t`,
+`--skip-tags`, `--start-at-task`, `--step`, and vault/key/user/connection
+options). Use raw `ansible-playbook` only for syntax checks or local
+diagnostics. The runner clears ambient Ansible configuration, credentials,
+transport, inventory, module, collection, plugin, and Vault-path variables,
+plus `PYTHONPATH` and `PYTHONHOME`, then pins `ANSIBLE_CONFIG` and
+`ANSIBLE_ROLES_PATH` to this reviewed bundle.
+Every invocation must provide exactly one of `inventory/production/hosts.yml`,
+`inventory/staging/hosts.yml`, or `inventory/restore/hosts.yml`; arbitrary
+inventory paths and inventory directories are rejected. Extra variables must
+be explicit `archiveweaver_*` key/value bindings. Extra-vars files, raw
+YAML/JSON variable documents, protected controller identity/parallelism
+bindings, and `ansible_*` connection or privilege bindings are rejected.
+After the playbook, only `--check`/`-C`, `--diff`/`-D`, `--syntax-check`, the
+single approved inventory option, and explicit `-e`/`--extra-vars` bindings are
+accepted. Extra positional playbooks, `--`, and any other unreviewed option
+are rejected.
 Applied operational playbooks also require the controller environment variable
 `ARCHIVEWEAVER_IMMUTABLE_REF`, the approved signer list, and the protected
 `ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` binding. They verify the signed,
@@ -114,6 +138,11 @@ Use the returned `sha256:...` value as `release.provider_bundle.remote_digest`;
 strip the `sha256:` prefix for the matching Ansible group variable, which
 expects the bare 64-character hexadecimal value. The staged content must be
 byte-for-byte identical to the reviewed binding.
+The staged Compose/Swarm file must remain a regular root-owned file without
+group/world write permission; rendered raw units and Quadlet definitions use
+mode `0644`. Verification checks ownership and permissions again after
+deployment. Kubernetes bundle roots must remain root-owned directories without
+group/world write permission.
 For raw and Quadlet, the mutation-time digest check is intentionally skipped by
 `--check` because Ansible does not write the candidate template in check mode;
 the real apply renders into a private `.provider-staging` directory, verifies
@@ -153,26 +182,26 @@ ansible-lint site.yml verify.yml repair.yml product-certification.yml restore-dr
 
 # Review changes without applying them. The explicit apply variable makes the
 # playbook calculate the real mutation set; --check still prevents changes.
-ansible-playbook site.yml --check --diff -e archiveweaver_apply=true
+bash ../../scripts/run-ansible-operational.sh site.yml --check --diff -i inventory/production/hosts.yml -e archiveweaver_apply=true
 
 # Apply only after the approval, backup, release-manifest, and product-stack
 # gates in group_vars/all/main.yml have been reviewed and set true.
-ansible-playbook site.yml -e archiveweaver_apply=true
+bash ../../scripts/run-ansible-operational.sh site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true
 
 # Collect read-only verification and evidence.
-ansible-playbook verify.yml
+bash ../../scripts/run-ansible-operational.sh verify.yml -i inventory/production/hosts.yml
 
 # Run the product matrix in the isolated certification environment. Supply
 # the five reviewed argv hooks and an approved certification change ID.
-ansible-playbook -i inventory/staging/hosts.yml product-certification.yml --check --diff
-ansible-playbook -i inventory/staging/hosts.yml product-certification.yml -e archiveweaver_certification_apply=true
+bash ../../scripts/run-ansible-operational.sh product-certification.yml --check --diff -i inventory/staging/hosts.yml
+bash ../../scripts/run-ansible-operational.sh product-certification.yml -i inventory/staging/hosts.yml -e archiveweaver_certification_apply=true
 
 # Preview the approved restore/fixity drill against a non-production inventory.
-ansible-playbook -i inventory/restore/hosts.yml restore-drill.yml --check --diff
+bash ../../scripts/run-ansible-operational.sh restore-drill.yml --check --diff -i inventory/restore/hosts.yml
 
 # Preview failure-domain hooks in staging and a release rollback plan.
-ansible-playbook -i inventory/staging/hosts.yml failure-drill.yml --check --diff
-ansible-playbook rollback.yml --check --diff
+bash ../../scripts/run-ansible-operational.sh failure-drill.yml --check --diff -i inventory/staging/hosts.yml
+bash ../../scripts/run-ansible-operational.sh rollback.yml --check --diff -i inventory/production/hosts.yml
 ```
 
 `archiveweaver_apply` defaults to `false`. An apply or check-mode apply also
@@ -192,9 +221,9 @@ claim that Ansible supplies HA.
 The repair playbook is separate from deployment and defaults to read-only:
 
 ```bash
-ansible-playbook repair.yml --syntax-check
-ansible-playbook repair.yml --check --diff
-ansible-playbook repair.yml -e archiveweaver_repair_apply=true
+bash ../../scripts/run-ansible-operational.sh repair.yml --syntax-check -i inventory/production/hosts.yml
+bash ../../scripts/run-ansible-operational.sh repair.yml --check --diff -i inventory/production/hosts.yml
+bash ../../scripts/run-ansible-operational.sh repair.yml -i inventory/production/hosts.yml -e archiveweaver_repair_apply=true
 ```
 
 When invoking repair through the CLI, pass the non-secret evidence identity or
