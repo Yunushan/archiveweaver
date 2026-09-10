@@ -285,7 +285,7 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("ansible_skip_tags", completion_guard)
         self.assertIn("['always', 'controller']", completion_guard)
         managed_completion_guard = (ANSIBLE_ROOT / "roles/archiveweaver_controller_preflight/tasks/require-managed-complete.yml").read_text(encoding="utf-8")
-        self.assertIn("archiveweaver_managed_preflight_completed", managed_completion_guard)
+        self.assertIn("archiveweaver_preflight_completed", managed_completion_guard)
         self.assertIn("ansible_skip_tags", managed_completion_guard)
         self.assertIn("Attest completed managed-host preflight", (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8"))
         self.assertIn("Begin managed-host preflight transaction", (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8"))
@@ -340,7 +340,10 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Require the operational readiness manifest verifier to pass", controller_preflight)
         self.assertIn("Load the controller-approved readiness identity", controller_preflight)
         self.assertIn("Bind every applied workflow to the approved readiness identity", controller_preflight)
-        self.assertIn("get('service', {}).get('environment') == archiveweaver_evidence_environment", controller_preflight)
+        self.assertIn(
+            "get('service', {}).get('environment') == archiveweaver_evidence_environment",
+            " ".join(controller_preflight.split()),
+        )
         self.assertIn("verify-source-identity.sh", controller_preflight)
         self.assertIn("Require signed and clean controller source", controller_preflight)
         self.assertIn("Require an immutable execution-environment digest for applied workflows", controller_preflight)
@@ -710,7 +713,7 @@ class AnsibleEditionTests(unittest.TestCase):
             self.assertIn("archiveweaver_evidence_completion_hosts:", evidence_play, playbook)
 
         for role, fact in (
-            ("archiveweaver_verify", "archiveweaver_verification_completed"),
+            ("archiveweaver_verify", "archiveweaver_verify_completed"),
             ("archiveweaver_repair", "archiveweaver_repair_completed"),
             ("archiveweaver_certification", "archiveweaver_certification_completed"),
             ("archiveweaver_failure", "archiveweaver_failure_completed"),

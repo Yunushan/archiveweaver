@@ -58,7 +58,9 @@ def _sha256(path: Path) -> str:
 
 def build_evidence_index(directory: Path, output: Path) -> dict[str, Any]:
     root = directory.resolve()
-    if has_symlink_component(directory) or not root.is_dir():
+    if has_symlink_component(directory):
+        raise ValueError(f"evidence directory must not resolve through a symlink: {directory}")
+    if not root.is_dir():
         raise ValueError(f"evidence directory does not exist: {directory}")
     if has_symlink_component(output):
         raise ValueError("evidence index output must not be a symlink")

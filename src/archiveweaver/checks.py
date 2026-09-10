@@ -129,6 +129,15 @@ def _url_scheme(value: Any) -> str:
         return ""
 
 
+def _http_error_url(error: urllib.error.HTTPError) -> str:
+    """Read an HTTPError URL without triggering fragile compatibility hooks."""
+    try:
+        value = error.url
+    except (AttributeError, KeyError, OSError, ValueError):
+        return ""
+    return value if isinstance(value, str) else ""
+
+
 def check_url(url: str, timeout: int = 8) -> dict[str, Any]:
     reported_url = _redacted_url(url)
     if not isinstance(url, str) or any(ord(char) < 0x20 or char in {'"', "\\"} for char in url):
@@ -175,7 +184,7 @@ def check_url(url: str, timeout: int = 8) -> dict[str, Any]:
                 {"url": reported_url, "final_url": _redacted_url(final_url), "status": status},
             )
     except urllib.error.HTTPError as exc:
-        final_url = getattr(exc, "url", "") or ""
+        final_url = _http_error_url(exc)
         final_scheme = _url_scheme(final_url)
         if parsed.scheme == "https" and final_scheme and final_scheme != "https":
             return _result(

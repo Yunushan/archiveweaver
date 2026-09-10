@@ -99,6 +99,21 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(result["status"], "fail")
         self.assertIn("do not follow redirects", result["detail"])
 
+    def test_health_check_handles_unreadable_http_error_urls(self) -> None:
+        class FragileHTTPError(urllib.error.HTTPError):
+            def __init__(self):
+                self.code = 302
+
+            @property
+            def url(self):
+                raise KeyError("url is unavailable")
+
+        redirect = FragileHTTPError()
+        with patch("archiveweaver.checks._open_health_request", side_effect=redirect):
+            result = check_url("https://health.example.org/")
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("do not follow redirects", result["detail"])
+
     def test_ansible_repair_is_plan_only_by_default(self) -> None:
         plan = build_repair_plan(self.catalog, "paperless-ngx", "ansible")
         result = apply_repair(plan, dry_run=True)

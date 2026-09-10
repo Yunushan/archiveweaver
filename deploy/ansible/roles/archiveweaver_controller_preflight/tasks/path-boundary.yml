@@ -1,14 +1,17 @@
 ---
 - name: Check controller path components before a local evidence write
   ansible.builtin.command:
-    argv: "{{ [archiveweaver_readiness_python, archiveweaver_bundle_root ~ '/../../scripts/verify-path-boundary.py'] + archiveweaver_controller_path_boundary_paths }}"
+    argv: >-
+      {{ [archiveweaver_readiness_python,
+          archiveweaver_bundle_root ~ '/../../scripts/verify-path-boundary.py']
+         + archiveweaver_controller_path_boundary_paths }}
     expand_argument_vars: false
   environment:
     PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
   delegate_to: localhost
   become: false
   run_once: true
-  register: archiveweaver_controller_path_boundary_result
+  register: archiveweaver_controller_preflight_path_boundary_result
   changed_when: false
   check_mode: false
   failed_when: false
@@ -17,7 +20,7 @@
 - name: Require local evidence paths to stay within real directories
   ansible.builtin.assert:
     that:
-      - archiveweaver_controller_path_boundary_result.rc == 0
+      - archiveweaver_controller_preflight_path_boundary_result.rc == 0
     fail_msg: "Controller evidence paths must not contain symlinked directory components."
   delegate_to: localhost
   become: false

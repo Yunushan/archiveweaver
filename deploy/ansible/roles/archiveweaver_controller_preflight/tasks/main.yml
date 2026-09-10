@@ -266,7 +266,9 @@
       - archiveweaver_controller_preflight_operational_manifest_stat.stat.exists | default(false) | bool
       - archiveweaver_controller_preflight_operational_manifest_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_controller_preflight_operational_manifest_stat.stat.islnk | default(false) | bool)
-      - (archiveweaver_controller_preflight_operational_manifest_stat.stat.checksum | default('')) == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256')
+      - >-
+        (archiveweaver_controller_preflight_operational_manifest_stat.stat.checksum | default(''))
+        == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256')
     fail_msg: "The controller readiness manifest is missing, not regular, or does not match the protected approved digest."
   when: archiveweaver_controller_preflight_source_gate_active | bool
   no_log: true
@@ -312,13 +314,27 @@
   ansible.builtin.assert:
     that:
       - archiveweaver_controller_preflight_readiness_identity is mapping
-      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('solution_id') == archiveweaver_solution_id
-      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('runtime') == 'ansible'
-      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('underlying_runtime') == archiveweaver_runtime
-      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('os_id') == archiveweaver_os_id
-      - archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('environment') == archiveweaver_evidence_environment
-      - archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('version') == archiveweaver_release
-      - archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('execution_environment', {}).get('digest') == archiveweaver_execution_environment_digest
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('solution_id')
+        == archiveweaver_solution_id
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('runtime')
+        == 'ansible'
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('underlying_runtime')
+        == archiveweaver_runtime
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('os_id')
+        == archiveweaver_os_id
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('service', {}).get('environment')
+        == archiveweaver_evidence_environment
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('version')
+        == archiveweaver_release
+      - >-
+        archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('execution_environment', {}).get('digest')
+        == archiveweaver_execution_environment_digest
     fail_msg: "The applied workflow inputs do not match the controller-approved readiness manifest identity."
   when: archiveweaver_controller_preflight_source_gate_active | bool
   no_log: true

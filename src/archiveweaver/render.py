@@ -336,7 +336,7 @@ def render_ansible(
           gather_facts: false
           vars:
 {rendered_vars}
-            archiveweaver_evidence_completion_fact: archiveweaver_verification_completed
+            archiveweaver_evidence_completion_fact: archiveweaver_verify_completed
             archiveweaver_evidence_completion_hosts: "{{{{ groups['archiveweaver_nodes'] | default([]) }}}}"
           roles:
             - role: archiveweaver_evidence

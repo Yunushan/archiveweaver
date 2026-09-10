@@ -48,7 +48,11 @@
 - name: Reject symlinked Quadlet destinations
   ansible.builtin.assert:
     that:
-      - archiveweaver_provider_quadlet_destination_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
+      - >-
+        archiveweaver_provider_quadlet_destination_stats.results
+        | selectattr('stat.islnk', 'defined')
+        | selectattr('stat.islnk', 'equalto', true)
+        | list | length == 0
     fail_msg: "Quadlet service destinations must not be symlinks."
   no_log: true
   tags: [provider, deploy]
@@ -142,7 +146,11 @@
       - archiveweaver_provider_quadlet_staged_file_stats.results | length == 3
       - archiveweaver_provider_quadlet_staged_file_stats.results | selectattr('stat.exists', 'equalto', true) | list | length == 3
       - archiveweaver_provider_quadlet_staged_file_stats.results | selectattr('stat.isreg', 'equalto', true) | list | length == 3
-      - archiveweaver_provider_quadlet_staged_file_stats.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk', 'equalto', true) | list | length == 0
+      - >-
+        archiveweaver_provider_quadlet_staged_file_stats.results
+        | selectattr('stat.islnk', 'defined')
+        | selectattr('stat.islnk', 'equalto', true)
+        | list | length == 0
       - archiveweaver_provider_bundle_sha256 is string
       - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
       - (archiveweaver_provider_quadlet_staged_digest_input | default([]) | join('\n') | hash('sha256')) == archiveweaver_provider_bundle_sha256

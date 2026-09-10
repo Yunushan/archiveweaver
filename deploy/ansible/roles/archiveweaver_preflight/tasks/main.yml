@@ -7,7 +7,7 @@
       - "print('archiveweaver-managed-preflight-started')"
   changed_when: false
   check_mode: false
-  register: archiveweaver_managed_preflight_entrypoint
+  register: archiveweaver_preflight_entrypoint
   no_log: true
   tags: [always, preflight]
 
@@ -747,8 +747,8 @@
 
 - name: Attest completed managed-host preflight
   ansible.builtin.set_fact:
-    archiveweaver_managed_preflight_completed: true
+    archiveweaver_preflight_completed: true
   when:
-    - (archiveweaver_managed_preflight_entrypoint | default({})).get('rc', 1) | int == 0
-    - (archiveweaver_managed_preflight_entrypoint | default({})).get('stdout', '') | trim == 'archiveweaver-managed-preflight-started'
+    - (archiveweaver_preflight_entrypoint | default({})).get('rc', 1) | int == 0
+    - (archiveweaver_preflight_entrypoint | default({})).get('stdout', '') | trim == 'archiveweaver-managed-preflight-started'
   tags: [preflight]

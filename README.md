@@ -58,6 +58,16 @@ archiveweaver validate-catalog --json
 archiveweaver list-solutions
 ```
 
+## Python support
+
+The core package supports Python 3.9 through 3.15 and the full test suite runs
+against every version in that range. The Ansible edition is validated with
+Python 3.13 and 3.14 using the pinned controller requirements. CI opts into
+prerelease resolution for the core 3.15 job while it is not yet stable; the
+same matrix will select the stable 3.15 release automatically when it is
+published. The Ansible job follows the controller stack's declared support
+range and will expand when its pinned dependencies declare 3.15 support.
+
 Plan a three-node RKE2 deployment:
 
 ```bash

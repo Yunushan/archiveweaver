@@ -245,11 +245,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "render":
+            output = Path(args.output) if args.output else None
+            if output is not None and has_symlink_component(output):
+                raise ValueError("render output must not resolve through a symlink")
             plan, content = render(catalog, args.solution, args.mode, args.nodes, args.os_id, namespace=args.namespace, image=args.image, allow_floating=args.allow_floating, allow_conditional=args.allow_conditional, underlying_mode=args.underlying_mode)
-            if args.output:
-                output = Path(args.output)
-                if has_symlink_component(output):
-                    raise ValueError("render output must not resolve through a symlink")
+            if output is not None:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 if has_symlink_component(output):
                     raise ValueError("render output must not resolve through a symlink")

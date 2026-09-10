@@ -32,7 +32,7 @@
   loop: "{{ archiveweaver_hook_specs }}"
   loop_control:
     label: "{{ item.name }}"
-  register: archiveweaver_hook_executable_stats
+  register: archiveweaver_controller_preflight_hook_executable_stats
   changed_when: false
   no_log: true
 
@@ -42,7 +42,7 @@
   loop: "{{ archiveweaver_hook_specs }}"
   loop_control:
     label: "{{ item.name }}"
-  register: archiveweaver_hook_realpath_results
+  register: archiveweaver_controller_preflight_hook_realpath_results
   changed_when: false
   failed_when: false
   check_mode: false
@@ -60,10 +60,10 @@
       - item.stat.mode[-2] not in ['2', '3', '6', '7']
       - item.stat.mode[-1] not in ['2', '3', '6', '7']
       - item.stat.checksum | default('') == item.item.sha256
-      - archiveweaver_hook_realpath_results.results[ansible_loop.index0].rc == 0
-      - archiveweaver_hook_realpath_results.results[ansible_loop.index0].stdout == item.item.command[0]
+      - archiveweaver_controller_preflight_hook_realpath_results.results[ansible_loop.index0].rc == 0
+      - archiveweaver_controller_preflight_hook_realpath_results.results[ansible_loop.index0].stdout == item.item.command[0]
     fail_msg: "A reviewed hook executable is missing, unsafe, redirected, non-regular, or has changed bytes."
-  loop: "{{ archiveweaver_hook_executable_stats.results }}"
+  loop: "{{ archiveweaver_controller_preflight_hook_executable_stats.results }}"
   loop_control:
     label: "{{ item.item.name }}"
     extended: true

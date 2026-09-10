@@ -3,6 +3,6 @@
   ansible.builtin.assert:
     that:
       - (ansible_skip_tags | default([]) | intersect(['preflight']) | length) == 0
-      - hostvars[inventory_hostname].archiveweaver_managed_preflight_completed | default(false) | bool
+      - hostvars[inventory_hostname].archiveweaver_preflight_completed | default(false) | bool
     fail_msg: "Managed-host preflight must complete before this operational role can run."
   no_log: true

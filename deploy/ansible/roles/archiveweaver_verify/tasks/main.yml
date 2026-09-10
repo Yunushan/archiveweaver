@@ -226,5 +226,5 @@
 
 - name: Attest completed service verification
   ansible.builtin.set_fact:
-    archiveweaver_verification_completed: true
+    archiveweaver_verify_completed: true
   tags: [verify]

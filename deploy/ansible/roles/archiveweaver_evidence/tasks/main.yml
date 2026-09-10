@@ -157,7 +157,11 @@
   tags: [evidence]
 
 - name: Verify reviewed evidence publication hook executables
-  ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+  ansible.builtin.include_tasks:
+    file: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
+    apply:
+      delegate_to: localhost
+      become: false
   vars:
     archiveweaver_hook_specs:
       - name: evidence-publish
@@ -167,8 +171,6 @@
         command: "{{ archiveweaver_evidence_verify_command }}"
         sha256: "{{ archiveweaver_evidence_verify_command_sha256 }}"
   when: archiveweaver_evidence_publication_active | bool
-  delegate_to: localhost
-  become: false
   run_once: true
   no_log: true
   tags: [evidence]

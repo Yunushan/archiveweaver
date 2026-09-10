@@ -26,7 +26,7 @@
       - archiveweaver_check_command is not search('[\\s\\r\\n]')
       - archiveweaver_check_interval is string
       - archiveweaver_check_interval is match('^[1-9][0-9]*(s|min|h|d)$')
-  fail_msg: "Observation requires an HTTPS health URL, an absolute checker path, and a bounded systemd interval."
+    fail_msg: "Observation requires an HTTPS health URL, an absolute checker path, and a bounded systemd interval."
   tags: [observe]
 
 - name: Verify the reviewed health-check executable

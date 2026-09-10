@@ -184,6 +184,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("PyYAML==6.0.2", workflow)
         self.assertIn("python scripts/generate_catalog.py", workflow)
         self.assertIn("git diff --exit-code", workflow)
+        self.assertIn("python -m pip install --disable-pip-version-check --no-input --no-deps .", workflow)
         self.assertIn("bash tests/test-operational-runner.sh", workflow)
         self.assertIn("bash tests/test-execution-environment.sh", workflow)
         self.assertIn("bash -n scripts/*.sh tests/*.sh", workflow)
@@ -191,3 +192,23 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("test: validate controller-validate", makefile)
         self.assertIn("bash tests/test-operational-runner.sh", makefile)
         self.assertIn("bash tests/test-execution-environment.sh", makefile)
+
+    def test_python_support_matrix_matches_package_metadata(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        core_versions = workflow["jobs"]["test"]["strategy"]["matrix"]["python-version"]
+        self.assertEqual(core_versions, ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"])
+        ansible_versions = workflow["jobs"]["ansible"]["strategy"]["matrix"]["python-version"]
+        self.assertEqual(ansible_versions, ["3.13", "3.14"])
+
+        for job_name in ("test", "ansible"):
+            setup_python = next(
+                step
+                for step in workflow["jobs"][job_name]["steps"]
+                if step.get("uses", "").startswith("actions/setup-python@")
+            )
+            self.assertIs(setup_python["with"]["allow-prereleases"], True)
+
+        metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('requires-python = ">=3.9"', metadata)
+        for version in core_versions:
+            self.assertIn(f'"Programming Language :: Python :: {version}"', metadata)

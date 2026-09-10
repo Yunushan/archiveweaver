@@ -52,7 +52,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn('archiveweaver_operator: ""', content)
         self.assertIn('archiveweaver_evidence_environment: "production"', content)
         self.assertIn("archiveweaver_run_verification: false", content)
-        self.assertIn("archiveweaver_evidence_completion_fact: archiveweaver_verification_completed", content)
+        self.assertIn("archiveweaver_evidence_completion_fact: archiveweaver_verify_completed", content)
         self.assertIn("archiveweaver_evidence_completion_hosts:", content)
 
     def test_ansible_renderer_selects_underlying_provider(self) -> None:
