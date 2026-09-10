@@ -1,6 +1,6 @@
 # Pin the controller dependency in the repository. Production execution
 # environments should mirror this exact version and record the resulting lock
 # and image digest in their release manifest.
-ansible-core==2.21.0
+ansible-core==2.21.3
 ansible-lint==26.6.0
 PyYAML==6.0.2
