@@ -16,12 +16,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class CIWorkflowTests(unittest.TestCase):
     def test_github_actions_are_pinned_to_immutable_commit_shas(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        uses_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
+        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        self.assertTrue(workflows)
+        uses_lines = [
+            line.strip()
+            for workflow_path in workflows
+            for line in workflow_path.read_text(encoding="utf-8").splitlines()
+            if "uses:" in line
+        ]
         self.assertTrue(uses_lines)
         for line in uses_lines:
-            self.assertRegex(line, r"uses:\s+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}(?:\s+#.*)?$")
+            self.assertRegex(line, r"uses:\s+[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}(?:\s+#.*)?$")
             self.assertNotRegex(line, r"@[vV][0-9]")
+
+    def test_security_and_release_workflows_require_supply_chain_controls(self) -> None:
+        security = (ROOT / ".github/workflows/security.yml").read_text(encoding="utf-8")
+        release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("github/codeql-action/init@", security)
+        self.assertIn("bandit==1.9.4", security)
+        self.assertIn("pip-audit==2.10.1", security)
+        self.assertIn("--severity-level medium", security)
+        self.assertIn("pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict", security)
+        self.assertIn("anchore/sbom-action@", release)
+        self.assertIn("format: spdx-json", release)
+        self.assertIn("sigstore/gh-action-sigstore-python@", release)
+        self.assertIn("persist-credentials: false", release)
+        self.assertIn("inputs: dist/*", release)
+        self.assertIn("verify: true", release)
+        self.assertIn("verify-cert-identity:", release)
+        self.assertIn("verify-oidc-issuer: https://token.actions.githubusercontent.com", release)
+        self.assertIn("actions/attest-build-provenance@", release)
+        self.assertIn("attestations: write", release)
+        self.assertIn("Require release tag to match package version", release)
+
+    def test_dependabot_covers_runtime_and_automation_dependencies(self) -> None:
+        dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
+        self.assertIn("package-ecosystem: github-actions", dependabot)
+        self.assertIn("package-ecosystem: pip", dependabot)
+        self.assertIn("directory: /deploy/ansible", dependabot)
+        self.assertIn("directory: /deploy/ansible/execution-environment", dependabot)
 
     def test_controller_contract_verifies_signed_source_identity(self) -> None:
         workflow = (ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8")

@@ -97,3 +97,14 @@ Promotion is a signed change: catalog and tests, release verification, staging
 preview, backup/restore evidence, manual approval, production apply, and
 post-deployment verification. Store the resulting controller job record and
 evidence index in immutable audit storage.
+
+Repository automation reinforces this contract. The `Security` workflow runs
+CodeQL, Bandit, and a strict audit of the pinned Ansible controller
+dependencies on pushes, pull requests, and a weekly schedule. The `Release
+artifacts` workflow builds the Python package only from a version-matching tag,
+emits an SPDX SBOM, creates and verifies Sigstore signatures for the package
+files, uploads the release bundle, and creates GitHub build provenance
+attestations. These checks improve the repository's supply-chain
+baseline but do not replace the operator-owned manifest, detached signatures,
+provider-bundle proof, execution-environment proof, or immutable evidence
+retention required by the readiness gate.

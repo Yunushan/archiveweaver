@@ -983,7 +983,13 @@ def validate(contract: Any) -> list[str]:
 
 def main() -> int:
     try:
-        contract = yaml.load(CONTRACT_PATH.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+        # UniqueKeyLoader is a yaml.SafeLoader subclass; the explicit loader is
+        # required only to reject duplicate mapping keys. Bandit cannot infer
+        # that the custom loader preserves SafeLoader's non-object semantics.
+        contract = yaml.load(  # nosec B506
+            CONTRACT_PATH.read_text(encoding="utf-8"),
+            Loader=UniqueKeyLoader,
+        )
     except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
         print(f"controller contract invalid: {exc}", file=sys.stderr)
         return 2
