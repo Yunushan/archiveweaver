@@ -36,18 +36,28 @@ cp release-manifest.example.json release-manifest.json
 # Create release-manifest-staging.json and release-manifest-restore.json only
 # when those isolated workflows use distinct, protected manifest bindings.
 ansible-vault encrypt group_vars/all/vault.yml
-python3 -m pip install -r requirements.txt
+python3 -m pip install --require-hashes --only-binary=:all: -r requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 
-Every operational playbook checks the controller's live `ansible-playbook`
-Core and `ansible-lint` versions against the pinned requirements before it
-executes. This includes certification, restore, failure-domain, and rollback
-paths.
-Keep `requirements.txt` and `execution-environment/requirements.txt` aligned;
-`scripts/validate-ansible.sh` rejects lock drift. Build the controller image
-with `scripts/build-ansible-execution-environment.sh` so the immutable base
-digest is validated before the container engine resolves `FROM`.
+Every operational playbook checks the controller's live `ansible-playbook`,
+`ansible-runner`, and `ansible-lint` versions against the pinned requirements
+before it executes. This includes certification, restore, failure-domain, and
+rollback paths.
+`requirements.in` contains the direct controller pins. Install
+`pip-tools==7.6.1` in a disposable development environment and run
+`make ansible-lock` to regenerate the complete transitive lock and its
+approved wheel hashes. The controller lock intentionally supports CPython
+3.13 and 3.14 on Linux x86_64; another architecture requires its own reviewed
+artifact set and execution validation rather than silently falling back to a
+source build. Keep
+`requirements.txt` and `execution-environment/requirements.txt` aligned;
+`scripts/validate-ansible.sh` rejects lock drift or missing hashes. CI and the
+execution image require the checked hashes and accept binary distributions
+only, while the signed final execution-image digest binds the resolved
+artifacts. Build the controller image with
+`scripts/build-ansible-execution-environment.sh` so the immutable base digest
+is validated before the container engine resolves `FROM`.
 Controller workflows must invoke `bash ../../scripts/run-ansible-operational.sh`
 from this directory for every operational playbook. The runner allowlists the
 approved playbooks and rejects partial-target, task-selection, credential,
@@ -60,8 +70,12 @@ plus `PYTHONPATH` and `PYTHONHOME`, then pins `ANSIBLE_CONFIG` and
 `ANSIBLE_ROLES_PATH` to this reviewed bundle.
 Every invocation must provide exactly one of `inventory/production/hosts.yml`,
 `inventory/staging/hosts.yml`, or `inventory/restore/hosts.yml`; arbitrary
-inventory paths and inventory directories are rejected. Extra variables must
-be explicit `archiveweaver_*` key/value bindings. Extra-vars files, raw
+inventory paths and inventory directories are rejected. The runner also
+requires the selected inventory to exist as a regular file beneath the
+physical reviewed inventory directory and rejects symlinked path components
+before Ansible parses it. Extra variables must
+be explicit key/value bindings listed in
+`controller/allowed-extra-vars.txt`. Extra-vars files, raw
 YAML/JSON variable documents, protected controller identity/parallelism
 bindings, and `ansible_*` connection or privilege bindings are rejected.
 After the playbook, only `--check`/`-C`, `--diff`/`-D`, `--syntax-check`, the
@@ -89,6 +103,10 @@ SHA-256 index named by the manifest's `evidence_index` field; all referenced
 artifacts and evidence must be listed in that index. The playbooks re-run that
 controller-side check before any mutation; setting a boolean gate alone is
 insufficient.
+The release section must bind its GitHub owner/repository, numeric repository
+ID, full source commit, and a less-than-24-hour-old indexed JSON report produced
+by `GITHUB_REPOSITORY=owner/repository make github-audit`; all twelve hosted
+production controls in that report must pass.
 Controller-local readiness and evidence helpers run with the same
 `ansible_playbook_python` interpreter that launched Ansible; overriding that
 interpreter binding is rejected by controller preflight.
@@ -208,6 +226,12 @@ bash ../../scripts/run-ansible-operational.sh rollback.yml --check --diff -i inv
 requires `archiveweaver_approval_ticket`, `archiveweaver_backup_verified`,
 `archiveweaver_release_manifest_verified`, `archiveweaver_product_stack_ready`,
 and a non-placeholder release. Secrets are never placed on the command line.
+
+Host package installation is also disabled by default. Production images
+should pre-provision the small prerequisite set, or an operator may enable
+`archiveweaver_manage_packages` only through trusted inventory after the OS
+repositories and package lifecycle are governed externally; an unpinned live
+package repository is not treated as a reproducible release.
 The verification playbook re-runs the 100/100 identity gate and re-hashes and
 re-renders the staged provider bundle, so post-deployment drift fails closed.
 For production exceptions, `archiveweaver_topology_design_approved` gates
@@ -246,6 +270,13 @@ staging/restore/DR targets, requires exactly five reviewed hooks (`dependencies`
 `smoke`, `migration`, `formats`, and `api`), suppresses hook output, writes
 return-code-only evidence, and seals it into the shared index.
 
+The example readiness manifest pre-populates the five certification rows and
+four failure-domain rows with `pending` status. Keep their stable names, replace
+the host/change placeholders, and point them at the distinct JSON files emitted
+by the corresponding playbooks. Restore and fixity likewise use separate
+`restore-<host>.json` and `fixity-<host>.json` records; a shared summary file
+cannot satisfy both claims.
+
 `rollback.yml` is approval-gated, requires a pinned previous artifact and
 verified backup, and requires two separate reviewed argv hooks. The readiness
 manifest must carry the previous artifact bytes, SBOM, detached signature, and
@@ -262,7 +293,8 @@ unbounded host path.
 ## Enterprise operating model
 
 For a premium production service, run these playbooks from a pinned Ansible
-execution environment through a controlled automation controller. Use signed
+execution environment containing exact Ansible Core, Ansible Runner, and
+ansible-lint versions through a controlled automation controller. Use signed
 and reviewed content, RBAC-separated credentials, Vault or an external secret
 manager, protected inventories, approval nodes, serial/rolling execution,
 central job history, immutable evidence storage, and scheduled restore/fixity
@@ -273,13 +305,23 @@ archiveweaver_evidence_publish_command and
 archiveweaver_evidence_verify_command hooks together with the retention,
 immutability, and access-logging bindings. The repository supplies the safe
 content boundary; the shared hook preflight also requires each reviewed hook
-to use an absolute regular executable whose bytes match its lowercase
-SHA-256 binding. An automation controller and operational policy provide the
-organization-level governance.
+to use an absolute regular executable whose bytes match its lowercase SHA-256
+binding and whose complete canonical argv matches a separate SHA-256 binding.
+Generate both with `archiveweaver hook-digest --json -- /absolute/hook arg`.
+An automation controller and operational policy provide the organization-level
+governance.
 
 Enable the managed read-only health timer with
 `archiveweaver_observe_enabled: true` only after installing the ArchiveWeaver
-checker on the host, binding its lowercase SHA-256 digest as
-`archiveweaver_check_command_sha256`, and setting an HTTPS health URL. It
+checker on the host, binding its executable and argv digests as
+`archiveweaver_check_command_sha256` and
+`archiveweaver_check_command_argv_sha256`, and setting an HTTPS health URL. It
 writes results to the system journal; the controller workflow is responsible
 for alert routing, retention, and escalation.
+The argv digest must bind the exact managed command, for example:
+
+```bash
+archiveweaver hook-digest --json -- /usr/local/bin/archiveweaver check \
+  --solution paperless-ngx --mode rke2 \
+  --url https://paperless.example.org/ --json
+```

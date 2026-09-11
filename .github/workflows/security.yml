@@ -9,35 +9,74 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: runtime, development
+          retry-on-snapshot-warnings: true
+          show-openssf-scorecard: true
+          warn-on-openssf-scorecard-level: 5
+
   codeql:
     name: CodeQL
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: python
+          config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/autobuild@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
 
   python-static-analysis:
     name: Python static analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - name: Install pinned analysis tools
-        run: python -m pip install --disable-pip-version-check --no-input bandit==1.9.4 pip-audit==2.10.1
+      - name: Install hash-locked analysis tools
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --require-hashes --only-binary=:all:
+          -r requirements/release-tools.txt
       - name: Compile Python sources
         run: python -m compileall -q src scripts tests
+      - name: Audit cataloged GitHub repositories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/validate-upstream-repositories.py
       - name: Run Bandit
         run: bandit --quiet --recursive src scripts --severity-level medium --confidence-level medium
       - name: Audit pinned controller dependencies
         run: pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict
+      - name: Audit pinned release validation dependencies
+        run: pip-audit --no-deps --disable-pip -r requirements/release-tools.txt --strict

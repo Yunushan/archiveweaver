@@ -21,30 +21,89 @@ PYTHONPATH=src python3 -m archiveweaver readiness \
 Use `deploy/ansible/release-manifest.example.json` as the shape, copy it to
 the ignored operator file, and replace every placeholder. Evidence paths must
 be relative to the manifest and resolve to files inside that evidence bundle.
-The `evidence_index` field must point to a verified SHA-256 index. Every
-referenced artifact, signature, provenance file, test record, and runbook must
-be inside the index's directory and listed by that index; a merely existing
-file is not enough.
+The `evidence_index` field must point to a verified SHA-256 index, and
+`evidence_index_digest` must contain the lowercase `sha256:` digest of the
+exact index bytes. Because the controller separately protects the readiness
+manifest digest, this binding transitively protects the selected evidence
+inventory as well as the manifest fields. Every referenced artifact,
+signature, provenance file, test record, and runbook must be inside the
+index's directory and listed by that index; a merely existing file is not
+enough.
 The CLI also rejects a manifest, evidence index, referenced file, or provider
-digest input whose path contains a symlinked directory component, and rejects
-symlinked entries while sealing a tree; containment is checked before path
-resolution so a link cannot redirect the review outside the bundle.
+digest input whose path contains a symlink, Windows junction, or other reparse
+point, and rejects link-like entries while sealing a tree; containment is
+checked before path resolution so a redirected component cannot move the
+review outside the bundle. The manifest and evidence files are measured
+through stable regular file descriptors and must have exactly one hard link,
+so an out-of-bundle alias cannot mutate sealed bytes. The index accepts only
+canonical non-negative byte counts and lowercase SHA-256 values with no
+unknown schema fields. Every
+artifact or evidence document is remeasured against the verified index at the
+moment it is consumed, so replacing a same-size file after initial index
+verification still fails closed.
 The manifest must not contain passwords, tokens, private keys, or document
 content.
 JSON manifests, evidence attestations, and evidence indexes are parsed with
 duplicate-key rejection; a document with ambiguous repeated object keys is not
-eligible for any passing criterion.
+eligible for any passing criterion. Non-standard or non-finite JSON numbers,
+excessive nesting, oversized structured evidence, oversized manifests and
+unbounded evidence indexes also fail closed instead of exhausting the
+controller.
 The release provenance reference must point to an indexed in-toto Statement
-with a valid statement type and recognizable subject/build/predicate content,
-and each SBOM reference must point to an indexed SPDX or CycloneDX JSON
-document with a valid format/version identity and package/component content.
+v1 carrying a SLSA provenance v1 predicate, non-duplicate SHA-256 subjects,
+an absolute build-type URI, external parameters, and an identified builder.
+Each SBOM reference must point to an indexed production-profile document:
+SPDX 2.3 requires its document identity, CC0 data license, namespace, creation
+metadata, unique packages, and an explicit `documentDescribes` subject;
+CycloneDX 1.6 or 1.7 requires its official schema identity, serial number,
+positive BOM version, timestamp, typed metadata subject, and typed component
+inventory. The named release artifact must be the described SPDX package or
+the CycloneDX metadata component, not merely an unrelated dependency that
+happens to share a name.
 Each in-toto release-provenance `subject` must carry the exact manifest
 artifact/provider-bundle name together with the SHA-256 digest of every
 referenced product artifact and the reviewed Ansible provider bundle; the
 execution-environment provenance must carry the exact execution-environment
-name and digest of its immutable image. A passing boolean beside an empty,
+name and digest of its immutable image. The release provenance's SLSA
+`resolvedDependencies` must also name the canonical GitHub source repository
+and bind its `gitCommit` digest to `release.source_revision`. A passing boolean beside an empty,
 unrelated, or
 digest-mismatched file is not release proof.
+Release integrity also binds the code to its hosted GitHub enforcement. Set
+`release.source_repository` to the canonical `owner/repository` slug,
+`release.source_repository_id` to GitHub's positive numeric repository ID, and
+`release.source_revision` to the exact lowercase 40-character commit SHA.
+From that clean, signed checkout, create `release.github_controls` with:
+
+```bash
+GITHUB_REPOSITORY=owner/repository make github-audit \
+  > deploy/ansible/evidence/github-production-controls.json
+```
+
+`release.github_controls` is a signed-reference object, not a bare path. Set
+its `path` to the generated certificate, `digest` to the certificate's exact
+SHA-256 digest, `signature` to its non-empty Sigstore bundle, and
+`signature_verified` to `true` only after identity verification. Its
+`signature_verification` record must be passing, name the verifier, bind
+`artifact_digest` to the same digest, and carry the common release metadata.
+The certificate, signature bundle, and verification record must be three
+distinct files listed in the evidence index. The bundle must be canonical
+Sigstore v0.3 keyless blob-signing JSON with a certificate, transparency-log
+material, and an embedded SHA-256 digest matching the certificate bytes. The
+release provenance must include the certificate filename and digest as a
+subject, alongside the product and provider artifacts.
+
+The certificate is bound to the authoritative repository name, stable
+repository ID and node ID, local `HEAD`, GitHub API version, and a UTC
+observation time; the source SHA must resolve to an existing GitHub-verified
+commit reachable from protected `main` in that repository. It is eligible for
+the score for no more than 24 hours. Its
+schema must be exact, with no unknown or duplicate fields, and all twelve
+repository, security, Actions, environment, release-immutability, branch, and
+tag controls must be present exactly once with `passed: true`. A copied report
+for another repository or commit, an unsigned or digest-mismatched report, a
+stale report, or a top-level success flag masking a failed or missing control
+fails release integrity.
 The control and governance change tickets must agree. When both domains pass,
 the support and data-protection RPO/RTO values must agree, and the
 observability and support on-call identifiers must agree.
@@ -54,14 +113,14 @@ observability and support on-call identifiers must agree.
 | Domain | Points | Required proof |
 | --- | ---: | --- |
 | Control baseline | 10 | Catalog validation, green CI, and change-control record |
-| Release integrity | 10 | Immutable version, verified product and provider-bundle artifact digests, SBOMs, signatures, signature-verification records, provenance bound to every product and Ansible provider artifact, signed/SBOM-backed Ansible execution-environment image, and canonical staged-content `remote_digest` |
+| Release integrity | 10 | Fresh, digest-bound, Sigstore-signed, source-bound 12-control GitHub production certificate; immutable version; verified product and provider-bundle artifact digests, SBOMs, signatures, and signature-verification records; provenance bound to every product and Ansible provider artifact; signed/SBOM-backed Ansible execution-environment image; and canonical staged-content `remote_digest` |
 | Product certification | 10 | Catalog-bound component/dependency/format coverage plus smoke, migration, and API matrix |
 | Resilience | 10 | Quorum/fencing review and recorded node, service, dependency, and storage failure tests |
 | Data protection | 10 | Immutable backup, successful restore, fixity verification, and measured RPO/RTO |
 | Security | 10 | Dedicated indexed SBOM, TLS, and secret-provider verification records, plus vulnerability scan and penetration review |
 | Observability | 10 | Dedicated indexed metrics, alert-rule, dashboard, and on-call records, plus an alert-delivery test |
 | Recovery | 10 | Signed, digest-verified previous-release artifact, rollback, and named-resource repair tests |
-| Governance | 10 | Risk review, approver, change ticket, immutable/access-logged evidence retention, and retention-control evidence |
+| Governance | 10 | Risk review, approver, change ticket, unexpired approval window, immutable/access-logged evidence retention, and retention-control evidence |
 | Support | 10 | Dedicated indexed service-owner, on-call, and SLA records, plus RPO/RTO and current runbooks |
 
 The CLI returns exit code 0 only at 100/100. Any missing, placeholder,
@@ -91,8 +150,37 @@ and a fixture-set identifier. For Ansible, it must also carry the exact
 that location as `execution_environment` without changing the target environment.
 JSON evidence targets must also contain a
 matching `status: pass` record; hashing an empty or semantically empty file is
-not sufficient. Governance approval must use the same timestamp form;
-arbitrary text is not accepted as audit time. The recovery section must also
+not sufficient. Every manifest claim in that record must be represented
+identically in the indexed JSON evidence, although the evidence may add further
+detail. Future-dated evidence is rejected. Governance approval and
+expiry must use the same timestamp
+form; approval cannot be future-dated, must still be current, and may cover at
+most 30 days. Reassess and reapprove rather than extending an old manifest.
+Passing records are also rejected when `recorded_at` exceeds the cadence for
+their operational domain:
+
+| Evidence record | Maximum age |
+| --- | ---: |
+| Control baseline | 24 hours |
+| Release verification | 30 days; the hosted GitHub audit remains limited to 24 hours |
+| Product certification | 90 days |
+| Resilience and failure-domain drills | 90 days |
+| Data-protection baseline | 30 days |
+| Backup | The smaller of 24 hours and the declared RPO |
+| Restore drill | 90 days |
+| Fixity test | 30 days |
+| Security baseline, TLS, SBOM, and secrets-provider checks | 30 days |
+| Vulnerability scan | 7 days |
+| Penetration test | 365 days |
+| Observability and alert-delivery checks | 30 days |
+| Rollback and repair drills | 90 days |
+| Governance evidence | 30 days, in addition to the approval window |
+| Service ownership, on-call, SLA, and runbook evidence | 90 days |
+
+The five-minute clock-skew tolerance is only a collection-time allowance; it
+does not extend the operating cadence. Refresh the underlying test or control
+evidence instead of rewriting an old timestamp.
+Arbitrary text is not accepted as audit time. The recovery section must also
 identify a different previous release and an indexed rollback artifact whose
 bytes, SBOM, detached signature, and signature-verification record match its
 SHA-256 digest. A current-release label, an undigested rollback claim, or a
@@ -148,8 +236,9 @@ credential, transport, and module-path overrides. This prevents an operator
 from selecting a mutation while omitting verification, evidence sealing, or
 part of the target group, or from replacing the controller-bound execution
 identity. It also requires exactly one protected production, staging, or
-restore inventory and accepts only explicit `archiveweaver_*` key/value
-bindings; extra-vars files, raw YAML/JSON documents, protected controller
+restore inventory and accepts only exact keys in the reviewed
+`deploy/ansible/controller/allowed-extra-vars.txt` file; extra-vars files, raw
+YAML/JSON documents, protected controller
 identity/parallelism values, and `ansible_*` transport or privilege values are
 rejected.
 
@@ -171,7 +260,16 @@ PYTHONPATH=src python3 -m archiveweaver evidence-index \
 PYTHONPATH=src python3 -m archiveweaver evidence-index \
   --verify deploy/ansible/evidence/evidence-index.json \
   --json
+
+sha256sum deploy/ansible/evidence/evidence-index.json
 ```
+
+After the final index is generated, copy the command's lowercase digest into
+the operator manifest as `evidence_index_digest: sha256:<digest>`, then compute
+and protect `ARCHIVEWEAVER_READINESS_MANIFEST_SHA256`. Keep the operator
+manifest outside the indexed evidence directory: the manifest binds the index,
+so indexing that manifest would create a circular digest dependency. Rebuild
+and rebind the index after any evidence change.
 
 Upload the index and files to immutable, access-controlled storage. The index
 detects post-run modification and unindexed files; it does not replace storage

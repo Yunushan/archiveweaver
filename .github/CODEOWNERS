@@ -1,0 +1,13 @@
+# Repository-wide fallback. Branch rules must require Code Owner review before
+# this file becomes an enforcement control rather than ownership metadata.
+* @Yunushan
+
+# Changes to execution, release, and trust boundaries require explicit review.
+/.github/workflows/ @Yunushan
+/deploy/ansible/ @Yunushan
+/packaging/ @Yunushan
+/requirements/ @Yunushan
+/scripts/ @Yunushan
+/src/archiveweaver/readiness.py @Yunushan
+/src/archiveweaver/repair.py @Yunushan
+/SECURITY.md @Yunushan

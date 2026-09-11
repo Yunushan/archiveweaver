@@ -4,7 +4,7 @@ This page is generated from `src/archiveweaver/catalog_source.py`. Run `python s
 
 | Solution | Category | License | Raw | Docker | Upstream |
 | --- | --- | --- | --- | --- | --- |
-| [InvenioRDM](../solutions/invenio-rdm.md) | research-data-management | MIT | native | validated | https://github.com/inveniosoftware/invenio-rdm |
+| [InvenioRDM](../solutions/invenio-rdm.md) | research-data-management | MIT | native | validated | https://github.com/inveniosoftware/invenio-app-rdm |
 | [DSpace](../solutions/dspace.md) | institutional-repository | BSD-3-Clause | native | validated | https://github.com/DSpace/DSpace |
 | [Archivematica](../solutions/archivematica.md) | digital-preservation | AGPL-3.0 | native | validated | https://github.com/artefactual/archivematica |
 | [Dataverse](../solutions/dataverse.md) | research-data-management | Apache-2.0 | native | validated | https://github.com/IQSS/dataverse |

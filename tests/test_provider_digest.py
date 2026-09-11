@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from archiveweaver import provider_digest
 from archiveweaver.provider_digest import digest_file, digest_quadlet, digest_tree
 
 
@@ -46,6 +49,21 @@ class ProviderDigestTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 digest_tree(root)
 
+    def test_tree_digest_rejects_ambiguous_or_nonportable_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "unsafe name.yml").write_text("kind: ConfigMap\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "provider filenames"):
+                digest_tree(root)
+
+    def test_quadlet_digest_rejects_unsafe_name_and_missing_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "safe lowercase systemd name"):
+                digest_quadlet(root, "Unsafe Name")
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                digest_quadlet(root, "paperless-ngx")
+
     def test_provider_digest_rejects_symlinked_directory_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -77,3 +95,69 @@ class ProviderDigestTests(unittest.TestCase):
             nested_link.symlink_to(real, target_is_directory=True)
             with self.assertRaisesRegex(ValueError, "symlinked paths"):
                 digest_tree(nested)
+
+    def test_provider_digest_enforces_file_entry_and_total_byte_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.yml"
+            second = root / "b.yml"
+            first.write_bytes(b"aa")
+            second.write_bytes(b"bb")
+
+            with patch("archiveweaver.provider_digest.MAX_PROVIDER_FILE_BYTES", 1):
+                with self.assertRaisesRegex(OSError, "1-byte safety limit"):
+                    digest_file(first)
+            with patch("archiveweaver.provider_digest.MAX_PROVIDER_TREE_ENTRIES", 1):
+                with self.assertRaisesRegex(ValueError, "1-entry safety limit"):
+                    digest_tree(root)
+            with patch("archiveweaver.provider_digest.MAX_PROVIDER_TREE_FILES", 1):
+                with self.assertRaisesRegex(ValueError, "1-file safety limit"):
+                    digest_tree(root)
+            with patch("archiveweaver.provider_digest.MAX_PROVIDER_TREE_BYTES", 3):
+                with self.assertRaisesRegex(ValueError, "3-byte safety limit"):
+                    digest_tree(root)
+
+    def test_provider_digest_rejects_tree_mutation_during_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "a.yml"
+            second = root / "b.yml"
+            first.write_bytes(b"first\n")
+            second.write_bytes(b"second\n")
+            original_measure = provider_digest._measure_regular_file
+
+            def mutate_after_first(path: Path, **kwargs: object) -> tuple[int, str]:
+                result = original_measure(path, **kwargs)
+                if path == first:
+                    second.write_bytes(b"changed\n")
+                return result
+
+            with patch(
+                "archiveweaver.provider_digest._measure_regular_file",
+                side_effect=mutate_after_first,
+            ):
+                with self.assertRaisesRegex(OSError, "tree changed"):
+                    digest_tree(root)
+
+    def test_provider_digest_rejects_hard_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original.yml"
+            alias = root / "alias.yml"
+            original.write_bytes(b"provider\n")
+            try:
+                os.link(original, alias)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"hard links are unavailable: {exc}")
+            with self.assertRaisesRegex(OSError, "exactly one hard link"):
+                digest_tree(root)
+
+    def test_provider_digest_rejects_case_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Provider.yml").write_bytes(b"first\n")
+            (root / "provider.yml").write_bytes(b"second\n")
+            if len(list(root.iterdir())) < 2:
+                self.skipTest("case-colliding paths are unavailable")
+            with self.assertRaisesRegex(ValueError, "case-insensitive"):
+                digest_tree(root)

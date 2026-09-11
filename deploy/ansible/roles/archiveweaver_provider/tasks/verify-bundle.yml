@@ -266,6 +266,23 @@
     - inventory_hostname == groups['archiveweaver_control'][0]
   tags: [verify]
 
+- name: Reject ambiguous or nonportable verified Kustomize filenames
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_verify_kustomize_relative_path is match('^[A-Za-z0-9._/-]+$')
+    fail_msg: "Verified Kustomize filenames must use the portable digest alphabet."
+  vars:
+    archiveweaver_provider_verify_kustomize_relative_path: >-
+      {{ item.path | replace(archiveweaver_kustomize_path ~ '/', '', 1) }}
+  loop: "{{ archiveweaver_provider_verify_kustomize_files.files | default([]) }}"
+  loop_control:
+    label: "{{ archiveweaver_provider_verify_kustomize_relative_path }}"
+  no_log: true
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
 - name: Build the verified Kustomize digest input
   ansible.builtin.set_fact:
     archiveweaver_provider_verify_kustomize_digest_input: >-

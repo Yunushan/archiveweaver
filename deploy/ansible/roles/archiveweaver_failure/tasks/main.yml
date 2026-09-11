@@ -158,6 +158,10 @@
   ansible.builtin.set_fact:
     archiveweaver_failure_evidence:
       name: "failure-drill-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      evidence: >-
+        {{ archiveweaver_failure_evidence_dir
+           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', '')
+           ~ '/' ~ (inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '.json' }}
       host: "{{ inventory_hostname }}"
       solution: "{{ archiveweaver_solution_id }}"
       runtime: ansible
@@ -229,6 +233,44 @@
   delegate_to: localhost
   become: false
   no_log: true
+  tags: [failure-drill]
+
+- name: Write independently attributable failure-domain evidence
+  ansible.builtin.copy:
+    dest: >-
+      {{ archiveweaver_failure_evidence_dir }}/{{ item.item.name }}-{{ inventory_hostname
+         | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json
+    content: >-
+      {{ {
+        'name': item.item.name,
+        'status': 'pass' if item.rc == 0 else 'fail',
+        'evidence': (archiveweaver_failure_evidence_dir
+          | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', ''))
+          ~ '/' ~ item.item.name ~ '-'
+          ~ (inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '.json',
+        'host': inventory_hostname,
+        'solution': archiveweaver_solution_id,
+        'runtime': 'ansible',
+        'underlying_runtime': archiveweaver_runtime,
+        'os_id': archiveweaver_os_id,
+        'release': archiveweaver_release,
+        'environment': archiveweaver_evidence_environment,
+        'execution_environment': archiveweaver_failure_environment,
+        'execution_environment_digest': archiveweaver_execution_environment_digest,
+        'recorded_at': ansible_date_time.iso8601,
+        'operator': archiveweaver_operator,
+        'fixture_set': archiveweaver_fixture_set,
+        'change_id': archiveweaver_failure_change_id,
+        'returncode': item.rc
+      } | to_nice_json }}
+    mode: '0600'
+  loop: "{{ archiveweaver_failure_results.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: archiveweaver_failure_apply | bool
   tags: [failure-drill]
 
 - name: Attest completed failure-domain drill

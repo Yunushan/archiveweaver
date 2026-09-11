@@ -4,8 +4,8 @@ ArchiveWeaver adapter facts for planning, checking and repair. Product behavior 
 
 - **Category:** research-data-management
 - **License:** MIT
-- **Upstream repository:** https://github.com/inveniosoftware/invenio-rdm
-- **Canonical source repository:** https://github.com/inveniosoftware/invenio-rdm
+- **Upstream repository:** https://github.com/inveniosoftware/invenio-app-rdm
+- **Canonical source repository:** https://github.com/inveniosoftware/invenio-app-rdm
 - **Official documentation:** https://inveniordm.docs.cern.ch/install/
 - **Homepage:** https://inveniosoftware.org/products/rdm/
 - **Default HTTP port:** 80

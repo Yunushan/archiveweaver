@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import copy
 import json
 import hashlib
 import os
@@ -7,11 +9,73 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from archiveweaver.catalog import Catalog
-from archiveweaver.evidence import build_evidence_index
-from archiveweaver.readiness import assess_readiness
+from archiveweaver.evidence import build_evidence_index as _build_evidence_index
+from archiveweaver.readiness import (
+    GITHUB_AUDIT_API_VERSION,
+    GITHUB_AUDIT_CONTROL_NAMES,
+    _approval_window_errors,
+    assess_readiness,
+)
+
+
+def _spdx_document(subject_name: str) -> dict[str, object]:
+    package_id = "SPDXRef-Package-" + hashlib.sha256(
+        subject_name.encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "creationInfo": {
+            "created": "2026-09-11T12:00:00Z",
+            "creators": ["Tool: archiveweaver-readiness-tests"],
+        },
+        "dataLicense": "CC0-1.0",
+        "documentDescribes": [package_id],
+        "documentNamespace": (
+            "https://github.com/Yunushan/archiveweaver/test-spdx/"
+            + hashlib.sha256(subject_name.encode("utf-8")).hexdigest()
+        ),
+        "name": f"{subject_name}-sbom",
+        "packages": [
+            {
+                "SPDXID": package_id,
+                "downloadLocation": "NOASSERTION",
+                "filesAnalyzed": False,
+                "name": subject_name,
+                "versionInfo": "2026.09.1",
+            }
+        ],
+        "spdxVersion": "SPDX-2.3",
+    }
+
+
+def _slsa_provenance(subjects: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": subjects,
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://github.com/Attestations/GitHubActionsWorkflow/v1",
+                "externalParameters": {},
+                "resolvedDependencies": [
+                    {
+                        "uri": "git+https://github.com/Yunushan/archiveweaver.git@refs/tags/v2026.09.1",
+                        "digest": {"gitCommit": "a" * 40},
+                    }
+                ],
+            },
+            "runDetails": {
+                "builder": {
+                    "id": "https://github.com/actions/runner/github-hosted"
+                }
+            },
+        },
+    }
 
 
 class ReadinessTests(unittest.TestCase):
@@ -63,6 +127,38 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["status"], "fail")
             self.assertEqual(report["score"], 0)
             self.assertTrue(any("duplicate JSON object key" in error for error in report["errors"]))
+
+    def test_deeply_nested_manifest_is_not_ready_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            quote = chr(34)
+            manifest.write_text(
+                ("{" + quote + "nested" + quote + ":") * 5000
+                + "0"
+                + "}" * 5000,
+                encoding="utf-8",
+            )
+            report = assess_readiness(manifest, self.catalog)
+            self.assertEqual(report["status"], "fail")
+            self.assertEqual(report["score"], 0)
+            self.assertTrue(
+                any("nesting limit" in error for error in report["errors"])
+            )
+
+    def test_oversized_manifest_is_not_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text('{"schema_version": 1}', encoding="utf-8")
+            with patch(
+                "archiveweaver.readiness.MAX_READINESS_MANIFEST_BYTES",
+                manifest.stat().st_size - 1,
+            ):
+                report = assess_readiness(manifest, self.catalog)
+            self.assertEqual(report["status"], "fail")
+            self.assertEqual(report["score"], 0)
+            self.assertTrue(
+                any("safety limit" in error for error in report["errors"])
+            )
 
     def test_malformed_service_object_is_not_ready_without_crashing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -140,6 +236,26 @@ class ReadinessTests(unittest.TestCase):
             report = assess_readiness(manifest_path, self.catalog)
             self.assertIn("service.environment must identify a supported target environment", report["errors"])
 
+    def test_governance_approval_window_is_current_and_bounded(self) -> None:
+        now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+        current = {
+            "approved_at": "2026-09-11T11:59:00Z",
+            "valid_until": "2026-09-18T11:59:00Z",
+        }
+        self.assertEqual(_approval_window_errors(current, now=now), [])
+
+        expired = {**current, "valid_until": "2026-09-11T11:59:30Z"}
+        self.assertIn("governance approval has expired", _approval_window_errors(expired, now=now))
+
+        future = {
+            "approved_at": "2026-09-11T12:06:00Z",
+            "valid_until": "2026-09-18T12:06:00Z",
+        }
+        self.assertIn("governance.approved_at must not be future-dated", _approval_window_errors(future, now=now))
+
+        excessive = {**current, "valid_until": "2026-10-12T11:59:00Z"}
+        self.assertIn("governance approval validity must not exceed 30 days", _approval_window_errors(excessive, now=now))
+
     def test_conditional_ansible_provider_requires_design_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -191,7 +307,7 @@ class ReadinessTests(unittest.TestCase):
             }
             manifest_path = root / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            build_evidence_index(root, root / "evidence-index.json")
+            _build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["criteria"][0]["status"], "fail")
 
@@ -208,14 +324,29 @@ class ReadinessTests(unittest.TestCase):
             }
             manifest_path = root / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            build_evidence_index(root, root / "evidence-index.json")
+            _build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["status"], "fail")
             self.assertTrue(any("not present in the catalog" in error for error in report["errors"]))
 
     def test_complete_evidence_manifest_scores_100(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            manifest_root = Path(directory)
+            root = manifest_root / "evidence"
+            root.mkdir()
+            approval_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+            approval_expiry = approval_time + timedelta(days=7)
+            approved_at = approval_time.isoformat().replace("+00:00", "Z")
+            valid_until = approval_expiry.isoformat().replace("+00:00", "Z")
+            audit_time = (approval_time - timedelta(minutes=1)).isoformat().replace(
+                "+00:00", "Z"
+            )
+            recorded_at = audit_time
+            future_recorded_at = (
+                approval_time + timedelta(days=1)
+            ).isoformat().replace("+00:00", "Z")
+            source_revision = "a" * 40
+            source_repository_id = 123456
             for name in (
                 "control.json", "release.json", "provenance.json", "release.spdx.json", "release.sig", "signature-verification.json", "execution-environment-provenance.json", "execution-environment.spdx.json", "execution-environment.sig", "execution-environment-signature-verification.json", "artifact.tar", "provider-bundle.tar", "provider-bundle.spdx.json", "provider-bundle.sig", "provider-bundle-signature-verification.json", "provider-bundle-verification.json", "rollback-artifact.tar", "rollback.spdx.json", "rollback.sig", "rollback-signature-verification.json", "product.json", "resilience.json",
                 "product-dependencies.json", "product-smoke.json", "product-migration.json",
@@ -225,49 +356,97 @@ class ReadinessTests(unittest.TestCase):
                 "secrets-provider.json", "scan.json", "pentest.json", "observe.json", "metrics.json", "alerts.json",
                 "dashboards.json", "on-call.json", "alert.json", "recovery.json", "rollback.json", "repair.json",
                 "governance.json", "risk.json", "retention.json", "support.json", "service-owner.json", "support-on-call.json",
-                "sla.json", "runbook.md",
+                "sla.json", "runbook.md", "github-production-controls.json",
+                "github-production-controls.json.sigstore.json",
+                "github-production-controls-signature-verification.json",
             ):
                 (root / name).write_text("{}\n", encoding="utf-8")
-            (root / "provenance.json").write_text(
-                json.dumps(
+            github_audit = {
+                "schema_version": 1,
+                "api_version": GITHUB_AUDIT_API_VERSION,
+                "audited_at": audit_time,
+                "repository": "Yunushan/archiveweaver",
+                "repository_id": source_repository_id,
+                "repository_node_id": "R_archiveweaver",
+                "source_revision": source_revision,
+                "passed": True,
+                "controls": [
                     {
-                        "_type": "https://in-toto.io/Statement/v1",
-                        "subject": [{"name": "product-artifact"}],
-                        "predicateType": "https://slsa.dev/provenance/v1",
+                        "name": name,
+                        "passed": True,
+                        "detail": f"verified {name} production control",
                     }
-                ),
+                    for name in sorted(GITHUB_AUDIT_CONTROL_NAMES)
+                ],
+            }
+            (root / "github-production-controls.json").write_text(
+                json.dumps(github_audit), encoding="utf-8"
+            )
+            github_audit_digest = "sha256:" + hashlib.sha256(
+                (root / "github-production-controls.json").read_bytes()
+            ).hexdigest()
+            github_controls_bundle = {
+                "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                "verificationMaterial": {
+                    "certificate": {
+                        "rawBytes": base64.b64encode(b"test certificate").decode()
+                    },
+                    "tlogEntries": [
+                        {
+                            "canonicalizedBody": base64.b64encode(
+                                b"test transparency entry"
+                            ).decode()
+                        }
+                    ],
+                },
+                "messageSignature": {
+                    "messageDigest": {
+                        "algorithm": "SHA2_256",
+                        "digest": base64.b64encode(
+                            hashlib.sha256(
+                                (root / "github-production-controls.json").read_bytes()
+                            ).digest()
+                        ).decode(),
+                    },
+                    "signature": base64.b64encode(b"test signature").decode(),
+                },
+            }
+            (root / "github-production-controls.json.sigstore.json").write_text(
+                json.dumps(github_controls_bundle), encoding="utf-8"
+            )
+            (root / "provenance.json").write_text(
+                json.dumps(_slsa_provenance([{"name": "product-artifact"}])),
                 encoding="utf-8",
             )
             (root / "release.spdx.json").write_text(
-                json.dumps(
-                    {
-                        "spdxVersion": "SPDX-2.3",
-                        "packages": [{"name": "product-artifact"}],
-                    }
-                ),
+                json.dumps(_spdx_document("product-artifact")),
                 encoding="utf-8",
             )
             (root / "execution-environment-provenance.json").write_text(
-                json.dumps(
-                    {
-                        "_type": "https://in-toto.io/Statement/v1",
-                        "subject": [{"name": "archiveweaver-ee"}],
-                        "predicateType": "https://slsa.dev/provenance/v1",
-                    }
-                ),
+                json.dumps(_slsa_provenance([{"name": "archiveweaver-ee"}])),
                 encoding="utf-8",
             )
             (root / "execution-environment.spdx.json").write_text(
-                json.dumps(
-                    {
-                        "spdxVersion": "SPDX-2.3",
-                        "packages": [{"name": "archiveweaver-ee"}],
-                    }
-                ),
+                json.dumps(_spdx_document("archiveweaver-ee")),
                 encoding="utf-8",
             )
             (root / "execution-environment.sig").write_bytes(b"execution-environment-signature\n")
-            evidence = lambda name, status="pass", label="evidence": {"name": label, "status": status, "evidence": name, "solution": "paperless-ngx", "runtime": "ansible", "underlying_runtime": "rke2", "os_id": "ubuntu-24.04", "release": "2026.09.1", "environment": "production", "execution_environment_digest": execution_environment_digest, "recorded_at": "2026-09-08T10:00:00Z", "operator": "ci", "fixture_set": "archiveweaver-fixtures-v1"}
+            def evidence(name, status="pass", label="evidence"):
+                return {
+                    "name": label,
+                    "status": status,
+                    "evidence": f"evidence/{name}",
+                    "solution": "paperless-ngx",
+                    "runtime": "ansible",
+                    "underlying_runtime": "rke2",
+                    "os_id": "ubuntu-24.04",
+                    "release": "2026.09.1",
+                    "environment": "production",
+                    "execution_environment_digest": execution_environment_digest,
+                    "recorded_at": recorded_at,
+                    "operator": "ci",
+                    "fixture_set": "archiveweaver-fixtures-v1",
+                }
             artifact = root / "artifact.tar"
             artifact.write_bytes(b"approved release artifact\n")
             digest = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
@@ -278,19 +457,25 @@ class ReadinessTests(unittest.TestCase):
             provider_bundle.write_bytes(b"reviewed provider bundle\n")
             provider_bundle_digest = "sha256:" + hashlib.sha256(provider_bundle.read_bytes()).hexdigest()
             (root / "provider-bundle.spdx.json").write_text(
-                json.dumps({"spdxVersion": "SPDX-2.3", "packages": [{"name": "provider-bundle"}]}),
+                json.dumps(_spdx_document("provider-bundle")),
                 encoding="utf-8",
             )
             (root / "provider-bundle.sig").write_bytes(b"provider-bundle-signature\n")
             release_provenance["subject"].append(
                 {"name": "provider-bundle", "digest": {"sha256": provider_bundle_digest.split(":", 1)[1]}}
             )
+            release_provenance["subject"].append(
+                {
+                    "name": "github-production-controls.json",
+                    "digest": {"sha256": github_audit_digest.split(":", 1)[1]},
+                }
+            )
             (root / "provenance.json").write_text(json.dumps(release_provenance), encoding="utf-8")
             rollback_artifact = root / "rollback-artifact.tar"
             rollback_artifact.write_bytes(b"approved previous release artifact\n")
             rollback_digest = "sha256:" + hashlib.sha256(rollback_artifact.read_bytes()).hexdigest()
             (root / "rollback.spdx.json").write_text(
-                json.dumps({"spdxVersion": "SPDX-2.3", "packages": [{"name": "previous-product-artifact"}]}),
+                json.dumps(_spdx_document("previous-product-artifact")),
                 encoding="utf-8",
             )
             (root / "rollback.sig").write_bytes(b"rollback-signature\n")
@@ -307,9 +492,9 @@ class ReadinessTests(unittest.TestCase):
             manifest = {
                 "schema_version": 1,
                 "service": {"solution_id": "paperless-ngx", "runtime": "ansible", "underlying_runtime": "rke2", "os_id": "ubuntu-24.04", "environment": "production"},
-                "evidence_index": "evidence-index.json",
+                "evidence_index": "evidence/evidence-index.json",
                 "control": {"status": "pass", "evidence": "control.json", "catalog_validated": True, "ci_green": True, "change_ticket": "CHG-1234"},
-                "release": {"status": "pass", "evidence": "release.json", "version": "2026.09.1", "provenance": "provenance.json", "provenance_verified": True, "artifacts": [{"name": "product-artifact", "path": "artifact.tar", "digest": digest, "sbom": "release.spdx.json", "signature": "release.sig", "signature_verified": True, "signature_verification": evidence("signature-verification.json", label="signature")}], "provider_bundle": {"name": "provider-bundle", "path": "provider-bundle.tar", "digest": provider_bundle_digest, "remote_digest": provider_bundle_digest, "sbom": "provider-bundle.spdx.json", "signature": "provider-bundle.sig", "signature_verified": True, "signature_verification": evidence("provider-bundle-signature-verification.json", label="provider bundle signature"), "verification": evidence("provider-bundle-verification.json", label="provider-bundle")}},
+                "release": {"status": "pass", "evidence": "release.json", "version": "2026.09.1", "source_repository": "Yunushan/archiveweaver", "source_repository_id": source_repository_id, "source_revision": source_revision, "github_controls": {"path": "evidence/github-production-controls.json", "digest": github_audit_digest, "signature": "evidence/github-production-controls.json.sigstore.json", "signature_verified": True, "signature_verification": evidence("github-production-controls-signature-verification.json", label="GitHub production controls signature")}, "provenance": "evidence/provenance.json", "provenance_verified": True, "artifacts": [{"name": "product-artifact", "path": "evidence/artifact.tar", "digest": digest, "sbom": "evidence/release.spdx.json", "signature": "evidence/release.sig", "signature_verified": True, "signature_verification": evidence("signature-verification.json", label="signature")}], "provider_bundle": {"name": "provider-bundle", "path": "evidence/provider-bundle.tar", "digest": provider_bundle_digest, "remote_digest": provider_bundle_digest, "sbom": "evidence/provider-bundle.spdx.json", "signature": "evidence/provider-bundle.sig", "signature_verified": True, "signature_verification": evidence("provider-bundle-signature-verification.json", label="provider bundle signature"), "verification": evidence("provider-bundle-verification.json", label="provider-bundle")}},
                 "product_certification": {
                     "status": "pass",
                     "evidence": "product.json",
@@ -322,9 +507,9 @@ class ReadinessTests(unittest.TestCase):
                 "data_protection": {"status": "pass", "evidence": "data.json", "rpo_minutes": 60, "rto_minutes": 240, "backup": {"status": "pass", "evidence": "backup.json", "immutable_copies": 2}, "restore_test": evidence("restore.json"), "fixity_test": evidence("fixity.json")},
                 "security": {"status": "pass", "evidence": "security.json", "sbom_verified": True, "tls_verified": True, "secrets_provider": "vault", "sbom_verification": evidence("security-sbom.json", label="security sbom"), "tls_verification": evidence("tls.json", label="tls"), "secrets_provider_verification": evidence("secrets-provider.json", label="secrets provider"), "vulnerability_scan": evidence("scan.json"), "penetration_test": evidence("pentest.json")},
                 "observability": {"status": "pass", "evidence": "observe.json", "metrics": "prometheus", "alerts": "pager", "dashboards": "grafana", "on_call": "platform-oncall", "metrics_verification": evidence("metrics.json", label="metrics"), "alerts_verification": evidence("alerts.json", label="alerts"), "dashboards_verification": evidence("dashboards.json", label="dashboards"), "on_call_verification": evidence("on-call.json", label="observability on-call"), "alert_delivery_test": evidence("alert.json", label="alert delivery")},
-                "recovery": {"status": "pass", "evidence": "recovery.json", "rollback_release": "2026.09.0", "rollback_artifact_digest": rollback_digest, "rollback_artifact": {"name": "previous-product-artifact", "path": "rollback-artifact.tar", "digest": rollback_digest, "sbom": "rollback.spdx.json", "signature": "rollback.sig", "signature_verified": True, "signature_verification": evidence("rollback-signature-verification.json", label="rollback signature")}, "rollback_test": evidence("rollback.json"), "repair_test": evidence("repair.json")},
-                "governance": {"status": "pass", "evidence": "governance.json", "change_ticket": "CHG-1234", "approved_by": "ops@example.org", "approved_at": "2026-09-08T10:00:00Z", "evidence_immutable": True, "evidence_access_logged": True, "evidence_retention_days": 2555, "retention_control": evidence("retention.json", label="retention"), "risk_review": evidence("risk.json")},
-                "support": {"status": "pass", "evidence": "support.json", "service_owner": "Archive Platform", "on_call": "platform-oncall", "sla": "99.9%", "service_owner_verification": evidence("service-owner.json", label="service owner"), "on_call_verification": evidence("support-on-call.json", label="support on-call"), "sla_verification": evidence("sla.json", label="SLA"), "rpo_minutes": 60, "rto_minutes": 240, "runbooks": ["runbook.md"]},
+                "recovery": {"status": "pass", "evidence": "recovery.json", "rollback_release": "2026.09.0", "rollback_artifact_digest": rollback_digest, "rollback_artifact": {"name": "previous-product-artifact", "path": "evidence/rollback-artifact.tar", "digest": rollback_digest, "sbom": "evidence/rollback.spdx.json", "signature": "evidence/rollback.sig", "signature_verified": True, "signature_verification": evidence("rollback-signature-verification.json", label="rollback signature")}, "rollback_test": evidence("rollback.json"), "repair_test": evidence("repair.json")},
+                "governance": {"status": "pass", "evidence": "governance.json", "change_ticket": "CHG-1234", "approved_by": "ops@example.org", "approved_at": approved_at, "valid_until": valid_until, "evidence_immutable": True, "evidence_access_logged": True, "evidence_retention_days": 2555, "retention_control": evidence("retention.json", label="retention"), "risk_review": evidence("risk.json")},
+                "support": {"status": "pass", "evidence": "support.json", "service_owner": "Archive Platform", "on_call": "platform-oncall", "sla": "99.9%", "service_owner_verification": evidence("service-owner.json", label="service owner"), "on_call_verification": evidence("support-on-call.json", label="support on-call"), "sla_verification": evidence("sla.json", label="SLA"), "rpo_minutes": 60, "rto_minutes": 240, "runbooks": ["evidence/runbook.md"]},
             }
             for section_name in (
                 "control", "release", "product_certification", "resilience", "data_protection",
@@ -335,15 +520,16 @@ class ReadinessTests(unittest.TestCase):
             manifest["release"]["artifacts"][0]["signature_verification"].update({"artifact_digest": digest, "verifier": "cosign"})
             manifest["release"]["provider_bundle"]["signature_verification"].update({"artifact_digest": provider_bundle_digest, "verifier": "cosign"})
             manifest["release"]["provider_bundle"]["verification"].update({"artifact_digest": provider_bundle_digest, "remote_digest": provider_bundle_digest, "verifier": "ansible-provider-check"})
+            manifest["release"]["github_controls"]["signature_verification"].update({"artifact_digest": github_audit_digest, "verifier": "sigstore verify identity"})
             manifest["recovery"]["rollback_artifact"]["signature_verification"].update({"artifact_digest": rollback_digest, "verifier": "cosign"})
             manifest["release"]["execution_environment"] = {
                 "name": "archiveweaver-ee",
                 "image": "registry.example/archiveweaver-ee@" + execution_environment_digest,
                 "digest": execution_environment_digest,
-                "provenance": "execution-environment-provenance.json",
+                "provenance": "evidence/execution-environment-provenance.json",
                 "provenance_verified": True,
-                "sbom": "execution-environment.spdx.json",
-                "signature": "execution-environment.sig",
+                "sbom": "evidence/execution-environment.spdx.json",
+                "signature": "evidence/execution-environment.sig",
                 "signature_verified": True,
                 "signature_verification": evidence("execution-environment-signature-verification.json", label="execution environment signature"),
             }
@@ -352,7 +538,9 @@ class ReadinessTests(unittest.TestCase):
             def write_evidence_payloads(value):
                 if isinstance(value, dict):
                     if value.get("status") == "pass" and isinstance(value.get("evidence"), str):
-                        (root / value["evidence"]).write_text(json.dumps(value), encoding="utf-8")
+                        (manifest_root / value["evidence"]).write_text(
+                            json.dumps(value), encoding="utf-8"
+                        )
                     for child in value.values():
                         write_evidence_payloads(child)
                 elif isinstance(value, list):
@@ -360,16 +548,112 @@ class ReadinessTests(unittest.TestCase):
                         write_evidence_payloads(child)
 
             write_evidence_payloads(manifest)
-            manifest_path = root / "manifest.json"
+            manifest_path = manifest_root / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            build_evidence_index(root, root / "evidence-index.json")
+
+            def build_evidence_index(directory_path: Path, output_path: Path):
+                result = _build_evidence_index(directory_path, output_path)
+                manifest["evidence_index_digest"] = (
+                    "sha256:" + hashlib.sha256(output_path.read_bytes()).hexdigest()
+                )
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                return result
+
+            index_path = root / "evidence-index.json"
+            build_evidence_index(root, index_path)
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["score"], 100)
 
+            invalid_audits = []
+            candidate = copy.deepcopy(github_audit)
+            candidate["passed"] = False
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["controls"][0]["passed"] = False
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["controls"][0]["name"] = candidate["controls"][1]["name"]
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["controls"][0]["unexpected"] = True
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["repository"] = "other/archiveweaver"
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["repository_id"] += 1
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["source_revision"] = "b" * 40
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["unexpected"] = True
+            invalid_audits.append(candidate)
+            candidate = copy.deepcopy(github_audit)
+            candidate["audited_at"] = "2000-01-01T00:00:00Z"
+            invalid_audits.append(candidate)
+
+            audit_path = root / "github-production-controls.json"
+            for invalid_audit in invalid_audits:
+                with self.subTest(invalid_audit=invalid_audit):
+                    audit_path.write_text(json.dumps(invalid_audit), encoding="utf-8")
+                    invalid_digest = "sha256:" + hashlib.sha256(
+                        audit_path.read_bytes()
+                    ).hexdigest()
+                    github_controls = manifest["release"]["github_controls"]
+                    github_controls["digest"] = invalid_digest
+                    github_controls["signature_verification"][
+                        "artifact_digest"
+                    ] = invalid_digest
+                    write_evidence_payloads(manifest)
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    build_evidence_index(root, index_path)
+                    report = assess_readiness(manifest_path, self.catalog)
+                    self.assertEqual(report["criteria"][1]["status"], "fail")
+                    self.assertTrue(
+                        any("release.github_controls" in error for error in report["errors"])
+                    )
+            audit_path.write_text(json.dumps(github_audit), encoding="utf-8")
+            manifest["release"]["github_controls"]["digest"] = github_audit_digest
+            manifest["release"]["github_controls"]["signature_verification"][
+                "artifact_digest"
+            ] = github_audit_digest
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, index_path)
+
+            source_dependency = release_provenance["predicate"]["buildDefinition"][
+                "resolvedDependencies"
+            ][0]
+            source_dependency["digest"]["gitCommit"] = "b" * 40
+            (root / "provenance.json").write_text(
+                json.dumps(release_provenance), encoding="utf-8"
+            )
+            build_evidence_index(root, index_path)
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["criteria"][1]["status"], "fail")
+            source_dependency["digest"]["gitCommit"] = source_revision
+            (root / "provenance.json").write_text(
+                json.dumps(release_provenance), encoding="utf-8"
+            )
+            build_evidence_index(root, index_path)
+
+            index_document = json.loads(index_path.read_text(encoding="utf-8"))
+            index_path.write_text(
+                json.dumps(index_document, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["status"], "fail")
+            self.assertTrue(
+                any("evidence index digest mismatch" in error for error in report["errors"])
+            )
+            build_evidence_index(root, index_path)
+
             original_release_sbom = (root / "release.spdx.json").read_text(encoding="utf-8")
             (root / "release.spdx.json").write_text(
-                json.dumps({"spdxVersion": "SPDX-2.3", "packages": [{"name": "unrelated-artifact"}]}),
+                json.dumps(_spdx_document("unrelated-artifact")),
                 encoding="utf-8",
             )
             build_evidence_index(root, root / "evidence-index.json")
@@ -442,6 +726,20 @@ class ReadinessTests(unittest.TestCase):
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["criteria"][3]["status"], "fail")
             manifest["resilience"]["evidence"] = original_resilience_evidence
+
+            resilience_evidence_path = root / "resilience.json"
+            resilience_payload = json.loads(
+                resilience_evidence_path.read_text(encoding="utf-8")
+            )
+            resilience_payload["quorum_verified"] = False
+            resilience_evidence_path.write_text(
+                json.dumps(resilience_payload), encoding="utf-8"
+            )
+            build_evidence_index(root, root / "evidence-index.json")
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["criteria"][3]["status"], "fail")
+            write_evidence_payloads(manifest)
+            build_evidence_index(root, root / "evidence-index.json")
 
             for section_name, field_name, criterion_index in (
                 ("security", "sbom_verification", 5),
@@ -521,13 +819,26 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["score"], 100)
 
-            provider_subject = release_provenance["subject"].pop()
+            provider_subject = release_provenance["subject"].pop(1)
             (root / "provenance.json").write_text(json.dumps(release_provenance), encoding="utf-8")
             build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["criteria"][1]["status"], "fail")
-            release_provenance["subject"].append(provider_subject)
+            release_provenance["subject"].insert(1, provider_subject)
             (root / "provenance.json").write_text(json.dumps(release_provenance), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
+
+            hosted_controls_subject = release_provenance["subject"].pop(2)
+            (root / "provenance.json").write_text(
+                json.dumps(release_provenance), encoding="utf-8"
+            )
+            build_evidence_index(root, root / "evidence-index.json")
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["criteria"][1]["status"], "fail")
+            release_provenance["subject"].insert(2, hosted_controls_subject)
+            (root / "provenance.json").write_text(
+                json.dumps(release_provenance), encoding="utf-8"
+            )
             build_evidence_index(root, root / "evidence-index.json")
 
             release_provenance["subject"][0]["digest"] = {"sha256": "0" * 64}
@@ -583,7 +894,9 @@ class ReadinessTests(unittest.TestCase):
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["status"], "fail")
             self.assertEqual(report["criteria"][1]["status"], "fail")
-            (root / "release.spdx.json").write_text(json.dumps({"spdxVersion": "SPDX-2.3", "packages": [{"name": "product-artifact"}]}), encoding="utf-8")
+            (root / "release.spdx.json").write_text(
+                json.dumps(_spdx_document("product-artifact")), encoding="utf-8"
+            )
             write_evidence_payloads(manifest)
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             build_evidence_index(root, root / "evidence-index.json")
@@ -606,14 +919,13 @@ class ReadinessTests(unittest.TestCase):
 
             (root / "provenance.json").write_text(
                 json.dumps(
-                    {
-                        "_type": "https://in-toto.io/Statement/v1",
-                        "subject": [
+                    _slsa_provenance(
+                        [
                             {"name": "product-artifact", "digest": {"sha256": digest.split(":", 1)[1]}},
                             {"name": "provider-bundle", "digest": {"sha256": provider_bundle_digest.split(":", 1)[1]}},
-                        ],
-                        "predicateType": "https://slsa.dev/provenance/v1",
-                    }
+                            {"name": "github-production-controls.json", "digest": {"sha256": github_audit_digest.split(":", 1)[1]}},
+                        ]
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -621,28 +933,29 @@ class ReadinessTests(unittest.TestCase):
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["status"], "pass")
 
+            invalid_spdx_version = _spdx_document("product-artifact")
+            invalid_spdx_version["spdxVersion"] = "2.3"
             (root / "release.spdx.json").write_text(
-                json.dumps({"spdxVersion": "2.3", "packages": [{"name": "product-artifact"}]}),
-                encoding="utf-8",
+                json.dumps(invalid_spdx_version), encoding="utf-8"
             )
             build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["criteria"][1]["status"], "fail")
             (root / "release.spdx.json").write_text(
-                json.dumps({"spdxVersion": "SPDX-2.3", "packages": [{"name": "product-artifact"}]}),
+                json.dumps(_spdx_document("product-artifact")),
                 encoding="utf-8",
             )
 
+            missing_statement_type = _slsa_provenance(
+                [
+                    {"name": "product-artifact", "digest": {"sha256": digest.split(":", 1)[1]}},
+                    {"name": "provider-bundle", "digest": {"sha256": provider_bundle_digest.split(":", 1)[1]}},
+                    {"name": "github-production-controls.json", "digest": {"sha256": github_audit_digest.split(":", 1)[1]}},
+                ]
+            )
+            missing_statement_type.pop("_type")
             (root / "provenance.json").write_text(
-                json.dumps(
-                    {
-                        "subject": [
-                            {"name": "product-artifact", "digest": {"sha256": digest.split(":", 1)[1]}},
-                            {"name": "provider-bundle", "digest": {"sha256": provider_bundle_digest.split(":", 1)[1]}},
-                        ],
-                        "predicateType": "https://slsa.dev/provenance/v1",
-                    }
-                ),
+                json.dumps(missing_statement_type),
                 encoding="utf-8",
             )
             build_evidence_index(root, root / "evidence-index.json")
@@ -650,14 +963,13 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["criteria"][1]["status"], "fail")
             (root / "provenance.json").write_text(
                 json.dumps(
-                    {
-                        "_type": "https://in-toto.io/Statement/v1",
-                        "subject": [
+                    _slsa_provenance(
+                        [
                             {"name": "product-artifact", "digest": {"sha256": digest.split(":", 1)[1]}},
                             {"name": "provider-bundle", "digest": {"sha256": provider_bundle_digest.split(":", 1)[1]}},
-                        ],
-                        "predicateType": "https://slsa.dev/provenance/v1",
-                    }
+                            {"name": "github-production-controls.json", "digest": {"sha256": github_audit_digest.split(":", 1)[1]}},
+                        ]
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -696,7 +1008,68 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["status"], "fail")
             self.assertEqual(report["criteria"][2]["status"], "fail")
 
-            manifest["product_certification"]["test_matrix"][0]["recorded_at"] = "2026-09-08T10:00:00Z"
+            manifest["product_certification"]["test_matrix"][0]["recorded_at"] = recorded_at
+
+            manifest["product_certification"]["test_matrix"][0]["recorded_at"] = future_recorded_at
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["status"], "fail")
+            self.assertEqual(report["criteria"][2]["status"], "fail")
+            self.assertTrue(
+                any("recorded_at must not be future-dated" in error for error in report["errors"])
+            )
+            manifest["product_certification"]["test_matrix"][0]["recorded_at"] = recorded_at
+
+            vulnerability_scan = manifest["security"]["vulnerability_scan"]
+            vulnerability_scan["recorded_at"] = (
+                approval_time - timedelta(days=8)
+            ).isoformat().replace("+00:00", "Z")
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["criteria"][5]["status"], "fail")
+            self.assertTrue(
+                any(
+                    "security.vulnerability_scan.recorded_at exceeds the 7 days freshness window"
+                    in error
+                    for error in report["errors"]
+                )
+            )
+            vulnerability_scan["recorded_at"] = recorded_at
+
+            penetration_test = manifest["security"]["penetration_test"]
+            penetration_test["recorded_at"] = (
+                approval_time - timedelta(days=364)
+            ).isoformat().replace("+00:00", "Z")
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["status"], "pass")
+            penetration_test["recorded_at"] = recorded_at
+
+            backup = manifest["data_protection"]["backup"]
+            backup["recorded_at"] = (
+                approval_time - timedelta(minutes=70)
+            ).isoformat().replace("+00:00", "Z")
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
+            report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(report["criteria"][4]["status"], "fail")
+            self.assertTrue(
+                any(
+                    "data_protection.backup.recorded_at exceeds the 1 hour freshness window"
+                    in error
+                    for error in report["errors"]
+                )
+            )
+            backup["recorded_at"] = recorded_at
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
 
             manifest["release"]["provider_bundle"]["digest"] = "sha256:not-a-digest"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")

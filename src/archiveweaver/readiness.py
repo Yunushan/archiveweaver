@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from .catalog import Catalog
-from .evidence import verify_evidence_index
+from .evidence import _measure_regular_file, _read_stable_bytes, verify_evidence_index
 from .json_utils import load_json_document
 from .path_utils import has_symlink_component
 
@@ -18,16 +21,115 @@ RFC3339_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:"
     r"[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 )
-IN_TOTO_STATEMENT_RE = re.compile(r"^https://in-toto\.io/Statement/v[0-9]+(?:\.[0-9]+)?$")
-SPDX_VERSION_RE = re.compile(r"^SPDX-[0-9]+\.[0-9]+$")
-CYCLONEDX_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+$")
+IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+SLSA_PROVENANCE_TYPE = "https://slsa.dev/provenance/v1"
+SPDX_VERSION = "SPDX-2.3"
+SUPPORTED_CYCLONEDX_VERSIONS = frozenset({"1.6", "1.7"})
+SPDX_ID_RE = re.compile(r"^SPDXRef-[A-Za-z0-9][A-Za-z0-9.-]*$")
+SPDX_CREATED_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
+SPDX_CREATOR_RE = re.compile(r"^(?:Person|Organization|Tool):\s*\S")
+CYCLONEDX_SERIAL_RE = re.compile(
+    r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+CYCLONEDX_COMPONENT_TYPES = frozenset(
+    {
+        "application",
+        "framework",
+        "library",
+        "container",
+        "platform",
+        "operating-system",
+        "device",
+        "device-driver",
+        "firmware",
+        "file",
+        "machine-learning-model",
+        "data",
+        "cryptographic-asset",
+    }
+)
 OCI_IMAGE_DIGEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[0-9a-f]{64}$")
 STATUS_VALUES = {"pass", "pending", "fail"}
 ENVIRONMENT_VALUES = {"production", "staging", "restore", "dr"}
+APPROVAL_CLOCK_SKEW = timedelta(minutes=5)
+APPROVAL_MAX_VALIDITY = timedelta(days=30)
+GITHUB_AUDIT_MAX_AGE = timedelta(hours=24)
+EVIDENCE_MAX_AGE_BY_SECTION = {
+    "control": timedelta(hours=24),
+    "release": timedelta(days=30),
+    "product_certification": timedelta(days=90),
+    "resilience": timedelta(days=90),
+    "data_protection": timedelta(days=30),
+    "security": timedelta(days=30),
+    "observability": timedelta(days=30),
+    "recovery": timedelta(days=90),
+    "governance": timedelta(days=30),
+    "support": timedelta(days=90),
+}
+EVIDENCE_MAX_AGE_OVERRIDES = {
+    "data_protection.backup": timedelta(hours=24),
+    "data_protection.restore_test": timedelta(days=90),
+    "data_protection.fixity_test": timedelta(days=30),
+    "security.vulnerability_scan": timedelta(days=7),
+    "security.penetration_test": timedelta(days=365),
+    "observability.alert_delivery_test": timedelta(days=30),
+}
+MAX_READINESS_MANIFEST_BYTES = 4 * 1024 * 1024
+MAX_STRUCTURED_EVIDENCE_BYTES = 64 * 1024 * 1024
+MAX_JSON_DEPTH = 64
+MAX_MANIFEST_JSON_NODES = 100_000
+MAX_EVIDENCE_JSON_NODES = 1_000_000
+GITHUB_AUDIT_API_VERSION = "2026-03-10"
+SIGSTORE_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json"
+GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+GITHUB_SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+GITHUB_AUDIT_CONTROL_NAMES = frozenset(
+    {
+        "repository",
+        "secret-scanning",
+        "actions-policy",
+        "actions-allowlist",
+        "workflow-token",
+        "vulnerability-alerts",
+        "dependabot-security-updates",
+        "private-vulnerability-reporting",
+        "immutable-releases",
+        "release-environment",
+        "main-ruleset",
+        "release-tag-ruleset",
+    }
+)
+GITHUB_AUDIT_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "api_version",
+        "audited_at",
+        "repository",
+        "repository_id",
+        "repository_node_id",
+        "source_revision",
+        "passed",
+        "controls",
+    }
+)
+GITHUB_AUDIT_CONTROL_FIELDS = frozenset({"name", "passed", "detail"})
+GITHUB_AUDIT_REFERENCE_FIELDS = frozenset(
+    {
+        "path",
+        "digest",
+        "signature",
+        "signature_verified",
+        "signature_verification",
+    }
+)
 REQUIRED_TOP_LEVEL = {
     "schema_version",
     "service",
     "evidence_index",
+    "evidence_index_digest",
     "control",
     "release",
     "product_certification",
@@ -39,7 +141,7 @@ REQUIRED_TOP_LEVEL = {
     "governance",
     "support",
 }
-EvidenceContext = tuple[Path, frozenset[str], Catalog]
+EvidenceContext = tuple[Path, dict[str, tuple[int, str]], Catalog]
 CLAIM_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
     "security": (
         "sbom_verification",
@@ -60,6 +162,29 @@ CLAIM_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _json_shape_errors(
+    value: Any,
+    label: str,
+    *,
+    max_nodes: int,
+) -> list[str]:
+    """Bound JSON depth and node count before recursive semantic checks."""
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > max_nodes:
+            return [f"{label} exceeds the {max_nodes}-node safety limit"]
+        if depth > MAX_JSON_DEPTH:
+            return [f"{label} exceeds the {MAX_JSON_DEPTH}-level nesting limit"]
+        if isinstance(current, dict):
+            stack.extend((child, depth + 1) for child in current.values())
+        elif isinstance(current, list):
+            stack.extend((child, depth + 1) for child in current)
+    return []
+
+
 def _has_structured_release_execution_environment(value: Any) -> bool:
     """Recognize the release section's nested controller-image metadata."""
     return bool(
@@ -74,15 +199,134 @@ def _is_real_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not PLACEHOLDER_RE.search(value)
 
 
-def _is_real_timestamp(value: Any) -> bool:
-    """Accept only timezone-qualified RFC 3339 timestamps for audit fields."""
-    if not isinstance(value, str) or not RFC3339_RE.fullmatch(value):
+def _is_absolute_uri(value: Any, *, allow_fragment: bool = True) -> bool:
+    """Recognize an absolute URI without accepting whitespace or controls."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or any(char.isspace() or ord(char) < 0x20 for char in value)
+    ):
         return False
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return bool(parsed.scheme and (allow_fragment or not parsed.fragment))
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse a timezone-qualified RFC 3339 timestamp without guessing a zone."""
+    if not isinstance(value, str) or not RFC3339_RE.fullmatch(value):
+        return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return False
-    return parsed.tzinfo is not None
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _is_real_timestamp(value: Any) -> bool:
+    """Accept only timezone-qualified RFC 3339 timestamps for audit fields."""
+    return _parse_timestamp(value) is not None
+
+
+def _is_current_or_past_timestamp(
+    value: Any, *, now: datetime | None = None
+) -> bool:
+    """Reject syntactically valid evidence timestamps placed in the future."""
+    parsed = _parse_timestamp(value)
+    current = now or datetime.now(timezone.utc)
+    return parsed is not None and parsed <= current + APPROVAL_CLOCK_SKEW
+
+
+def _evidence_max_age(
+    freshness_policy: str,
+    manifest: dict[str, Any],
+) -> timedelta | None:
+    """Return the bounded validity period for one evidence-record location."""
+
+    limit = EVIDENCE_MAX_AGE_OVERRIDES.get(freshness_policy)
+    if limit is None:
+        section_name = freshness_policy.split(".", 1)[0].split("[", 1)[0]
+        limit = EVIDENCE_MAX_AGE_BY_SECTION.get(section_name)
+    if freshness_policy == "data_protection.backup" and limit is not None:
+        data_protection = manifest.get("data_protection")
+        rpo_minutes = (
+            data_protection.get("rpo_minutes")
+            if isinstance(data_protection, dict)
+            else None
+        )
+        if type(rpo_minutes) is int and rpo_minutes > 0:
+            limit = min(limit, timedelta(minutes=rpo_minutes))
+    return limit
+
+
+def _evidence_timestamp_is_fresh(
+    value: Any,
+    manifest: dict[str, Any],
+    freshness_policy: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Require evidence to be current for its operational control domain."""
+
+    parsed = _parse_timestamp(value)
+    limit = _evidence_max_age(freshness_policy, manifest)
+    current = now or datetime.now(timezone.utc)
+    return bool(
+        parsed is not None
+        and limit is not None
+        and parsed <= current + APPROVAL_CLOCK_SKEW
+        and parsed >= current - limit - APPROVAL_CLOCK_SKEW
+    )
+
+
+def _freshness_window_label(limit: timedelta) -> str:
+    seconds = int(limit.total_seconds())
+    for unit, divisor in (
+        ("day", 24 * 60 * 60),
+        ("hour", 60 * 60),
+        ("minute", 60),
+    ):
+        if seconds % divisor == 0:
+            amount = seconds // divisor
+            suffix = "" if amount == 1 else "s"
+            return f"{amount} {unit}{suffix}"
+    return f"{seconds} seconds"
+
+
+def _approval_window_errors(
+    section: Any,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Reject stale, excessively long, or implausibly future approvals."""
+    if not isinstance(section, dict):
+        return ["governance must be an object"]
+    approved_at = _parse_timestamp(section.get("approved_at"))
+    valid_until = _parse_timestamp(section.get("valid_until"))
+    errors: list[str] = []
+    if approved_at is None:
+        errors.append(
+            "governance.approved_at must be a timezone-qualified RFC 3339 timestamp"
+        )
+    if valid_until is None:
+        errors.append(
+            "governance.valid_until must be a timezone-qualified RFC 3339 timestamp"
+        )
+    if approved_at is None or valid_until is None:
+        return errors
+    current = now or datetime.now(timezone.utc)
+    if approved_at > current + APPROVAL_CLOCK_SKEW:
+        errors.append("governance.approved_at must not be future-dated")
+    if valid_until <= approved_at:
+        errors.append("governance.valid_until must be later than governance.approved_at")
+    elif valid_until - approved_at > APPROVAL_MAX_VALIDITY:
+        errors.append("governance approval validity must not exceed 30 days")
+    if valid_until <= current:
+        errors.append("governance approval has expired")
+    return errors
 
 
 def _relative_candidate(value: Any, root: Path) -> Path | None:
@@ -124,15 +368,54 @@ def _relative_candidate(value: Any, root: Path) -> Path | None:
     return evidence_resolved
 
 
-def _indexed(candidate: Path | None, context: EvidenceContext | None) -> bool:
+def _indexed_measure(
+    candidate: Path | None,
+    context: EvidenceContext | None,
+) -> tuple[int, str] | None:
     if candidate is None or context is None:
-        return False
+        return None
     bundle_root, indexed_files, _ = context
     try:
         relative = candidate.relative_to(bundle_root).as_posix()
     except ValueError:
-        return False
-    return relative in indexed_files
+        return None
+    expected = indexed_files.get(relative)
+    if expected is None:
+        return None
+    try:
+        measured = _measure_regular_file(candidate)
+    except OSError:
+        return None
+    return measured if measured == expected else None
+
+
+def _indexed(candidate: Path | None, context: EvidenceContext | None) -> bool:
+    return _indexed_measure(candidate, context) is not None
+
+
+def _indexed_bytes(
+    candidate: Path | None,
+    context: EvidenceContext | None,
+) -> bytes | None:
+    """Read exactly the bytes bound by the verified evidence index."""
+    if candidate is None or context is None:
+        return None
+    bundle_root, indexed_files, _ = context
+    try:
+        relative = candidate.relative_to(bundle_root).as_posix()
+    except ValueError:
+        return None
+    expected = indexed_files.get(relative)
+    if expected is None or expected[0] > MAX_STRUCTURED_EVIDENCE_BYTES:
+        return None
+    try:
+        content, digest = _read_stable_bytes(
+            candidate,
+            max_bytes=MAX_STRUCTURED_EVIDENCE_BYTES,
+        )
+    except OSError:
+        return None
+    return content if (len(content), digest) == expected else None
 
 
 def _evidence_exists(value: Any, root: Path, context: EvidenceContext | None) -> bool:
@@ -142,7 +425,12 @@ def _evidence_exists(value: Any, root: Path, context: EvidenceContext | None) ->
     return _indexed(_relative_candidate(evidence, root), context)
 
 
-def _evidence_metadata_matches(value: Any, manifest: dict[str, Any]) -> bool:
+def _evidence_metadata_matches(
+    value: Any,
+    manifest: dict[str, Any],
+    *,
+    freshness_policy: str | None = None,
+) -> bool:
     if not isinstance(value, dict):
         return False
     release = manifest.get("release")
@@ -175,13 +463,26 @@ def _evidence_metadata_matches(value: Any, manifest: dict[str, Any]) -> bool:
             )
             or _has_structured_release_execution_environment(value)
         )
-        and _is_real_timestamp(value.get("recorded_at"))
+        and (
+            _is_current_or_past_timestamp(value.get("recorded_at"))
+            if freshness_policy is None
+            else _evidence_timestamp_is_fresh(
+                value.get("recorded_at"), manifest, freshness_policy
+            )
+        )
         and _is_real_text(value.get("operator"))
         and _is_real_text(value.get("fixture_set"))
     )
 
 
-def _evidence_payload_matches(value: Any, root: Path, context: EvidenceContext | None, manifest: dict[str, Any]) -> bool:
+def _evidence_payload_matches(
+    value: Any,
+    root: Path,
+    context: EvidenceContext | None,
+    manifest: dict[str, Any],
+    *,
+    freshness_policy: str | None = None,
+) -> bool:
     payload = _json_evidence_payload(value, root, context)
     if payload is None:
         candidate = _relative_candidate(value.get("evidence"), root) if isinstance(value, dict) else None
@@ -189,30 +490,83 @@ def _evidence_payload_matches(value: Any, root: Path, context: EvidenceContext |
     return bool(
         payload.get("status") == "pass"
         and isinstance(value, dict)
+        and _json_contains(payload, value)
         and payload.get("name") == value.get("name")
         and payload.get("evidence") == value.get("evidence")
-        and _evidence_metadata_matches(payload, manifest)
+        and _evidence_metadata_matches(
+            payload,
+            manifest,
+            freshness_policy=freshness_policy,
+        )
     )
+
+
+def _json_contains(actual: Any, expected: Any) -> bool:
+    """Require every manifest claim to be represented identically in evidence."""
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            key in actual and _json_contains(actual[key], expected_value)
+            for key, expected_value in expected.items()
+        )
+    if isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _json_contains(actual_value, expected_value)
+                for actual_value, expected_value in zip(actual, expected)
+            )
+        )
+    return type(actual) is type(expected) and actual == expected
 
 
 def _json_evidence_payload(value: Any, root: Path, context: EvidenceContext | None) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     candidate = _relative_candidate(value.get("evidence"), root)
-    if candidate is None or not _indexed(candidate, context) or candidate.suffix.lower() != ".json":
+    if candidate is None or candidate.suffix.lower() != ".json":
+        return None
+    content = _indexed_bytes(candidate, context)
+    if content is None:
         return None
     try:
-        payload = load_json_document(candidate.read_text(encoding="utf-8"))
+        payload = load_json_document(content.decode("utf-8", errors="strict"))
     except (OSError, UnicodeDecodeError, ValueError):
         return None
-    return payload if isinstance(payload, dict) else None
+    return (
+        payload
+        if isinstance(payload, dict)
+        and not _json_shape_errors(
+            payload,
+            "evidence JSON",
+            max_nodes=MAX_EVIDENCE_JSON_NODES,
+        )
+        else None
+    )
 
 
-def _evidence_record_exists(value: Any, root: Path, context: EvidenceContext | None, manifest: dict[str, Any]) -> bool:
+def _evidence_record_exists(
+    value: Any,
+    root: Path,
+    context: EvidenceContext | None,
+    manifest: dict[str, Any],
+    *,
+    freshness_policy: str,
+) -> bool:
     return (
         _evidence_exists(value, root, context)
-        and _evidence_metadata_matches(value, manifest)
-        and _evidence_payload_matches(value, root, context, manifest)
+        and _evidence_metadata_matches(
+            value,
+            manifest,
+            freshness_policy=freshness_policy,
+        )
+        and _evidence_payload_matches(
+            value,
+            root,
+            context,
+            manifest,
+            freshness_policy=freshness_policy,
+        )
     )
 
 
@@ -220,12 +574,8 @@ def _relative_file(value: Any, root: Path, context: EvidenceContext | None) -> b
     # A referenced artifact, detached signature, or runbook must contain
     # content; an indexed zero-byte placeholder is not operational proof.
     candidate = _relative_candidate(value, root)
-    if candidate is None or not _indexed(candidate, context):
-        return False
-    try:
-        return candidate.stat().st_size > 0
-    except OSError:
-        return False
+    measured = _indexed_measure(candidate, context)
+    return measured is not None and measured[0] > 0
 
 
 def _path_identity(value: Any) -> str | None:
@@ -257,6 +607,18 @@ def _execution_environment_proof_paths(value: Any) -> set[str]:
     return {path for path in paths if path is not None}
 
 
+def _github_controls_proof_paths(value: Any) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    paths = {
+        _path_identity(value.get(field)) for field in ("path", "signature")
+    }
+    signature_verification = value.get("signature_verification")
+    if isinstance(signature_verification, dict):
+        paths.add(_path_identity(signature_verification.get("evidence")))
+    return {path for path in paths if path is not None}
+
+
 def _release_proof_paths(value: Any) -> set[str]:
     """Return every local proof path owned by a release section."""
     if not isinstance(value, dict):
@@ -268,6 +630,7 @@ def _release_proof_paths(value: Any) -> set[str]:
             paths.update(_artifact_proof_paths(artifact))
     paths.update(_artifact_proof_paths(value.get("provider_bundle")))
     paths.update(_execution_environment_proof_paths(value.get("execution_environment")))
+    paths.update(_github_controls_proof_paths(value.get("github_controls")))
     return paths
 
 
@@ -279,13 +642,22 @@ def _structured_json_payload(
 ) -> dict[str, Any] | None:
     """Require an indexed JSON attestation with meaningful grouped content."""
     candidate = _relative_candidate(value, root)
-    if candidate is None or not _indexed(candidate, context) or candidate.suffix.lower() != ".json":
+    if candidate is None or candidate.suffix.lower() != ".json":
+        return None
+    content = _indexed_bytes(candidate, context)
+    if content is None:
         return None
     try:
-        payload = load_json_document(candidate.read_text(encoding="utf-8"))
+        payload = load_json_document(content.decode("utf-8", errors="strict"))
     except (OSError, UnicodeDecodeError, ValueError):
         return None
     if not isinstance(payload, dict):
+        return None
+    if _json_shape_errors(
+        payload,
+        "structured evidence JSON",
+        max_nodes=MAX_EVIDENCE_JSON_NODES,
+    ):
         return None
 
     def meaningful_group(key: str) -> bool:
@@ -322,12 +694,338 @@ def _structured_json_payload(
     return payload
 
 
-def _meaningful_component_list(value: Any) -> bool:
-    identity_keys = ("name", "SPDXID", "bom-ref", "purl", "group")
-    return isinstance(value, list) and any(
-        isinstance(component, dict)
-        and any(_is_real_text(component.get(identity)) for identity in identity_keys)
-        for component in value
+def _github_controls_errors(
+    value: Any,
+    expected_repository: Any,
+    expected_repository_id: Any,
+    expected_source_revision: Any,
+    manifest: dict[str, Any],
+    root: Path,
+    context: EvidenceContext | None,
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Validate a fresh, indexed hosted-control audit bound to this source."""
+    if not isinstance(value, dict):
+        return ["must be a signed hosted-control audit reference"]
+    errors: list[str] = []
+    if set(value) != GITHUB_AUDIT_REFERENCE_FIELDS:
+        errors.append("reference must contain exactly the signed-audit fields")
+    candidate = _relative_candidate(value.get("path"), root)
+    if candidate is None or candidate.suffix.lower() != ".json":
+        errors.append("path must identify an indexed JSON report inside the evidence bundle")
+        return errors
+    content = _indexed_bytes(candidate, context)
+    if content is None:
+        errors.append("report must be present with matching bytes in the verified evidence index")
+        return errors
+    digest = value.get("digest")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        or f"sha256:{hashlib.sha256(content).hexdigest()}" != digest
+    ):
+        errors.append("digest must match the indexed report bytes")
+    if not _sigstore_bundle_binds_content(
+        value.get("signature"), content, root, context
+    ):
+        errors.append(
+            "signature must be an indexed Sigstore v0.3 keyless bundle bound to the report"
+        )
+    if value.get("signature_verified") is not True:
+        errors.append("signature_verified must be true")
+    verification = value.get("signature_verification")
+    verification_payload = _json_evidence_payload(verification, root, context)
+    if (
+        not _evidence_record_exists(
+            verification,
+            root,
+            context,
+            manifest,
+            freshness_policy="release",
+        )
+        or not isinstance(verification_payload, dict)
+        or verification_payload.get("artifact_digest") != digest
+        or not _is_real_text(verification_payload.get("verifier"))
+    ):
+        errors.append(
+            "signature_verification must be indexed evidence bound to the report digest"
+        )
+    try:
+        payload = load_json_document(content.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        errors.append("report must contain unambiguous UTF-8 JSON")
+        return errors
+    if not isinstance(payload, dict):
+        errors.append("report must contain a JSON object")
+        return errors
+
+    payload_fields = set(payload)
+    if payload_fields != GITHUB_AUDIT_TOP_LEVEL_FIELDS:
+        errors.append("must contain exactly the production-control audit schema fields")
+    if payload.get("schema_version") != 1:
+        errors.append("schema_version must be 1")
+    if payload.get("api_version") != GITHUB_AUDIT_API_VERSION:
+        errors.append(f"api_version must be {GITHUB_AUDIT_API_VERSION}")
+
+    repository = payload.get("repository")
+    if (
+        not isinstance(expected_repository, str)
+        or GITHUB_REPOSITORY_RE.fullmatch(expected_repository) is None
+        or not isinstance(repository, str)
+        or GITHUB_REPOSITORY_RE.fullmatch(repository) is None
+        or repository.casefold() != expected_repository.casefold()
+    ):
+        errors.append("repository must match release.source_repository")
+
+    repository_id = payload.get("repository_id")
+    if (
+        isinstance(expected_repository_id, bool)
+        or not isinstance(expected_repository_id, int)
+        or expected_repository_id <= 0
+        or isinstance(repository_id, bool)
+        or not isinstance(repository_id, int)
+        or repository_id != expected_repository_id
+    ):
+        errors.append("repository_id must match release.source_repository_id")
+    if not _is_real_text(payload.get("repository_node_id")):
+        errors.append("repository_node_id must identify the authoritative GitHub repository")
+
+    source_revision = payload.get("source_revision")
+    if (
+        not isinstance(expected_source_revision, str)
+        or GITHUB_SOURCE_REVISION_RE.fullmatch(expected_source_revision) is None
+        or source_revision != expected_source_revision
+    ):
+        errors.append("source_revision must match release.source_revision")
+
+    audited_at = _parse_timestamp(payload.get("audited_at"))
+    current = now or datetime.now(timezone.utc)
+    if audited_at is None:
+        errors.append("audited_at must be a timezone-qualified RFC 3339 timestamp")
+    elif audited_at > current + APPROVAL_CLOCK_SKEW:
+        errors.append("audited_at must not be future-dated")
+    elif audited_at < current - GITHUB_AUDIT_MAX_AGE:
+        errors.append("audit must be no more than 24 hours old")
+
+    if payload.get("passed") is not True:
+        errors.append("passed must be true")
+    controls = payload.get("controls")
+    if not isinstance(controls, list) or len(controls) != len(GITHUB_AUDIT_CONTROL_NAMES):
+        errors.append("controls must contain exactly the 12 required hosted controls")
+        return errors
+    names: list[str] = []
+    controls_valid = True
+    for control in controls:
+        if (
+            not isinstance(control, dict)
+            or set(control) != GITHUB_AUDIT_CONTROL_FIELDS
+            or not isinstance(control.get("name"), str)
+            or control.get("passed") is not True
+            or not _is_real_text(control.get("detail"))
+        ):
+            controls_valid = False
+            continue
+        names.append(control["name"])
+    if (
+        not controls_valid
+        or len(names) != len(controls)
+        or len(set(names)) != len(names)
+        or set(names) != GITHUB_AUDIT_CONTROL_NAMES
+    ):
+        errors.append(
+            "controls must be unique, exact-schema records with every required control passing"
+        )
+    return errors
+
+
+def _decoded_base64(value: Any) -> bytes | None:
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return decoded or None
+
+
+def _sigstore_bundle_binds_content(
+    value: Any,
+    signed_content: bytes,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Validate the canonical structure and embedded digest of a blob bundle."""
+    candidate = _relative_candidate(value, root)
+    if candidate is None or not candidate.name.endswith(".sigstore.json"):
+        return False
+    content = _indexed_bytes(candidate, context)
+    if content is None:
+        return False
+    try:
+        payload = load_json_document(content.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict) or set(payload) != {
+        "mediaType",
+        "verificationMaterial",
+        "messageSignature",
+    }:
+        return False
+    if payload.get("mediaType") != SIGSTORE_BUNDLE_MEDIA_TYPE:
+        return False
+    verification_material = payload.get("verificationMaterial")
+    if not isinstance(verification_material, dict):
+        return False
+    certificate = verification_material.get("certificate")
+    if (
+        not isinstance(certificate, dict)
+        or _decoded_base64(certificate.get("rawBytes")) is None
+    ):
+        return False
+    transparency_entries = verification_material.get("tlogEntries")
+    if not isinstance(transparency_entries, list) or not transparency_entries:
+        return False
+    if not all(
+        isinstance(entry, dict)
+        and _decoded_base64(entry.get("canonicalizedBody")) is not None
+        for entry in transparency_entries
+    ):
+        return False
+    message_signature = payload.get("messageSignature")
+    if not isinstance(message_signature, dict):
+        return False
+    message_digest = message_signature.get("messageDigest")
+    if (
+        not isinstance(message_digest, dict)
+        or message_digest.get("algorithm") != "SHA2_256"
+        or _decoded_base64(message_digest.get("digest"))
+        != hashlib.sha256(signed_content).digest()
+        or _decoded_base64(message_signature.get("signature")) is None
+    ):
+        return False
+    return True
+
+
+def _github_controls_ok(
+    release: dict[str, Any],
+    manifest: dict[str, Any],
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    return not _github_controls_errors(
+        release.get("github_controls"),
+        release.get("source_repository"),
+        release.get("source_repository_id"),
+        release.get("source_revision"),
+        manifest,
+        root,
+        context,
+    )
+
+
+def _spdx_packages(payload: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """Return a validated SPDX 2.3 package map for the readiness profile."""
+    packages = payload.get("packages")
+    if not isinstance(packages, list) or not packages:
+        return None
+    result: dict[str, dict[str, Any]] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            return None
+        identifier = package.get("SPDXID")
+        if (
+            not isinstance(identifier, str)
+            or not SPDX_ID_RE.fullmatch(identifier)
+            or identifier in result
+            or not isinstance(package.get("name"), str)
+            or not package["name"].strip()
+            or not isinstance(package.get("downloadLocation"), str)
+            or not package["downloadLocation"].strip()
+        ):
+            return None
+        files_analyzed = package.get("filesAnalyzed")
+        if files_analyzed is not None and type(files_analyzed) is not bool:
+            return None
+        result[identifier] = package
+    return result
+
+
+def _spdx_sbom_valid(payload: dict[str, Any]) -> bool:
+    """Enforce the SPDX 2.3 document and described-package trust boundary."""
+    creation = payload.get("creationInfo")
+    creators = creation.get("creators") if isinstance(creation, dict) else None
+    created = creation.get("created") if isinstance(creation, dict) else None
+    packages = _spdx_packages(payload)
+    described = payload.get("documentDescribes")
+    return bool(
+        payload.get("spdxVersion") == SPDX_VERSION
+        and payload.get("dataLicense") == "CC0-1.0"
+        and payload.get("SPDXID") == "SPDXRef-DOCUMENT"
+        and isinstance(payload.get("name"), str)
+        and bool(payload["name"].strip())
+        and _is_absolute_uri(payload.get("documentNamespace"), allow_fragment=False)
+        and isinstance(created, str)
+        and SPDX_CREATED_RE.fullmatch(created)
+        and _parse_timestamp(created) is not None
+        and isinstance(creators, list)
+        and bool(creators)
+        and all(
+            isinstance(creator, str) and SPDX_CREATOR_RE.match(creator)
+            for creator in creators
+        )
+        and packages is not None
+        and isinstance(described, list)
+        and bool(described)
+        and all(isinstance(identifier, str) for identifier in described)
+        and len(described) == len(set(described))
+        and all(identifier in packages for identifier in described)
+    )
+
+
+def _cyclonedx_component_valid(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and value.get("type") in CYCLONEDX_COMPONENT_TYPES
+        and isinstance(value.get("name"), str)
+        and bool(value["name"].strip())
+        and (
+            "bom-ref" not in value
+            or (isinstance(value.get("bom-ref"), str) and bool(value["bom-ref"].strip()))
+        )
+    )
+
+
+def _cyclonedx_sbom_valid(payload: dict[str, Any]) -> bool:
+    """Enforce an auditable CycloneDX 1.6/1.7 production SBOM profile."""
+    spec_version = payload.get("specVersion")
+    metadata = payload.get("metadata")
+    components = payload.get("components")
+    schema = payload.get("$schema")
+    expected_schemas = {
+        f"http://cyclonedx.org/schema/bom-{spec_version}.schema.json",
+        f"https://cyclonedx.org/schema/bom-{spec_version}.schema.json",
+    }
+    component_refs = [
+        component.get("bom-ref")
+        for component in components
+        if isinstance(component, dict) and isinstance(component.get("bom-ref"), str)
+    ] if isinstance(components, list) else []
+    return bool(
+        payload.get("bomFormat") == "CycloneDX"
+        and spec_version in SUPPORTED_CYCLONEDX_VERSIONS
+        and schema in expected_schemas
+        and isinstance(payload.get("serialNumber"), str)
+        and CYCLONEDX_SERIAL_RE.fullmatch(payload["serialNumber"])
+        and type(payload.get("version")) is int
+        and payload["version"] >= 1
+        and isinstance(metadata, dict)
+        and _parse_timestamp(metadata.get("timestamp")) is not None
+        and _cyclonedx_component_valid(metadata.get("component"))
+        and isinstance(components, list)
+        and bool(components)
+        and all(_cyclonedx_component_valid(component) for component in components)
+        and len(component_refs) == len(set(component_refs))
     )
 
 
@@ -339,18 +1037,9 @@ def _sbom_payload(
     payload = _structured_json_payload(value, root, context, SBOM_GROUPS)
     if payload is None:
         return None
-    if (
-        isinstance(payload.get("spdxVersion"), str)
-        and SPDX_VERSION_RE.fullmatch(payload["spdxVersion"])
-        and _meaningful_component_list(payload.get("packages"))
-    ):
+    if _spdx_sbom_valid(payload):
         return payload
-    if (
-        payload.get("bomFormat") == "CycloneDX"
-        and isinstance(payload.get("specVersion"), str)
-        and CYCLONEDX_VERSION_RE.fullmatch(payload["specVersion"])
-        and _meaningful_component_list(payload.get("components"))
-    ):
+    if _cyclonedx_sbom_valid(payload):
         return payload
     return None
 
@@ -369,15 +1058,17 @@ def _sbom_binds_name(
     payload = _sbom_payload(value, root, context)
     if payload is None or not _is_real_text(expected_name):
         return False
-    components = payload.get("packages") if "packages" in payload else payload.get("components")
-    if not isinstance(components, list):
-        return False
-    identity_keys = ("name", "SPDXID", "bom-ref", "purl", "group")
-    return any(
-        isinstance(component, dict)
-        and any(component.get(key) == expected_name for key in identity_keys)
-        for component in components
-    )
+    if payload.get("spdxVersion") == SPDX_VERSION:
+        packages = _spdx_packages(payload)
+        described = payload.get("documentDescribes")
+        return bool(
+            packages is not None
+            and isinstance(described, list)
+            and any(packages[identifier].get("name") == expected_name for identifier in described)
+        )
+    metadata = payload.get("metadata")
+    subject = metadata.get("component") if isinstance(metadata, dict) else None
+    return bool(isinstance(subject, dict) and subject.get("name") == expected_name)
 
 
 def _provenance_payload(
@@ -389,10 +1080,40 @@ def _provenance_payload(
     if payload is None:
         return None
     statement_type = payload.get("_type", payload.get("type"))
+    subjects = payload.get("subject")
+    predicate = payload.get("predicate")
+    build_definition = predicate.get("buildDefinition") if isinstance(predicate, dict) else None
+    run_details = predicate.get("runDetails") if isinstance(predicate, dict) else None
+    builder = run_details.get("builder") if isinstance(run_details, dict) else None
+    subject_names: list[str] = []
+    if isinstance(subjects, list):
+        subject_names = [
+            str(subject.get("name"))
+            for subject in subjects
+            if isinstance(subject, dict) and isinstance(subject.get("name"), str)
+        ]
     if not (
-        isinstance(statement_type, str)
-        and IN_TOTO_STATEMENT_RE.fullmatch(statement_type)
-        and _is_real_text(payload.get("predicateType"))
+        statement_type == IN_TOTO_STATEMENT_TYPE
+        and payload.get("predicateType") == SLSA_PROVENANCE_TYPE
+        and isinstance(subjects, list)
+        and bool(subjects)
+        and len(subject_names) == len(subjects)
+        and len(subject_names) == len(set(subject_names))
+        and all(
+            _is_real_text(subject.get("name"))
+            and isinstance(subject.get("digest"), dict)
+            and isinstance(subject["digest"].get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", subject["digest"]["sha256"])
+            for subject in subjects
+            if isinstance(subject, dict)
+        )
+        and isinstance(predicate, dict)
+        and isinstance(build_definition, dict)
+        and _is_absolute_uri(build_definition.get("buildType"))
+        and isinstance(build_definition.get("externalParameters"), dict)
+        and isinstance(run_details, dict)
+        and isinstance(builder, dict)
+        and _is_absolute_uri(builder.get("id"))
     ):
         return None
     return payload
@@ -443,11 +1164,65 @@ def _attestation_subject_bindings(payload: dict[str, Any]) -> set[tuple[str, str
 
 
 def _provenance_binds_digests(payload: dict[str, Any] | None, expected: set[str]) -> bool:
-    return bool(payload) and bool(expected) and expected <= _attestation_subject_digests(payload)
+    if payload is None or not expected:
+        return False
+    return expected <= _attestation_subject_digests(payload)
 
 
 def _provenance_binds_subjects(payload: dict[str, Any] | None, expected: set[tuple[str, str]]) -> bool:
-    return bool(payload) and bool(expected) and expected <= _attestation_subject_bindings(payload)
+    if payload is None or not expected:
+        return False
+    return expected <= _attestation_subject_bindings(payload)
+
+
+def _provenance_binds_source(
+    payload: dict[str, Any] | None,
+    repository: Any,
+    source_revision: Any,
+) -> bool:
+    """Require SLSA resolved dependencies to bind the exact GitHub commit."""
+    if (
+        payload is None
+        or not isinstance(repository, str)
+        or GITHUB_REPOSITORY_RE.fullmatch(repository) is None
+        or not isinstance(source_revision, str)
+        or GITHUB_SOURCE_REVISION_RE.fullmatch(source_revision) is None
+    ):
+        return False
+    predicate = payload.get("predicate")
+    build_definition = (
+        predicate.get("buildDefinition") if isinstance(predicate, dict) else None
+    )
+    dependencies = (
+        build_definition.get("resolvedDependencies")
+        if isinstance(build_definition, dict)
+        else None
+    )
+    if not isinstance(dependencies, list):
+        return False
+    repository_path = repository.casefold()
+    expected_prefixes = (
+        f"https://github.com/{repository_path}",
+        f"https://github.com/{repository_path}.git",
+        f"git+https://github.com/{repository_path}",
+        f"git+https://github.com/{repository_path}.git",
+    )
+    for dependency in dependencies:
+        if not isinstance(dependency, dict) or not isinstance(dependency.get("uri"), str):
+            continue
+        uri = dependency["uri"].casefold()
+        uri_matches = any(
+            uri == prefix or uri.startswith(prefix + "@")
+            for prefix in expected_prefixes
+        )
+        digest = dependency.get("digest")
+        if (
+            uri_matches
+            and isinstance(digest, dict)
+            and digest.get("gitCommit") == source_revision
+        ):
+            return True
+    return False
 
 
 PROVENANCE_GROUPS = (("subject",), ("predicateType", "buildType", "payloadType", "materials"))
@@ -455,17 +1230,10 @@ SBOM_GROUPS = (("spdxVersion", "bomFormat"), ("packages", "components"))
 
 
 def _digest_matches(value: Any, digest: str, root: Path, context: EvidenceContext | None) -> bool:
-    if not _relative_file(value, root, context) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         return False
-    candidate = (root / str(value)).resolve()
-    hasher = hashlib.sha256()
-    try:
-        with candidate.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                hasher.update(chunk)
-    except OSError:
-        return False
-    return f"sha256:{hasher.hexdigest()}" == digest
+    measured = _indexed_measure(_relative_candidate(value, root), context)
+    return measured is not None and measured[0] > 0 and f"sha256:{measured[1]}" == digest
 
 
 def _signed_artifact_ok(
@@ -473,6 +1241,8 @@ def _signed_artifact_ok(
     root: Path,
     context: EvidenceContext | None,
     manifest: dict[str, Any],
+    *,
+    freshness_policy: str = "release",
 ) -> bool:
     """Verify one release or rollback artifact and its detached proof."""
     if not isinstance(value, dict):
@@ -491,7 +1261,13 @@ def _signed_artifact_ok(
         and _sbom_binds_name(value.get("sbom"), str(value.get("name", "")), root, context)
         and _relative_file(value.get("signature"), root, context)
         and value.get("signature_verified") is True
-        and _evidence_record_exists(value.get("signature_verification"), root, context, manifest)
+        and _evidence_record_exists(
+            value.get("signature_verification"),
+            root,
+            context,
+            manifest,
+            freshness_policy=freshness_policy,
+        )
     ):
         return False
     signature_payload = _json_evidence_payload(value.get("signature_verification"), root, context)
@@ -526,7 +1302,13 @@ def _execution_environment_ok(
         or not _sbom_binds_name(value.get("sbom"), str(value.get("name", "")), root, context)
         or not _relative_file(value.get("signature"), root, context)
         or value.get("signature_verified") is not True
-        or not _evidence_record_exists(value.get("signature_verification"), root, context, manifest)
+        or not _evidence_record_exists(
+            value.get("signature_verification"),
+            root,
+            context,
+            manifest,
+            freshness_policy="release",
+        )
     ):
         return False
     verification_payload = _json_evidence_payload(value.get("signature_verification"), root, context)
@@ -537,17 +1319,29 @@ def _execution_environment_ok(
     )
 
 
+def _expected_evidence_index_sha256(manifest: dict[str, Any]) -> str | None:
+    value = manifest.get("evidence_index_digest")
+    if not isinstance(value, str) or not re.fullmatch(
+        r"sha256:[0-9a-f]{64}", value
+    ):
+        return None
+    return value.split(":", 1)[1]
+
+
 def _evidence_context(manifest: dict[str, Any], root: Path, catalog: Catalog) -> EvidenceContext | None:
     index_path = _relative_candidate(manifest.get("evidence_index"), root)
-    if index_path is None:
+    expected_sha256 = _expected_evidence_index_sha256(manifest)
+    if index_path is None or expected_sha256 is None:
         return None
-    report = verify_evidence_index(index_path)
+    report = verify_evidence_index(
+        index_path,
+        expected_sha256=expected_sha256,
+        include_entries=True,
+    )
     if report.get("status") != "pass":
         return None
-    try:
-        index = load_json_document(index_path.read_text(encoding="utf-8"))
-        indexed_files = frozenset(entry["path"] for entry in index["files"] if isinstance(entry, dict) and isinstance(entry.get("path"), str))
-    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError):
+    indexed_files = report.get("_entries")
+    if not isinstance(indexed_files, dict):
         return None
     return index_path.parent.resolve(), indexed_files, catalog
 
@@ -556,7 +1350,12 @@ def _evidence_index_errors(manifest: dict[str, Any], root: Path) -> list[str]:
     index_path = _relative_candidate(manifest.get("evidence_index"), root)
     if index_path is None:
         return ["evidence_index must identify a readable relative SHA-256 index file"]
-    report = verify_evidence_index(index_path)
+    expected_sha256 = _expected_evidence_index_sha256(manifest)
+    if expected_sha256 is None:
+        return [
+            "evidence_index_digest must be a lowercase sha256: digest of the exact index bytes"
+        ]
+    report = verify_evidence_index(index_path, expected_sha256=expected_sha256)
     if report.get("status") == "pass":
         return []
     details = "; ".join(str(error) for error in report.get("errors", []))
@@ -569,15 +1368,33 @@ def _all_pass_with_evidence(
     context: EvidenceContext | None,
     required_names: set[str] | None = None,
     manifest: dict[str, Any] | None = None,
+    freshness_policy: str | None = None,
 ) -> bool:
     if not isinstance(values, list) or not values:
         return False
-    if not all(
-        isinstance(item, dict)
-        and _is_real_text(item.get("name"))
-        and (_evidence_exists(item, root, context) if manifest is None else _evidence_record_exists(item, root, context, manifest))
-        for item in values
-    ):
+    if manifest is None:
+        records_pass = all(
+            isinstance(item, dict)
+            and _is_real_text(item.get("name"))
+            and _evidence_exists(item, root, context)
+            for item in values
+        )
+    elif freshness_policy is None:
+        records_pass = False
+    else:
+        records_pass = all(
+            isinstance(item, dict)
+            and _is_real_text(item.get("name"))
+            and _evidence_record_exists(
+                item,
+                root,
+                context,
+                manifest,
+                freshness_policy=freshness_policy,
+            )
+            for item in values
+        )
+    if not records_pass:
         return False
     names = [str(item["name"]).lower() for item in values]
     evidence_paths = [str(item["evidence"]) for item in values]
@@ -592,8 +1409,21 @@ def _section_pass(value: Any) -> bool:
     return isinstance(value, dict) and value.get("status") == "pass"
 
 
-def _section_evidence_ok(section: Any, root: Path, context: EvidenceContext | None, manifest: dict[str, Any]) -> bool:
-    return _section_pass(section) and _evidence_record_exists(section, root, context, manifest)
+def _section_evidence_ok(
+    section: Any,
+    root: Path,
+    context: EvidenceContext | None,
+    manifest: dict[str, Any],
+    *,
+    section_name: str,
+) -> bool:
+    return _section_pass(section) and _evidence_record_exists(
+        section,
+        root,
+        context,
+        manifest,
+        freshness_policy=section_name,
+    )
 
 
 def _claim_evidence_ok(
@@ -607,7 +1437,16 @@ def _claim_evidence_ok(
     if not isinstance(section, dict):
         return False
     records = [section.get(field) for field in required_fields]
-    if not all(_evidence_record_exists(record, root, context, manifest) for record in records):
+    if not all(
+        _evidence_record_exists(
+            record,
+            root,
+            context,
+            manifest,
+            freshness_policy=f"{section_name}.{field}",
+        )
+        for field, record in zip(required_fields, records)
+    ):
         return False
     evidence_paths = [str(record["evidence"]) for record in records if isinstance(record, dict)]
     names = [str(record["name"]).lower() for record in records if isinstance(record, dict)]
@@ -624,7 +1463,12 @@ def _matching_passing_value(
 ) -> bool:
     left_section = manifest.get(left_section_name)
     right_section = manifest.get(right_section_name)
-    if not (_section_pass(left_section) and _section_pass(right_section)):
+    if not (
+        isinstance(left_section, dict)
+        and isinstance(right_section, dict)
+        and _section_pass(left_section)
+        and _section_pass(right_section)
+    ):
         return True
     left_value = left_section.get(left_field_name)
     right_value = right_section.get(right_field_name)
@@ -669,9 +1513,17 @@ def _on_call_binding_ok(manifest: dict[str, Any]) -> bool:
 
 def _control_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("control")
+    if not isinstance(section, dict):
+        return False
     return bool(
         context is not None
-        and _section_evidence_ok(section, root, context, manifest)
+        and _section_evidence_ok(
+            section,
+            root,
+            context,
+            manifest,
+            section_name="control",
+        )
         and section.get("catalog_validated") is True
         and section.get("ci_green") is True
         and _is_real_text(section.get("change_ticket"))
@@ -681,10 +1533,16 @@ def _control_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
 
 def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("release")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="release",
+    ):
         return False
     provenance_payload = _provenance_payload(
-        section.get("provenance") if isinstance(section, dict) else None,
+        section.get("provenance"),
         root,
         context,
     )
@@ -692,6 +1550,12 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         not _is_real_text(section.get("version"))
         or section.get("provenance_verified") is not True
         or provenance_payload is None
+        or not _provenance_binds_source(
+            provenance_payload,
+            section.get("source_repository"),
+            section.get("source_revision"),
+        )
+        or not _github_controls_ok(section, manifest, root, context)
     ):
         return False
     artifacts = section.get("artifacts")
@@ -709,8 +1573,8 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         release_artifact_proof_paths.update(artifact_paths)
     service = manifest.get("service")
     artifact_names = [str(item.get("name", "")) for item in artifacts if isinstance(item, dict)]
-    artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
-    if len(artifact_names) != len(set(artifact_names)) or len(artifact_paths) != len(set(artifact_paths)):
+    artifact_relative_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
+    if len(artifact_names) != len(set(artifact_names)) or len(artifact_relative_paths) != len(set(artifact_relative_paths)):
         return False
     expected_release_digests = {
         str(item.get("digest", "")) for item in artifacts if isinstance(item, dict)
@@ -720,7 +1584,25 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         for item in artifacts
         if isinstance(item, dict)
     }
+    github_controls = section.get("github_controls")
+    if not isinstance(github_controls, dict):
+        return False
+    github_controls_path = _path_identity(github_controls.get("path"))
+    github_controls_digest = str(github_controls.get("digest", ""))
+    if github_controls_path is None:
+        return False
+    expected_release_digests.add(github_controls_digest)
+    expected_release_subjects.add(
+        (Path(github_controls_path).name, github_controls_digest)
+    )
     all_release_proof_paths = set(release_artifact_proof_paths)
+    github_controls_paths = _github_controls_proof_paths(section.get("github_controls"))
+    if (
+        len(github_controls_paths) != 3
+        or all_release_proof_paths.intersection(github_controls_paths)
+    ):
+        return False
+    all_release_proof_paths.update(github_controls_paths)
     if isinstance(service, dict) and service.get("runtime") == "ansible":
         provider_bundle = section.get("provider_bundle")
         if isinstance(provider_bundle, dict):
@@ -759,7 +1641,13 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         and _signed_artifact_ok(provider_bundle, root, context, manifest)
         and _digest_matches(provider_bundle.get("path"), str(provider_bundle.get("digest", "")), root, context)
         and re.fullmatch(r"sha256:[0-9a-f]{64}", str(provider_bundle.get("remote_digest", "")))
-        and _evidence_record_exists(provider_bundle.get("verification"), root, context, manifest)
+        and _evidence_record_exists(
+            provider_bundle.get("verification"),
+            root,
+            context,
+            manifest,
+            freshness_policy="release.provider_bundle.verification",
+        )
         and isinstance(provider_verification, dict)
         and provider_verification.get("artifact_digest") == provider_bundle.get("digest")
         and provider_verification.get("remote_digest") == provider_bundle.get("remote_digest")
@@ -770,7 +1658,17 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
 
 def _product_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("product_certification")
-    if not _section_evidence_ok(section, root, context, manifest) or context is None:
+    if (
+        not isinstance(section, dict)
+        or not _section_evidence_ok(
+            section,
+            root,
+            context,
+            manifest,
+            section_name="product_certification",
+        )
+        or context is None
+    ):
         return False
     service = manifest.get("service")
     if not isinstance(service, dict):
@@ -793,25 +1691,53 @@ def _product_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         and {str(item).lower() for item in component_coverage if _is_real_text(item)} >= required_components
         and isinstance(section.get("test_matrix"), list)
         and len(section["test_matrix"]) >= 5
-        and _all_pass_with_evidence(section.get("test_matrix"), root, context, {"dependencies", "smoke", "migration", "formats", "api"}, manifest)
+        and _all_pass_with_evidence(
+            section.get("test_matrix"),
+            root,
+            context,
+            {"dependencies", "smoke", "migration", "formats", "api"},
+            manifest,
+            freshness_policy="product_certification.test_matrix",
+        )
     )
 
 
 def _resilience_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("resilience")
+    if not isinstance(section, dict):
+        return False
     return bool(
-        _section_evidence_ok(section, root, context, manifest)
+        _section_evidence_ok(
+            section,
+            root,
+            context,
+            manifest,
+            section_name="resilience",
+        )
         and section.get("quorum_verified") is True
         and section.get("fencing_verified") is True
         and isinstance(section.get("failure_tests"), list)
         and len(section["failure_tests"]) >= 4
-        and _all_pass_with_evidence(section.get("failure_tests"), root, context, {"node", "service", "dependency", "storage"}, manifest)
+        and _all_pass_with_evidence(
+            section.get("failure_tests"),
+            root,
+            context,
+            {"node", "service", "dependency", "storage"},
+            manifest,
+            freshness_policy="resilience.failure_tests",
+        )
     )
 
 
 def _data_protection_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("data_protection")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="data_protection",
+    ):
         return False
     backup = section.get("backup")
     restore = section.get("restore_test")
@@ -820,9 +1746,27 @@ def _data_protection_ok(manifest: dict[str, Any], root: Path, context: EvidenceC
         isinstance(backup, dict)
         and type(backup.get("immutable_copies")) is int
         and backup.get("immutable_copies", 0) >= 2
-        and _evidence_record_exists(backup, root, context, manifest)
-        and _evidence_record_exists(restore, root, context, manifest)
-        and _evidence_record_exists(fixity, root, context, manifest)
+        and _evidence_record_exists(
+            backup,
+            root,
+            context,
+            manifest,
+            freshness_policy="data_protection.backup",
+        )
+        and _evidence_record_exists(
+            restore,
+            root,
+            context,
+            manifest,
+            freshness_policy="data_protection.restore_test",
+        )
+        and _evidence_record_exists(
+            fixity,
+            root,
+            context,
+            manifest,
+            freshness_policy="data_protection.fixity_test",
+        )
         and type(section.get("rpo_minutes")) is int
         and section.get("rpo_minutes", 0) > 0
         and type(section.get("rto_minutes")) is int
@@ -833,33 +1777,69 @@ def _data_protection_ok(manifest: dict[str, Any], root: Path, context: EvidenceC
 
 def _security_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("security")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="security",
+    ):
         return False
     return bool(
         _claim_evidence_ok("security", section, root, context, manifest)
         and section.get("sbom_verified") is True
         and section.get("tls_verified") is True
         and _is_real_text(section.get("secrets_provider"))
-        and _evidence_record_exists(section.get("vulnerability_scan"), root, context, manifest)
-        and _evidence_record_exists(section.get("penetration_test"), root, context, manifest)
+        and _evidence_record_exists(
+            section.get("vulnerability_scan"),
+            root,
+            context,
+            manifest,
+            freshness_policy="security.vulnerability_scan",
+        )
+        and _evidence_record_exists(
+            section.get("penetration_test"),
+            root,
+            context,
+            manifest,
+            freshness_policy="security.penetration_test",
+        )
     )
 
 
 def _observability_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("observability")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="observability",
+    ):
         return False
     return bool(
         _claim_evidence_ok("observability", section, root, context, manifest)
         and all(_is_real_text(section.get(key)) for key in ("metrics", "alerts", "dashboards", "on_call"))
         and _on_call_binding_ok(manifest)
-        and _evidence_record_exists(section.get("alert_delivery_test"), root, context, manifest)
+        and _evidence_record_exists(
+            section.get("alert_delivery_test"),
+            root,
+            context,
+            manifest,
+            freshness_policy="observability.alert_delivery_test",
+        )
     )
 
 
 def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("recovery")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="recovery",
+    ):
         return False
     release = manifest.get("release")
     current_release = release.get("version") if isinstance(release, dict) else None
@@ -871,9 +1851,27 @@ def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
         and re.fullmatch(r"sha256:[0-9a-f]{64}", rollback_digest)
         and isinstance(rollback_artifact, dict)
         and rollback_artifact.get("digest") == rollback_digest
-        and _signed_artifact_ok(rollback_artifact, root, context, manifest)
-        and _evidence_record_exists(section.get("rollback_test"), root, context, manifest)
-        and _evidence_record_exists(section.get("repair_test"), root, context, manifest)
+        and _signed_artifact_ok(
+            rollback_artifact,
+            root,
+            context,
+            manifest,
+            freshness_policy="recovery.rollback_artifact",
+        )
+        and _evidence_record_exists(
+            section.get("rollback_test"),
+            root,
+            context,
+            manifest,
+            freshness_policy="recovery.rollback_test",
+        )
+        and _evidence_record_exists(
+            section.get("repair_test"),
+            root,
+            context,
+            manifest,
+            freshness_policy="recovery.repair_test",
+        )
         and not _artifact_proof_paths(rollback_artifact).intersection(
             _release_proof_paths(release)
         )
@@ -882,25 +1880,51 @@ def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
 
 def _governance_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("governance")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="governance",
+    ):
         return False
     return bool(
         _is_real_text(section.get("change_ticket"))
         and _is_real_text(section.get("approved_by"))
         and _is_real_timestamp(section.get("approved_at"))
+        and _is_real_timestamp(section.get("valid_until"))
+        and not _approval_window_errors(section)
         and section.get("evidence_immutable") is True
         and section.get("evidence_access_logged") is True
         and type(section.get("evidence_retention_days")) is int
         and section.get("evidence_retention_days", 0) > 0
         and _change_control_binding_ok(manifest)
-        and _evidence_record_exists(section.get("retention_control"), root, context, manifest)
-        and _evidence_record_exists(section.get("risk_review"), root, context, manifest)
+        and _evidence_record_exists(
+            section.get("retention_control"),
+            root,
+            context,
+            manifest,
+            freshness_policy="governance.retention_control",
+        )
+        and _evidence_record_exists(
+            section.get("risk_review"),
+            root,
+            context,
+            manifest,
+            freshness_policy="governance.risk_review",
+        )
     )
 
 
 def _support_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("support")
-    if not _section_evidence_ok(section, root, context, manifest):
+    if not isinstance(section, dict) or not _section_evidence_ok(
+        section,
+        root,
+        context,
+        manifest,
+        section_name="support",
+    ):
         return False
     return bool(
         _claim_evidence_ok("support", section, root, context, manifest)
@@ -936,6 +1960,13 @@ CRITERIA: tuple[tuple[str, str, int, Callable[[dict[str, Any], Path, EvidenceCon
 def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     if not isinstance(manifest, dict):
         return ["readiness manifest must contain a JSON object"]
+    shape_errors = _json_shape_errors(
+        manifest,
+        "readiness manifest",
+        max_nodes=MAX_MANIFEST_JSON_NODES,
+    )
+    if shape_errors:
+        return shape_errors
     errors: list[str] = []
     errors.extend(f"missing top-level field '{field}'" for field in sorted(REQUIRED_TOP_LEVEL - set(manifest)))
     if manifest.get("schema_version") != 1:
@@ -980,6 +2011,72 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     release = manifest.get("release", {})
     if isinstance(release, dict) and not _is_real_text(release.get("version")):
         errors.append("release.version must be a non-placeholder pinned release")
+    if isinstance(release, dict) and release.get("status") == "pass":
+        source_repository = release.get("source_repository")
+        source_parts = (
+            source_repository.split("/", maxsplit=1)
+            if isinstance(source_repository, str)
+            else []
+        )
+        if (
+            not isinstance(source_repository, str)
+            or GITHUB_REPOSITORY_RE.fullmatch(source_repository) is None
+            or any(part in {".", ".."} for part in source_parts)
+        ):
+            errors.append(
+                "release.source_repository must identify the GitHub owner/repository"
+            )
+        source_repository_id = release.get("source_repository_id")
+        if (
+            isinstance(source_repository_id, bool)
+            or not isinstance(source_repository_id, int)
+            or source_repository_id <= 0
+        ):
+            errors.append("release.source_repository_id must be a positive GitHub repository ID")
+        if GITHUB_SOURCE_REVISION_RE.fullmatch(
+            str(release.get("source_revision", ""))
+        ) is None:
+            errors.append(
+                "release.source_revision must be a lowercase 40-character commit SHA"
+            )
+        github_controls = release.get("github_controls")
+        if not isinstance(github_controls, dict):
+            errors.append(
+                "release.github_controls must be a signed hosted-control audit reference"
+            )
+        else:
+            if set(github_controls) != GITHUB_AUDIT_REFERENCE_FIELDS:
+                errors.append(
+                    "release.github_controls must contain exactly the signed-audit fields"
+                )
+            report_path = github_controls.get("path")
+            if (
+                not _is_real_text(report_path)
+                or Path(str(report_path)).suffix.lower() != ".json"
+            ):
+                errors.append(
+                    "release.github_controls.path must identify the indexed JSON audit"
+                )
+            if re.fullmatch(
+                r"sha256:[0-9a-f]{64}", str(github_controls.get("digest", ""))
+            ) is None:
+                errors.append(
+                    "release.github_controls.digest must be a SHA-256 digest"
+                )
+            if not _is_real_text(github_controls.get("signature")):
+                errors.append(
+                    "release.github_controls.signature must identify the Sigstore bundle"
+                )
+            if github_controls.get("signature_verified") is not True:
+                errors.append("release.github_controls.signature_verified must be true")
+            signature_verification = github_controls.get("signature_verification")
+            if (
+                not isinstance(signature_verification, dict)
+                or signature_verification.get("status") != "pass"
+            ):
+                errors.append(
+                    "release.github_controls.signature_verification must be passing evidence"
+                )
     control = manifest.get("control")
     if isinstance(control, dict) and control.get("status") == "pass" and not _is_real_text(control.get("change_ticket")):
         errors.append("control.change_ticket must identify the approved change-control record")
@@ -1048,12 +2145,22 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
                 provider_bundle = release.get("provider_bundle")
                 if isinstance(provider_bundle, dict) and str(provider_bundle.get("name", "")) in artifact_names:
                     errors.append("release.provider_bundle.name must be distinct from release.artifacts names")
-    for section_name in sorted(REQUIRED_TOP_LEVEL - {"schema_version", "service", "evidence_index"}):
+    if _expected_evidence_index_sha256(manifest) is None:
+        errors.append(
+            "evidence_index_digest must be a lowercase sha256: digest of the exact index bytes"
+        )
+    for section_name in sorted(
+        REQUIRED_TOP_LEVEL
+        - {"schema_version", "service", "evidence_index", "evidence_index_digest"}
+    ):
         section = manifest.get(section_name)
         if not isinstance(section, dict):
             errors.append(f"{section_name} must be an object")
         elif section.get("status") not in STATUS_VALUES:
             errors.append(f"{section_name}.status must be pass, pending, or fail")
+    governance = manifest.get("governance")
+    if isinstance(governance, dict) and governance.get("status") == "pass":
+        errors.extend(_approval_window_errors(governance))
     for section_name, required_fields in CLAIM_EVIDENCE_FIELDS.items():
         section = manifest.get(section_name)
         if isinstance(section, dict) and section.get("status") == "pass":
@@ -1101,7 +2208,15 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     for key, value in _walk_keys(manifest):
         if key.lower() in {"password", "passwd", "secret", "token", "private_key", "client_secret"}:
             errors.append(f"secret-bearing field '{key}' is not allowed in a readiness manifest")
-        if key.lower() in {"path", "sbom", "signature", "provenance", "evidence", "evidence_index"} and isinstance(value, str):
+        if key.lower() in {
+            "path",
+            "sbom",
+            "signature",
+            "provenance",
+            "evidence",
+            "evidence_index",
+            "github_controls",
+        } and isinstance(value, str):
             path_value = Path(value)
             if (
                 path_value.is_absolute()
@@ -1148,7 +2263,11 @@ def _catalog_coverage_errors(section: Any, solution: dict[str, Any]) -> list[str
     return errors
 
 
-def _evidence_metadata_errors(manifest: dict[str, Any]) -> list[str]:
+def _evidence_metadata_errors(
+    manifest: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> list[str]:
     release = manifest.get("release")
     service = manifest.get("service")
     release_version = release.get("version") if isinstance(release, dict) else None
@@ -1159,6 +2278,7 @@ def _evidence_metadata_errors(manifest: dict[str, Any]) -> list[str]:
     underlying_runtime = service.get("underlying_runtime") if isinstance(service, dict) else None
     os_id = service.get("os_id") if isinstance(service, dict) else None
     environment = service.get("environment") if isinstance(service, dict) else None
+    current = now or datetime.now(timezone.utc)
     errors: list[str] = []
     evidence_references: dict[str, list[str]] = {}
 
@@ -1199,8 +2319,22 @@ def _evidence_metadata_errors(manifest: dict[str, Any]) -> list[str]:
                     )
                 ):
                     errors.append(f"{path}.execution_environment must identify a supported execution environment")
-                if not _is_real_timestamp(value.get("recorded_at")):
+                recorded_at = _parse_timestamp(value.get("recorded_at"))
+                if recorded_at is None:
                     errors.append(f"{path}.recorded_at must be a timezone-qualified RFC 3339 timestamp")
+                elif recorded_at > current + APPROVAL_CLOCK_SKEW:
+                    errors.append(f"{path}.recorded_at must not be future-dated")
+                else:
+                    freshness_limit = _evidence_max_age(path, manifest)
+                    if freshness_limit is None:
+                        errors.append(
+                            f"{path}.recorded_at has no approved evidence freshness policy"
+                        )
+                    elif recorded_at < current - freshness_limit - APPROVAL_CLOCK_SKEW:
+                        errors.append(
+                            f"{path}.recorded_at exceeds the "
+                            f"{_freshness_window_label(freshness_limit)} freshness window"
+                        )
                 if not _is_real_text(value.get("operator")):
                     errors.append(f"{path}.operator must identify the recording operator")
                 if not _is_real_text(value.get("fixture_set")):
@@ -1225,7 +2359,11 @@ def assess_readiness(manifest_path: Path, catalog: Catalog) -> dict[str, Any]:
     try:
         if has_symlink_component(manifest_path) or not manifest_path.is_file():
             raise OSError("readiness manifest must be a regular, non-symlink file")
-        manifest = load_json_document(manifest_path.read_text(encoding="utf-8"))
+        manifest_bytes, _ = _read_stable_bytes(
+            manifest_path,
+            max_bytes=MAX_READINESS_MANIFEST_BYTES,
+        )
+        manifest = load_json_document(manifest_bytes.decode("utf-8", errors="strict"))
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         return {
             "status": "fail",
@@ -1245,7 +2383,23 @@ def assess_readiness(manifest_path: Path, catalog: Catalog) -> dict[str, Any]:
     manifest_data = manifest if isinstance(manifest, dict) else {}
     context = _evidence_context(manifest_data, root, catalog)
     if context is None:
-        errors.extend(_evidence_index_errors(manifest_data, root))
+        for error in _evidence_index_errors(manifest_data, root):
+            if error not in errors:
+                errors.append(error)
+    release_for_controls = manifest_data.get("release")
+    if isinstance(release_for_controls, dict) and release_for_controls.get("status") == "pass":
+        for error in _github_controls_errors(
+            release_for_controls.get("github_controls"),
+            release_for_controls.get("source_repository"),
+            release_for_controls.get("source_repository_id"),
+            release_for_controls.get("source_revision"),
+            manifest_data,
+            root,
+            context,
+        ):
+            message = f"release.github_controls {error}"
+            if message not in errors:
+                errors.append(message)
     criteria: list[dict[str, Any]] = []
     score = 0
     for code, label, points, check in CRITERIA:

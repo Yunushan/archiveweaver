@@ -7,21 +7,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - name: Install contract validation dependency
-        run: python -m pip install --disable-pip-version-check --no-input PyYAML==6.0.2
+        run: python -m pip install --disable-pip-version-check --no-input PyYAML==6.0.3
       - name: Generate catalog
         run: python scripts/generate_catalog.py
       - name: Reject generated-artifact drift
@@ -32,32 +39,117 @@ jobs:
         run: make test
 
   yaml-and-shell:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install pinned YAML parser
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --only-binary=:all: PyYAML==6.0.3
+      - name: Strictly parse repository YAML
+        run: python scripts/validate-yaml.py
       - name: Shell syntax
         run: bash -n scripts/*.sh tests/*.sh
       - name: Operational runner behavior
         run: bash tests/test-operational-runner.sh
       - name: Execution-environment builder policy
         run: bash tests/test-execution-environment.sh
-      - name: Check YAML availability
+      - name: Compile Python validation tooling
         run: python -m compileall -q src scripts tests
 
+  python-quality:
+    name: Python lint and types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install hash-locked quality tooling
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --require-hashes --only-binary=:all:
+          -r requirements/release-tools.txt
+      - name: Enforce Python quality gates
+        run: make quality
+      - name: Enforce branch-aware test coverage
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m coverage run -m unittest discover -s tests
+          python -m coverage report
+
   ansible:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - name: Install pinned Ansible controller
-        run: python -m pip install -r deploy/ansible/requirements.txt
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --require-hashes --only-binary=:all:
+          -r deploy/ansible/requirements.txt
       - name: Validate Ansible playbooks
         run: bash scripts/validate-ansible.sh
+
+  distribution:
+    name: Built distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Bind package timestamps to the source commit
+        run: |
+          build_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          if [[ ! "${build_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "source commit timestamp is not a Unix epoch" >&2
+            exit 1
+          fi
+          echo "SOURCE_DATE_EPOCH=${build_epoch}" >> "${GITHUB_ENV}"
+      - name: Install the hash-locked distribution toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --require-hashes --only-binary=:all:
+          -r requirements/release-tools.txt
+      - name: Build distributions from the pinned backend
+        run: |
+          python -m build --no-isolation
+          python scripts/normalize-sdist.py dist/*.tar.gz
+          python scripts/normalize-sdist.py --check dist/*.tar.gz
+          python -m build --no-isolation --outdir dist-reproducibility
+          python scripts/normalize-sdist.py dist-reproducibility/*.tar.gz
+          cmp dist/*.whl dist-reproducibility/*.whl
+          cmp dist/*.tar.gz dist-reproducibility/*.tar.gz
+      - name: Test only the installed wheel and operational bundle
+        run: |
+          python -m pip install --disable-pip-version-check --no-input --no-deps --force-reinstall dist/*.whl
+          python scripts/validate-installed-distribution.py
+      - name: Rebuild and test the source distribution
+        run: |
+          python -m pip install --disable-pip-version-check --no-input --no-build-isolation --no-deps --force-reinstall dist/*.tar.gz
+          python scripts/validate-installed-distribution.py
 

@@ -167,9 +167,11 @@
       - name: evidence-publish
         command: "{{ archiveweaver_evidence_publish_command }}"
         sha256: "{{ archiveweaver_evidence_publish_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_evidence_publish_command_argv_sha256 }}"
       - name: evidence-verify
         command: "{{ archiveweaver_evidence_verify_command }}"
         sha256: "{{ archiveweaver_evidence_verify_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_evidence_verify_command_argv_sha256 }}"
   when: archiveweaver_evidence_publication_active | bool
   run_once: true
   no_log: true

@@ -89,9 +89,11 @@
       - name: restore
         command: "{{ archiveweaver_restore_command }}"
         sha256: "{{ archiveweaver_restore_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_restore_command_argv_sha256 }}"
       - name: fixity
         command: "{{ archiveweaver_fixity_command }}"
         sha256: "{{ archiveweaver_fixity_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_fixity_command_argv_sha256 }}"
   when: archiveweaver_restore_apply | bool
   no_log: true
   tags: [restore, fixity]
@@ -150,6 +152,10 @@
   ansible.builtin.set_fact:
     archiveweaver_restore_evidence:
       name: "restore-drill-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      evidence: >-
+        {{ archiveweaver_restore_evidence_dir
+           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', '')
+           ~ '/' ~ (inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '.json' }}
       host: "{{ inventory_hostname }}"
       solution: "{{ archiveweaver_solution_id }}"
       runtime: ansible
@@ -223,6 +229,49 @@
   delegate_to: localhost
   become: false
   no_log: true
+  tags: [restore, fixity]
+
+- name: Write independent restore and fixity evidence on the controller
+  ansible.builtin.copy:
+    dest: >-
+      {{ archiveweaver_restore_evidence_dir }}/{{ item.name }}-{{ inventory_hostname
+         | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json
+    content: >-
+      {{ {
+        'name': item.name,
+        'status': 'pass' if (item.returncode | int) == 0 else 'fail',
+        'evidence': (archiveweaver_restore_evidence_dir
+          | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', ''))
+          ~ '/' ~ item.name ~ '-'
+          ~ (inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '.json',
+        'host': inventory_hostname,
+        'solution': archiveweaver_solution_id,
+        'runtime': 'ansible',
+        'underlying_runtime': archiveweaver_runtime,
+        'os_id': archiveweaver_os_id,
+        'release': archiveweaver_release,
+        'environment': archiveweaver_evidence_environment,
+        'execution_environment': archiveweaver_restore_environment,
+        'execution_environment_digest': archiveweaver_execution_environment_digest,
+        'recorded_at': ansible_date_time.iso8601,
+        'operator': archiveweaver_operator,
+        'fixture_set': archiveweaver_fixture_set,
+        'change_id': archiveweaver_restore_change_id,
+        'source_configured': archiveweaver_restore_source | length > 0,
+        'returncode': item.returncode | int
+      } | to_nice_json }}
+    mode: '0600'
+  loop:
+    - name: restore
+      returncode: "{{ archiveweaver_restore_result.rc | default(-1) | int }}"
+    - name: fixity
+      returncode: "{{ archiveweaver_restore_fixity_result.rc | default(-1) | int }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: archiveweaver_restore_apply | bool
   tags: [restore, fixity]
 
 - name: Attest completed restore and fixity drill

@@ -1,10 +1,10 @@
 # Upstream sources
 
-Links below are maintained as catalog facts and should be rechecked when a product release is pinned. GitHub is not the canonical forge for every product; Maarch, Mayan EDMS, Asalae, and SeedDMS use other official channels.
+Links below are maintained as catalog facts and should be rechecked when a product release is pinned. GitHub is not the canonical forge for every product; Asalae, Maarch Courrier, Maarch RM, Mayan EDMS, and SeedDMS use other official channels.
 
 | Product | Upstream / project page | Canonical source | Official docs | Homepage |
 | --- | --- | --- | --- | --- |
-| InvenioRDM | https://github.com/inveniosoftware/invenio-rdm | https://github.com/inveniosoftware/invenio-rdm | https://inveniordm.docs.cern.ch/install/ | https://inveniosoftware.org/products/rdm/ |
+| InvenioRDM | https://github.com/inveniosoftware/invenio-app-rdm | https://github.com/inveniosoftware/invenio-app-rdm | https://inveniordm.docs.cern.ch/install/ | https://inveniosoftware.org/products/rdm/ |
 | DSpace | https://github.com/DSpace/DSpace | https://github.com/DSpace/DSpace | https://wiki.lyrasis.org/display/DSDOC10x/Installing+DSpace | https://dspace.org/ |
 | Archivematica | https://github.com/artefactual/archivematica | https://github.com/artefactual/archivematica | https://www.archivematica.org/en/docs/archivematica-latest/admin-manual/installation-setup/ | https://www.archivematica.org/ |
 | Dataverse | https://github.com/IQSS/dataverse | https://github.com/IQSS/dataverse | https://guides.dataverse.org/en/latest/installation/ | https://dataverse.org/ |

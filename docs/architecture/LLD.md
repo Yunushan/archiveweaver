@@ -122,7 +122,7 @@ Pacemaker recovery is blocked unless `--allow-fencing-actions` is explicitly sup
 
 ## 6. Rendering contract
 
-`archiveweaver render` produces an envelope, not a complete application chart. It accepts a pinned image with `--image` or a catalog image hint. Floating `:latest` tags are blocked by default.
+`archiveweaver render` produces an envelope, not a complete application chart. Production rendering accepts only an OCI SHA-256 digest through `--image`; mutable tags and untagged references require the explicit non-production `--allow-floating` exception.
 
 ```bash
 PYTHONPATH=src python3 -m archiveweaver render \

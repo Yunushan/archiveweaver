@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import copy
+import hashlib
+import hmac
+import json
 import os
 import re
+import secrets
 import subprocess
+from importlib.metadata import PackageNotFoundError, distribution
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +19,53 @@ from .path_utils import has_symlink_component
 
 _SAFE_TARGET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$")
 _SAFE_KUBERNETES_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?$")
+_PLAN_AUTHORITY = object()
+_PLAN_SEAL_KEY = secrets.token_bytes(32)
+
+
+def _canonical_plan_bytes(value: dict[str, Any]) -> bytes:
+    """Serialize a generated plan with one deterministic, finite meaning."""
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("repair plan contains unsupported values") from exc
+
+
+class _SealedRepairPlan(dict[str, Any]):
+    """A generated plan whose nested content cannot be changed before apply."""
+
+    def __init__(self, value: dict[str, Any], authority: object) -> None:
+        if authority is not _PLAN_AUTHORITY:
+            raise ValueError("repair plans can only be sealed by the plan builder")
+        super().__init__(value)
+        self._seal = hmac.new(
+            _PLAN_SEAL_KEY,
+            _canonical_plan_bytes(value),
+            hashlib.sha256,
+        ).digest()
+
+    def verified_snapshot(self) -> dict[str, Any] | None:
+        """Copy and authenticate the exact plan that execution will consume."""
+        try:
+            snapshot = copy.deepcopy(dict(self))
+            actual = hmac.new(
+                _PLAN_SEAL_KEY,
+                _canonical_plan_bytes(snapshot),
+                hashlib.sha256,
+            ).digest()
+        except (RecursionError, TypeError, ValueError):
+            return None
+        return snapshot if hmac.compare_digest(actual, self._seal) else None
+
+
+def _seal_repair_plan(value: dict[str, Any]) -> dict[str, Any]:
+    return _SealedRepairPlan(value, _PLAN_AUTHORITY)
 
 
 def _safe_relative_controller_path(value: str) -> bool:
@@ -42,18 +95,49 @@ def _safe_absolute_controller_path(value: str) -> bool:
     )
 
 
+def _usable_ansible_root(candidate: Path) -> bool:
+    """Accept only a complete Ansible bundle with no symlinked trust boundary."""
+    config = candidate / "ansible.cfg"
+    roles = candidate / "roles"
+    repair_playbook = candidate / "repair.yml"
+    return bool(
+        candidate.is_dir()
+        and not has_symlink_component(candidate)
+        and config.is_file()
+        and not config.is_symlink()
+        and roles.is_dir()
+        and not roles.is_symlink()
+        and repair_playbook.is_file()
+        and not repair_playbook.is_symlink()
+    )
+
+
 def _find_ansible_root() -> Path:
     """Locate the repository Ansible bundle without following cwd symlinks."""
     cwd = Path(os.path.abspath(os.fspath(Path.cwd())))
     for base in (cwd, *cwd.parents):
         candidate = base / "deploy" / "ansible"
-        if candidate.is_dir():
+        if _usable_ansible_root(candidate):
             return candidate
 
     package_root = Path(__file__).resolve().parents[2]
     candidate = package_root / "deploy" / "ansible"
-    if candidate.is_dir():
+    if _usable_ansible_root(candidate):
         return candidate
+    try:
+        installed = distribution("archiveweaver")
+    except PackageNotFoundError:
+        installed = None
+    if installed is not None:
+        for installed_file in installed.files or ():
+            normalized = installed_file.as_posix()
+            if not normalized.endswith(
+                "share/archiveweaver/deploy/ansible/ansible.cfg"
+            ):
+                continue
+            candidate = Path(str(installed.locate_file(installed_file))).parent
+            if _usable_ansible_root(candidate):
+                return candidate.resolve()
     raise ValueError("could not locate the repository Ansible bundle")
 
 
@@ -331,7 +415,7 @@ def build_repair_plan(
             RepairAction("verify-rollout", ["kubectl", "-n", namespace, "rollout", "status", f"deployment/{target_deployment}"], "read-only", "Wait for the rollout to complete."),
         ])
 
-    return {
+    return _seal_repair_plan({
         "solution": solution_id,
         "solution_name": solution["name"],
         "mode": mode,
@@ -343,14 +427,27 @@ def build_repair_plan(
             "No action removes volumes, deletes files, bypasses authentication, or disables fencing.",
             "Review backup, fixity, quorum, and application logs before applying a recovery action.",
         ],
-    }
+    })
 
 
 def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
     if plan.get("status") != "ready":
         return {"status": "blocked", "results": [], "blockers": plan.get("blockers", ["repair plan is not ready"])}
+    if not isinstance(plan, _SealedRepairPlan):
+        return {
+            "status": "blocked",
+            "results": [],
+            "blockers": ["repair plan was not produced by the trusted plan builder"],
+        }
+    execution_plan = plan.verified_snapshot()
+    if execution_plan is None:
+        return {
+            "status": "blocked",
+            "results": [],
+            "blockers": ["repair plan changed after it was reviewed"],
+        }
     results: list[dict[str, Any]] = []
-    for item in plan["actions"]:
+    for item in execution_plan["actions"]:
         command = item["command"]
         if dry_run:
             results.append({"name": item["name"], "status": "planned", "command": command})
@@ -358,8 +455,8 @@ def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, An
         try:
             run_options: dict[str, Any] = {
                 "check": False,
-                "capture_output": True,
-                "text": True,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
                 "timeout": 120,
             }
             if isinstance(item.get("environment"), dict):
@@ -380,5 +477,5 @@ def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, An
             results.append({"name": item["name"], "status": "fail", "output_redacted": True, "command": command})
             break
     failures = [result for result in results if result["status"] == "fail"]
-    return {"status": "fail" if failures else ("planned" if dry_run else "pass"), "results": results, "safety": plan.get("safety", [])}
+    return {"status": "fail" if failures else ("planned" if dry_run else "pass"), "results": results, "safety": execution_plan.get("safety", [])}
 

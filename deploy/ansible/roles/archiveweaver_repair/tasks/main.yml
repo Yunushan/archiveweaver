@@ -229,6 +229,10 @@
   ansible.builtin.set_fact:
     archiveweaver_repair_evidence:
       name: "repair-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      evidence: >-
+        {{ archiveweaver_evidence_dir
+           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', '')
+           ~ '/repair-' ~ (inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '.json' }}
       host: "{{ inventory_hostname }}"
       solution: "{{ archiveweaver_solution_id }}"
       runtime: ansible

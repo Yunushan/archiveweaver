@@ -1,0 +1,7 @@
+name: ArchiveWeaver production-code analysis
+
+# Test fixtures intentionally model manifest fields such as secrets_provider.
+# Scan production and release tooling while keeping synthetic fixture data out
+# of data-flow findings.
+paths-ignore:
+  - tests

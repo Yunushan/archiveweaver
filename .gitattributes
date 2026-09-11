@@ -1,0 +1,12 @@
+# ArchiveWeaver's operational targets are POSIX/Linux. Keep executable,
+# configuration, and generated artifacts byte-stable across contributor hosts.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.whl binary
+*.gz binary

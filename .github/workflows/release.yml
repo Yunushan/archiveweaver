@@ -6,15 +6,19 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  id-token: write
-  attestations: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  package:
-    name: Build, inventory, and attest release artifacts
-    runs-on: ubuntu-latest
+  validate:
+    name: Validate release candidate without publish credentials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -22,6 +26,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+      - name: Bind package timestamps to the source commit
+        run: |
+          build_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          if [[ ! "${build_epoch}" =~ ^[0-9]+$ ]]; then
+            echo "source commit timestamp is not a Unix epoch" >&2
+            exit 1
+          fi
+          echo "SOURCE_DATE_EPOCH=${build_epoch}" >> "${GITHUB_ENV}"
       - name: Require release tag to match package version
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -38,36 +50,553 @@ jobs:
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} does not match package version {expected!r}")
           PY
-      - name: Install pinned build tooling
-        run: python -m pip install --disable-pip-version-check --no-input build==1.3.0
-      - name: Build package artifacts
-        run: python -m build
-      - name: Validate the built package metadata
+      - name: Require a verified annotated release tag bound to this commit
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python -m pip install --disable-pip-version-check --no-input --no-deps dist/*.whl
-          python -m archiveweaver validate-catalog --json
-      - name: Generate SPDX SBOM
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.type')"
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
+          if [[ "${tag_type}" != "tag" ]]; then
+            echo "release tags must be signed annotated tags, not lightweight tags" >&2
+            exit 1
+          fi
+          verified="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.verification.verified')"
+          target_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')"
+          if [[ "${verified}" != "true" || "${target_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "release tag signature is unverified or does not bind the workflow commit" >&2
+            exit 1
+          fi
+      - name: Install hash-locked release validation tooling
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --require-hashes --only-binary=:all:
+          -r requirements/release-tools.txt
+      - name: Install hash-locked Ansible controller
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          --require-hashes --only-binary=:all:
+          -r deploy/ansible/requirements.txt
+      - name: Run release correctness and policy gates
+        env:
+          PYTHONPATH: src
+        run: |
+          make test
+          make quality
+          python -m coverage run -m unittest discover -s tests
+          python -m coverage report
+          bandit --quiet --recursive src scripts --severity-level medium --confidence-level medium
+          pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict
+          pip-audit --no-deps --disable-pip -r requirements/release-tools.txt --strict
+          bash scripts/validate-ansible.sh
+      - name: Build package artifacts
+        run: |
+          python -m build --no-isolation
+          python scripts/normalize-sdist.py dist/*.tar.gz
+          python scripts/normalize-sdist.py --check dist/*.tar.gz
+          python -m build --no-isolation --outdir dist-reproducibility
+          python scripts/normalize-sdist.py dist-reproducibility/*.tar.gz
+          cmp dist/*.whl dist-reproducibility/*.whl
+          cmp dist/*.tar.gz dist-reproducibility/*.tar.gz
+      - name: Validate wheel and source distribution independently
+        run: |
+          python -m pip install --disable-pip-version-check --no-input --no-deps --force-reinstall dist/*.whl
+          python scripts/validate-installed-distribution.py
+          python -m pip install --disable-pip-version-check --no-input --no-build-isolation --no-deps --force-reinstall dist/*.tar.gz
+          python scripts/validate-installed-distribution.py
+      - name: Inventory the validated distributions
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: dist
           format: spdx-json
           output-file: archiveweaver.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate the locked Ansible controller SBOM
+        run: |
+          python scripts/generate-ansible-sbom.py
+          python scripts/generate-ansible-sbom.py --check
+      - name: Validate both release SBOMs against SPDX 2.3
+        run: |
+          python -m spdx_tools.spdx.clitools.pyspdxtools \
+            -i archiveweaver.spdx.json
+          python -m spdx_tools.spdx.clitools.pyspdxtools \
+            -i archiveweaver-ansible-controller.spdx.json
+      - name: Transfer validated distributions to the privileged job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archiveweaver-validated-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Transfer validated release SBOMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archiveweaver-validated-sboms
+          path: |
+            archiveweaver.spdx.json
+            archiveweaver-ansible-controller.spdx.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Transfer the reviewed release publisher
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archiveweaver-validated-release-publisher
+          path: |
+            scripts/audit-github-production-controls.py
+            scripts/publish-github-release.py
+            scripts/verify-release-actors.py
+          if-no-files-found: error
+          retention-days: 1
+
+  execution-environment:
+    name: Build and validate the Ansible execution environment
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+    env:
+      ANSIBLE_EE_BASE_IMAGE: ${{ vars.ARCHIVEWEAVER_ANSIBLE_EE_BASE_IMAGE }}
+      ANSIBLE_EE_LOCAL_TAG: archiveweaver-ee:${{ github.ref_name }}
+      ARCHIVEWEAVER_RELEASE_ACTORS_JSON: ${{ vars.ARCHIVEWEAVER_RELEASE_ACTORS_JSON }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Require an environment-approved release initiator
+        env:
+          ARCHIVEWEAVER_RELEASE_ACTOR: ${{ github.actor }}
+          ARCHIVEWEAVER_RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: python3 scripts/verify-release-actors.py
+      - name: Require the environment-approved immutable base image
+        run: |
+          if [[ ! "${ANSIBLE_EE_BASE_IMAGE}" =~ ^[a-z0-9]+([.-][a-z0-9]+)*(:[0-9]{1,5})?(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "release environment variable ARCHIVEWEAVER_ANSIBLE_EE_BASE_IMAGE must contain an approved OCI digest reference" >&2
+            exit 1
+          fi
+      - name: Build and functionally validate the controller image
+        run: >-
+          bash scripts/build-ansible-execution-environment.sh
+          --engine docker
+          --base-image "${ANSIBLE_EE_BASE_IMAGE}"
+          --tag "${ANSIBLE_EE_LOCAL_TAG}"
+          --source-revision "${GITHUB_SHA}"
+      - name: Scan the validated controller image
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ${{ env.ANSIBLE_EE_LOCAL_TAG }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: archiveweaver-ee.grype.json
+      - name: Generate the controller-image SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.ANSIBLE_EE_LOCAL_TAG }}
+          format: spdx-json
+          output-file: archiveweaver-ee.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Validate the controller-image SBOM against SPDX 2.3
+        run: |
+          python -m pip install --disable-pip-version-check --no-input \
+            --require-hashes --only-binary=:all: \
+            -r requirements/release-tools.txt
+          python -m spdx_tools.spdx.clitools.pyspdxtools \
+            -i archiveweaver-ee.spdx.json
+      - name: Record the validated image inputs
+        run: |
+          set -euo pipefail
+          image_id="$(docker image inspect --format '{{.Id}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          image_user="$(docker image inspect --format '{{.Config.User}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          image_working_directory="$(docker image inspect --format '{{.Config.WorkingDir}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          image_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          image_command="$(docker image inspect --format '{{json .Config.Cmd}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          execution_environment_marker="$(docker image inspect --format '{{ index .Config.Labels "ansible-execution-environment" }}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          if [[ ! "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "validated image did not expose an immutable local image ID" >&2
+            exit 1
+          fi
+          if [[ "${image_user}" != "65532:65532" ||
+                "${image_working_directory}" != "/runner" ||
+                "${image_entrypoint}" != '["dumb-init","--"]' ||
+                "${image_command}" != '["bash"]' ||
+                "${execution_environment_marker}" != "true" ]]; then
+            echo "validated image runtime defaults do not match the reviewed Ansible execution-environment contract" >&2
+            exit 1
+          fi
+          export IMAGE_ID="${image_id}"
+          export IMAGE_USER="${image_user}"
+          export IMAGE_WORKING_DIRECTORY="${image_working_directory}"
+          export IMAGE_ENTRYPOINT="${image_entrypoint}"
+          export IMAGE_COMMAND="${image_command}"
+          export EXECUTION_ENVIRONMENT_MARKER="${execution_environment_marker}"
+          python - <<'PY'
+          import json
+          import os
+
+          metadata = {
+              "schema_version": 2,
+              "base_image": os.environ["ANSIBLE_EE_BASE_IMAGE"],
+              "execution_environment_marker": os.environ["EXECUTION_ENVIRONMENT_MARKER"],
+              "local_image_id": os.environ["IMAGE_ID"],
+              "release_tag": os.environ["GITHUB_REF_NAME"],
+              "runtime": {
+                  "command": json.loads(os.environ["IMAGE_COMMAND"]),
+                  "entrypoint": json.loads(os.environ["IMAGE_ENTRYPOINT"]),
+                  "user": os.environ["IMAGE_USER"],
+                  "working_directory": os.environ["IMAGE_WORKING_DIRECTORY"],
+              },
+              "source_revision": os.environ["GITHUB_SHA"],
+          }
+          with open("archiveweaver-ee.metadata.json", "w", encoding="utf-8", newline="\n") as stream:
+              json.dump(metadata, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
+      - name: Export the validated image for the credentialed publication job
+        run: |
+          set -euo pipefail
+          docker image save "${ANSIBLE_EE_LOCAL_TAG}" | gzip -n -9 > archiveweaver-ee.tar.gz
+      - name: Transfer the validated controller image and evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archiveweaver-validated-execution-environment
+          path: |
+            archiveweaver-ee.tar.gz
+            archiveweaver-ee.metadata.json
+            archiveweaver-ee.spdx.json
+            archiveweaver-ee.grype.json
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: Inventory, attest, and publish the validated release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [validate, execution-environment]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+      packages: write
+    env:
+      ANSIBLE_EE_BASE_IMAGE: ${{ vars.ARCHIVEWEAVER_ANSIBLE_EE_BASE_IMAGE }}
+      ARCHIVEWEAVER_RELEASE_ACTORS_JSON: ${{ vars.ARCHIVEWEAVER_RELEASE_ACTORS_JSON }}
+    steps:
+      - name: Download the reviewed release authorization helpers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: archiveweaver-validated-release-publisher
+          path: .release-publisher
+          digest-mismatch: error
+      - name: Require the approved tag-push and rerun actors
+        env:
+          ARCHIVEWEAVER_RELEASE_ACTOR: ${{ github.actor }}
+          ARCHIVEWEAVER_RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: python3 .release-publisher/verify-release-actors.py
+      - name: Require all hosted production controls immediately before publication
+        env:
+          GH_TOKEN: ${{ secrets.ARCHIVEWEAVER_RELEASE_SETTINGS_TOKEN }}
+        run: >-
+          python3 .release-publisher/audit-github-production-controls.py
+          --repository "${GITHUB_REPOSITORY}"
+          --source-revision "${GITHUB_SHA}"
+          --json > github-production-controls.json
+      - name: Download validated distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: archiveweaver-validated-distributions
+          path: dist
+          digest-mismatch: error
+      - name: Download validated release SBOMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: archiveweaver-validated-sboms
+          path: .
+          digest-mismatch: error
+      - name: Download the validated controller image and evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: archiveweaver-validated-execution-environment
+          path: .
+          digest-mismatch: error
+      - name: Record distribution and SBOM checksums
+        run: >-
+          LC_ALL=C sha256sum dist/* archiveweaver.spdx.json
+          archiveweaver-ansible-controller.spdx.json
+          archiveweaver-ee.metadata.json archiveweaver-ee.spdx.json
+          archiveweaver-ee.grype.json github-production-controls.json > SHA256SUMS
       - name: Sign and verify package artifacts
         uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
         with:
-          inputs: dist/*
+          inputs: |
+            dist/*
+            archiveweaver.spdx.json
+            archiveweaver-ansible-controller.spdx.json
+            archiveweaver-ee.metadata.json
+            archiveweaver-ee.spdx.json
+            archiveweaver-ee.grype.json
+            github-production-controls.json
+            SHA256SUMS
           verify: true
           verify-cert-identity: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
           verify-oidc-issuer: https://token.actions.githubusercontent.com
-      - name: Upload release artifacts and SBOM
+      - name: Attest package provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*
+            archiveweaver.spdx.json
+            archiveweaver-ansible-controller.spdx.json
+            archiveweaver-ee.metadata.json
+            archiveweaver-ee.spdx.json
+            archiveweaver-ee.grype.json
+            github-production-controls.json
+            SHA256SUMS
+      - name: Load and verify the transferred controller image
+        env:
+          ANSIBLE_EE_LOCAL_TAG: archiveweaver-ee:${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for command_name in docker gzip jq mktemp python3 sed; do
+            command -v "${command_name}" >/dev/null || {
+              echo "required release-runner command is unavailable: ${command_name}" >&2
+              exit 1
+            }
+          done
+          docker buildx version >/dev/null
+          gzip -dc archiveweaver-ee.tar.gz | docker image load
+          jq -e '
+            type == "object" and
+            keys == ["base_image", "execution_environment_marker", "local_image_id", "release_tag", "runtime", "schema_version", "source_revision"] and
+            .schema_version == 2 and
+            .execution_environment_marker == "true" and
+            (.runtime | type == "object") and
+            (.runtime | keys == ["command", "entrypoint", "user", "working_directory"]) and
+            .runtime.command == ["bash"] and
+            .runtime.entrypoint == ["dumb-init", "--"] and
+            .runtime.user == "65532:65532" and
+            .runtime.working_directory == "/runner"
+          ' archiveweaver-ee.metadata.json >/dev/null
+          expected_id="$(jq -er '.local_image_id' archiveweaver-ee.metadata.json)"
+          expected_base="$(jq -er '.base_image' archiveweaver-ee.metadata.json)"
+          expected_marker="$(jq -er '.execution_environment_marker' archiveweaver-ee.metadata.json)"
+          expected_release="$(jq -er '.release_tag' archiveweaver-ee.metadata.json)"
+          expected_revision="$(jq -er '.source_revision' archiveweaver-ee.metadata.json)"
+          expected_user="$(jq -er '.runtime.user' archiveweaver-ee.metadata.json)"
+          expected_working_directory="$(jq -er '.runtime.working_directory' archiveweaver-ee.metadata.json)"
+          expected_entrypoint="$(jq -cer '.runtime.entrypoint' archiveweaver-ee.metadata.json)"
+          expected_command="$(jq -cer '.runtime.command' archiveweaver-ee.metadata.json)"
+          actual_id="$(docker image inspect --format '{{.Id}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          base_image="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.base.name" }}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          actual_marker="$(docker image inspect --format '{{ index .Config.Labels "ansible-execution-environment" }}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          actual_user="$(docker image inspect --format '{{.Config.User}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          actual_working_directory="$(docker image inspect --format '{{.Config.WorkingDir}}' "${ANSIBLE_EE_LOCAL_TAG}")"
+          actual_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' "${ANSIBLE_EE_LOCAL_TAG}" | jq -cer '.')"
+          actual_command="$(docker image inspect --format '{{json .Config.Cmd}}' "${ANSIBLE_EE_LOCAL_TAG}" | jq -cer '.')"
+          if [[ ! "${expected_id}" =~ ^sha256:[0-9a-f]{64}$ ||
+                "${actual_id}" != "${expected_id}" ||
+                "${expected_base}" != "${ANSIBLE_EE_BASE_IMAGE}" ||
+                "${base_image}" != "${expected_base}" ||
+                "${expected_marker}" != "true" ||
+                "${actual_marker}" != "${expected_marker}" ||
+                "${expected_release}" != "${GITHUB_REF_NAME}" ||
+                "${version}" != "${expected_release}" ||
+                "${expected_revision}" != "${GITHUB_SHA}" ||
+                "${revision}" != "${expected_revision}" ||
+                "${expected_user}" != "65532:65532" ||
+                "${actual_user}" != "${expected_user}" ||
+                "${expected_working_directory}" != "/runner" ||
+                "${actual_working_directory}" != "${expected_working_directory}" ||
+                "${expected_entrypoint}" != '["dumb-init","--"]' ||
+                "${actual_entrypoint}" != "${expected_entrypoint}" ||
+                "${expected_command}" != '["bash"]' ||
+                "${actual_command}" != "${expected_command}" ]]; then
+            echo "transferred controller image identity does not match its validated metadata" >&2
+            exit 1
+          fi
+          docker run --rm "${ANSIBLE_EE_LOCAL_TAG}" \
+            python3 -c 'import grp,os,pwd; user=pwd.getpwuid(os.getuid()); group=grp.getgrgid(os.getgid()); errors=[]; errors += [] if (os.getuid(),os.getgid()) == (65532,65532) else ["unexpected runtime uid/gid"]; errors += [] if user.pw_name == "archiveweaver" and user.pw_dir == "/runner" else ["invalid passwd identity"]; errors += [] if group.gr_name == "archiveweaver" else ["invalid group identity"]; errors += [] if os.environ.get("HOME") == "/runner" and os.environ.get("USER") == "archiveweaver" and os.environ.get("LOGNAME") == "archiveweaver" and os.getcwd() == "/runner" else ["invalid runtime environment"]; raise SystemExit("; ".join(errors) if errors else 0)'
+      - name: Authenticate to the GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the immutable controller image
+        id: publish-ee
+        env:
+          ANSIBLE_EE_LOCAL_TAG: archiveweaver-ee:${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}/archiveweaver-ee"
+          release_reference="${image_name}:${GITHUB_REF_NAME}"
+          local_image_id="$(jq -er '.local_image_id' archiveweaver-ee.metadata.json)"
+          manifest_error="$(mktemp)"
+          if existing_manifest="$(docker buildx imagetools inspect --raw "${release_reference}" 2>"${manifest_error}")"; then
+            :
+          elif grep -Eqi '(manifest unknown|not found)' "${manifest_error}"; then
+            existing_manifest=""
+          else
+            echo "unable to determine whether the controller image tag already exists" >&2
+            sed 's/^/registry lookup: /' "${manifest_error}" >&2
+            rm -f -- "${manifest_error}"
+            exit 1
+          fi
+          rm -f -- "${manifest_error}"
+          if [[ -n "${existing_manifest}" ]]; then
+            existing_config_digest="$(jq -er '.config.digest // empty' <<<"${existing_manifest}" 2>/dev/null || true)"
+            if [[ ! "${existing_config_digest}" =~ ^sha256:[0-9a-f]{64}$ ||
+                  "${existing_config_digest}" != "${local_image_id}" ]]; then
+              echo "refusing to overwrite an existing controller image tag with different content: ${release_reference}" >&2
+              exit 1
+            fi
+            echo "reusing the existing tag because it contains the exact validated image"
+          else
+            docker image tag "${ANSIBLE_EE_LOCAL_TAG}" "${release_reference}"
+            docker image push "${release_reference}"
+          fi
+          manifest_descriptor="$(docker buildx imagetools inspect "${release_reference}" --format '{{json .Manifest}}')"
+          digest="$(jq -er '.digest // empty' <<<"${manifest_descriptor}")"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "published controller image did not expose an immutable registry digest" >&2
+            exit 1
+          fi
+          published_manifest="$(docker buildx imagetools inspect --raw "${image_name}@${digest}")"
+          published_config_digest="$(jq -er '.config.digest // empty' <<<"${published_manifest}")"
+          if [[ "${published_config_digest}" != "${local_image_id}" ]]; then
+            echo "published controller image does not match the validated local image ID" >&2
+            exit 1
+          fi
+          docker manifest inspect "${image_name}@${digest}" >/dev/null
+          echo "name=${image_name}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "reference=${image_name}@${digest}" >> "${GITHUB_OUTPUT}"
+      - name: Record the immutable controller-image publication
+        env:
+          IMAGE_NAME: ${{ steps.publish-ee.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.publish-ee.outputs.digest }}
+          IMAGE_REFERENCE: ${{ steps.publish-ee.outputs.reference }}
+        run: |
+          set -euo pipefail
+          jq -n -S \
+            --arg base_image "${ANSIBLE_EE_BASE_IMAGE}" \
+            --arg image_name "${IMAGE_NAME}" \
+            --arg immutable_reference "${IMAGE_REFERENCE}" \
+            --arg local_image_id "$(jq -er '.local_image_id' archiveweaver-ee.metadata.json)" \
+            --arg registry_digest "${IMAGE_DIGEST}" \
+            --arg release_tag "${GITHUB_REF_NAME}" \
+            --arg source_revision "${GITHUB_SHA}" \
+            '{
+              schema_version: 1,
+              base_image: $base_image,
+              image_name: $image_name,
+              immutable_reference: $immutable_reference,
+              local_image_id: $local_image_id,
+              registry_digest: $registry_digest,
+              release_tag: $release_tag,
+              source_revision: $source_revision
+            }' > archiveweaver-ee.publication.json
+          jq -e '
+            type == "object" and
+            keys == ["base_image", "image_name", "immutable_reference", "local_image_id", "registry_digest", "release_tag", "schema_version", "source_revision"] and
+            .schema_version == 1 and
+            .base_image == env.ANSIBLE_EE_BASE_IMAGE and
+            .image_name == env.IMAGE_NAME and
+            .immutable_reference == env.IMAGE_REFERENCE and
+            .registry_digest == env.IMAGE_DIGEST and
+            .release_tag == env.GITHUB_REF_NAME and
+            .source_revision == env.GITHUB_SHA and
+            (.local_image_id | test("^sha256:[0-9a-f]{64}$")) and
+            (.registry_digest | test("^sha256:[0-9a-f]{64}$"))
+          ' archiveweaver-ee.publication.json >/dev/null
+      - name: Install the integrity-verified Cosign client
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign, attest, and verify the controller image
+        env:
+          IMAGE_REFERENCE: ${{ steps.publish-ee.outputs.reference }}
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          cosign sign --yes "${IMAGE_REFERENCE}"
+          cosign verify \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE_REFERENCE}" >/dev/null
+          cosign attest --yes --type spdxjson \
+            --predicate archiveweaver-ee.spdx.json \
+            "${IMAGE_REFERENCE}"
+          cosign verify-attestation --type spdxjson \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE_REFERENCE}" >/dev/null
+      - name: Attest controller-image build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish-ee.outputs.name }}
+          subject-digest: ${{ steps.publish-ee.outputs.digest }}
+          push-to-registry: true
+      - name: Sign and verify the immutable image publication record
+        env:
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          cosign sign-blob --yes \
+            --bundle archiveweaver-ee.publication.json.sigstore.json \
+            archiveweaver-ee.publication.json
+          cosign verify-blob \
+            --bundle archiveweaver-ee.publication.json.sigstore.json \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            archiveweaver-ee.publication.json >/dev/null
+      - name: Attest the image publication record
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: archiveweaver-ee.publication.json
+      - name: Upload the complete release evidence set
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: archiveweaver-release
           path: |
             dist/*
             archiveweaver.spdx.json
+            archiveweaver.spdx.json.sigstore.json
+            archiveweaver-ansible-controller.spdx.json
+            archiveweaver-ansible-controller.spdx.json.sigstore.json
+            archiveweaver-ee.metadata.json
+            archiveweaver-ee.metadata.json.sigstore.json
+            archiveweaver-ee.spdx.json
+            archiveweaver-ee.spdx.json.sigstore.json
+            archiveweaver-ee.grype.json
+            archiveweaver-ee.grype.json.sigstore.json
+            github-production-controls.json
+            github-production-controls.json.sigstore.json
+            archiveweaver-ee.publication.json
+            archiveweaver-ee.publication.json.sigstore.json
+            SHA256SUMS
+            SHA256SUMS.sigstore.json
           if-no-files-found: error
-      - name: Attest package provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: dist/*
+      - name: Publish the immutable tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          ARCHIVEWEAVER_RELEASE_SETTINGS_TOKEN: ${{ secrets.ARCHIVEWEAVER_RELEASE_SETTINGS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 .release-publisher/publish-github-release.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --tag "${RELEASE_TAG}" \
+            --source-revision "${GITHUB_SHA}" \
+            dist/* archiveweaver*.spdx.json* archiveweaver-ee.metadata.json* \
+            archiveweaver-ee.grype.json* archiveweaver-ee.publication.json* \
+            github-production-controls.json* SHA256SUMS*

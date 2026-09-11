@@ -137,7 +137,10 @@
               (ansible_facts.services.get(archiveweaver_service_name + '.service', {}).get('state', 'unknown') in ['active', 'running']))
            )
            else 'fail' }}
-      evidence: "{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
+      evidence: >-
+        {{ archiveweaver_evidence_dir
+           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', '')
+           ~ '/' ~ (inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_')) ~ '.json' }}
       solution: "{{ archiveweaver_solution_id }}"
       runtime: ansible
       underlying_runtime: "{{ archiveweaver_runtime }}"

@@ -1,0 +1,13 @@
+# Release-validation tools. Regenerate release-tools.txt with
+# scripts/compile-release-tools-lock.py; production workflows install only the
+# complete hash lock and never this direct-input file.
+bandit==1.9.4
+build==1.5.0
+coverage==7.15.1
+mypy==1.20.2
+pip-audit==2.10.1
+PyYAML==6.0.3
+ruff==0.15.20
+setuptools==83.0.0
+spdx-tools==0.8.5
+types-PyYAML==6.0.12.20260906

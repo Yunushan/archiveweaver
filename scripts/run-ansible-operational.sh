@@ -27,6 +27,11 @@ if [[ ! -f "${ansible_root}/ansible.cfg" || -L "${ansible_root}/ansible.cfg" || 
   printf 'operational runner cannot establish the reviewed Ansible bundle\n' >&2
   exit 78
 fi
+extra_vars_allowlist="${ansible_root}/controller/allowed-extra-vars.txt"
+if [[ ! -f "${extra_vars_allowlist}" || -L "${extra_vars_allowlist}" ]]; then
+  printf 'operational runner cannot establish the reviewed extra-vars allowlist\n' >&2
+  exit 78
+fi
 
 reject_option() {
   printf 'operational runner rejects task-selection, credential, transport, code-loading, or controller-boundary override: %s\n' "$1" >&2
@@ -49,28 +54,48 @@ reject_unapproved_argument() {
   exit 64
 }
 
-is_approved_inventory() {
+approved_inventory_path() {
   case "$1" in
     inventory/production/hosts.yml|inventory/staging/hosts.yml|inventory/restore/hosts.yml)
-      return 0
+      printf '%s/%s\n' "${ansible_root}" "$1"
       ;;
     "${ansible_root}/inventory/production/hosts.yml"|"${ansible_root}/inventory/staging/hosts.yml"|"${ansible_root}/inventory/restore/hosts.yml")
-      return 0
+      printf '%s\n' "$1"
+      ;;
+    *)
+      return 1
       ;;
   esac
-  return 1
 }
 
 validate_inventory() {
   local value="$1"
-  if ! is_approved_inventory "${value}"; then
+  local candidate
+  local parent
+  local physical_parent
+  if ! candidate="$(approved_inventory_path "${value}")"; then
     printf 'operational runner rejects inventory outside the three approved operator inventories: %s\n' "${value}" >&2
     exit 64
+  fi
+  parent="$(dirname -- "${candidate}")"
+  if [[ ! -f "${candidate}" || -L "${candidate}" || -L "${ansible_root}/inventory" || -L "${parent}" ]]; then
+    printf 'operational runner requires an approved inventory to be a regular file without symlinked path components\n' >&2
+    exit 78
+  fi
+  if ! physical_parent="$(cd -- "${parent}" && pwd -P)"; then
+    printf 'operational runner cannot resolve the approved inventory directory\n' >&2
+    exit 78
+  fi
+  if [[ "${physical_parent}/$(basename -- "${candidate}")" != "${candidate}" ]]; then
+    printf 'operational runner rejects an inventory that escapes its approved physical directory\n' >&2
+    exit 78
   fi
 }
 
 validate_extra_vars() {
   local payload="$1"
+  local allowed_key
+  local approved=0
   local key
 
   # Extra-vars files and raw YAML/JSON documents are an uncontrolled code and
@@ -83,6 +108,19 @@ validate_extra_vars() {
   if [[ ! "${key}" =~ ^archiveweaver_[A-Za-z0-9_]+$ ]]; then
     reject_extra_vars
   fi
+  while IFS= read -r allowed_key || [[ -n "${allowed_key}" ]]; do
+    allowed_key="${allowed_key%$'\r'}"
+    if [[ -z "${allowed_key}" || "${allowed_key}" == \#* ]]; then
+      continue
+    fi
+    if [[ "${key}" == "${allowed_key}" ]]; then
+      approved=1
+      break
+    fi
+  done < "${extra_vars_allowlist}"
+  if (( approved != 1 )); then
+    reject_extra_vars
+  fi
   # Require one binding per -e option. Commas inside a quoted/list value are
   # fine; a bare comma-separated assignment would otherwise smuggle an
   # unrelated Ansible variable past the prefix check.
@@ -93,7 +131,7 @@ validate_extra_vars() {
   # These values are derived from the reviewed bundle or control-plane
   # binding. Allowing them as extra-vars would let a caller change the
   # controller identity, target environment, or execution parallelism.
-  if [[ ",${payload}" =~ ,[[:space:]]*(archiveweaver_(serial|environment|ansible_core_version|ansible_lint_version|bundle_root|readiness_python|readiness_pythonpath|evidence_root|evidence_dir|data_root|log_root|release_record|service_name|resource_name|namespace|health_validate_certs|controller_target_group|evidence_seal_enabled)|ansible_(connection|user|become|become_method|become_user|host|port|private_key_file|python_interpreter|ssh_common_args|ssh_extra_args|sftp_extra_args|scp_extra_args))= ]]; then
+  if [[ ",${payload}" =~ ,[[:space:]]*(archiveweaver_(serial|environment|ansible_core_version|ansible_lint_version|ansible_runner_version|bundle_root|readiness_python|readiness_pythonpath|evidence_root|evidence_dir|data_root|log_root|release_record|service_name|resource_name|namespace|health_validate_certs|controller_target_group|evidence_seal_enabled)|ansible_(connection|user|become|become_method|become_user|host|port|private_key_file|python_interpreter|ssh_common_args|ssh_extra_args|sftp_extra_args|scp_extra_args))= ]]; then
     reject_extra_vars
   fi
 }

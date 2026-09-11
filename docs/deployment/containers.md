@@ -12,10 +12,15 @@ Quadlet turns declarative `.container`, `.volume`, `.network`, and related files
 
 Use an odd number of managers, normally three or five. Put workers and stateful services in deliberate placement constraints. A local volume follows a node; it is not a shared archive. Use an approved distributed storage driver or external database/object storage, and test manager quorum loss and recovery.
 
+For every multi-node Swarm plan, `--external-storage` is a reviewed assertion,
+not an automatic provisioner. The rendered stack references
+`ARCHIVEWEAVER_DATA_VOLUME` as an existing external volume and will not silently
+fall back to node-local state.
+
 ## Render examples
 
 ```bash
 PYTHONPATH=src python3 -m archiveweaver render --solution mayan-edms --mode podman-quadlet --nodes 1 --os rocky-9 --image mayanedms/mayanedms@sha256:<digest>
-PYTHONPATH=src python3 -m archiveweaver render --solution dspace --mode docker-swarm --nodes 3 --os ubuntu-24.04 --image registry.example.org/dspace@sha256:<digest>
+PYTHONPATH=src python3 -m archiveweaver render --solution dspace --mode docker-swarm --nodes 3 --os ubuntu-24.04 --image registry.example.org/dspace@sha256:<digest> --external-storage
 ```
 

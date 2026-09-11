@@ -1,0 +1,11 @@
+# Direct controller requirements. Regenerate requirements.txt with the pinned
+# pip-tools command documented in README.md; never install this input file in
+# production because it does not bind transitive artifacts.
+ansible-core==2.21.4
+ansible-lint==26.8.0
+ansible-runner==2.4.3
+dumb-init==1.2.5.post1
+PyYAML==6.0.3
+# ansible-lint installs this accelerator on Linux, but pip-tools running on a
+# non-Linux maintenance host does not see that target-specific dependency.
+ruamel-yaml-clib==0.2.15

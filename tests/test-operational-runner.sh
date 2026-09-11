@@ -5,7 +5,20 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "${script_dir}/.." && pwd -P)"
 runner="${repo_root}/scripts/run-ansible-operational.sh"
 temporary_root="$(mktemp -d)"
-trap 'rm -rf -- "${temporary_root}"' EXIT
+operator_inventory="${repo_root}/deploy/ansible/inventory/production/hosts.yml"
+created_operator_inventory=0
+if [[ ! -e "${operator_inventory}" && ! -L "${operator_inventory}" ]]; then
+  cp -- "${operator_inventory}.example" "${operator_inventory}"
+  created_operator_inventory=1
+fi
+
+cleanup() {
+  rm -rf -- "${temporary_root}"
+  if (( created_operator_inventory == 1 )); then
+    rm -f -- "${operator_inventory}"
+  fi
+}
+trap cleanup EXIT
 
 mkdir -p "${temporary_root}/bin"
 fake_ansible="${temporary_root}/bin/ansible-playbook"
@@ -109,13 +122,39 @@ if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/p
   printf 'runner accepted an Ansible connection extra-var\n' >&2
   exit 1
 fi
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_unreviewed_variable=true >/dev/null 2>&1; then
+  printf 'runner accepted an ArchiveWeaver key outside the exact allowlist\n' >&2
+  exit 1
+fi
 if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_serial=20 >/dev/null 2>&1; then
   printf 'runner accepted a protected controller extra-var\n' >&2
+  exit 1
+fi
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_ansible_runner_version=0.0.0 >/dev/null 2>&1; then
+  printf 'runner accepted an Ansible Runner identity override\n' >&2
   exit 1
 fi
 if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true,untrusted_key=value >/dev/null 2>&1; then
   printf 'runner accepted a second unapproved extra-var binding\n' >&2
   exit 1
+fi
+
+if (( created_operator_inventory == 1 )); then
+  rm -f -- "${operator_inventory}"
+  if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml --check >/dev/null 2>&1; then
+    printf 'runner accepted a missing approved inventory\n' >&2
+    exit 1
+  fi
+  # Some Windows/MSYS environments emulate `ln -s` with a regular-file copy
+  # when native symlink creation is unavailable. Exercise the boundary only
+  # when the resulting path is actually a symlink.
+  if ln -s -- "${operator_inventory}.example" "${operator_inventory}" 2>/dev/null \
+    && [[ -L "${operator_inventory}" ]]; then
+    if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml --check >/dev/null 2>&1; then
+      printf 'runner accepted a symlinked approved inventory\n' >&2
+      exit 1
+    fi
+  fi
 fi
 
 printf 'operational runner tests: PASS\n'

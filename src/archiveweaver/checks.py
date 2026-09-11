@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
@@ -35,7 +34,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _open_health_request(request: urllib.request.Request, timeout: int):
+def _open_health_request(request: urllib.request.Request, timeout: int) -> Any:
     opener = urllib.request.build_opener(_NoRedirectHandler)
     return opener.open(request, timeout=timeout)
 
@@ -96,6 +95,36 @@ def check_service(service: str) -> dict[str, Any]:
     if code == 3 and stdout in {"inactive", "failed", "activating", "deactivating"}:
         return _result(f"service:{service}", "warn", stdout, stderr or stdout)
     return _result(f"service:{service}", "skip", "service unit not found or not queryable", stderr or stdout)
+
+
+def check_time_sync() -> dict[str, Any]:
+    """Report whether systemd considers the host clock synchronized."""
+    if shutil.which("timedatectl") is None:
+        return _result("host-time", "skip", "timedatectl is not available")
+    code, stdout, stderr = _command(
+        "timedatectl",
+        "show",
+        "--property=NTPSynchronized",
+        "--value",
+    )
+    if code != 0:
+        return _result(
+            "host-time",
+            "warn",
+            "time synchronization could not be queried",
+            stderr or stdout,
+        )
+    synchronized = stdout.strip().lower()
+    if synchronized == "yes":
+        return _result("host-time", "pass", "system clock is synchronized")
+    if synchronized == "no":
+        return _result("host-time", "fail", "system clock is not synchronized")
+    return _result(
+        "host-time",
+        "warn",
+        "time synchronization returned an unknown state",
+        stdout,
+    )
 
 
 def _redacted_url(value: Any) -> str:
@@ -235,6 +264,7 @@ def run_checks(
     checks: list[dict[str, Any]] = []
     host = detect_host()
     checks.append(_result("host", "pass", host["pretty_name"], host))
+    checks.append(check_time_sync())
     if mode:
         catalog.runtime(mode)
         checks.append(check_commands(_runtime_commands(mode), f"runtime:{mode}"))
@@ -264,12 +294,34 @@ def run_checks(
 
     warnings = [item for item in checks if item["status"] == "warn"]
     failures = [item for item in checks if item["status"] == "fail"]
+    skipped = [item for item in checks if item["status"] == "skip"]
+    meaningful_passes = [
+        item
+        for item in checks
+        if item["status"] == "pass"
+        and (
+            item["name"].startswith("service:")
+            or item["name"].startswith("path:")
+            or item["name"] in {"http", "configuration"}
+        )
+    ]
+    summary_status = (
+        "fail"
+        if failures
+        else ("warn" if warnings or not meaningful_passes else "pass")
+    )
     return {
         "solution": solution_id,
         "solution_name": solution["name"],
         "mode": mode,
         "host": host,
-        "summary": {"status": "fail" if failures else ("warn" if warnings else "pass"), "failures": len(failures), "warnings": len(warnings)},
+        "summary": {
+            "status": summary_status,
+            "failures": len(failures),
+            "warnings": len(warnings),
+            "skipped": len(skipped),
+            "meaningful_passes": len(meaningful_passes),
+        },
         "checks": checks,
         "policy": [
             "Checks are read-only and do not repair, restart, migrate, reindex, or delete data.",

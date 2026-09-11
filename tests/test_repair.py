@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import urllib.error
 import unittest
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
 from archiveweaver.catalog import Catalog
 from archiveweaver.checks import _command, check_url
-from archiveweaver.repair import _resolve_ansible_bundle_path, apply_repair, build_repair_plan
+from archiveweaver.repair import (
+    _find_ansible_root,
+    _resolve_ansible_bundle_path,
+    _resolve_readiness_manifest_path,
+    _safe_absolute_controller_path,
+    _safe_relative_controller_path,
+    _usable_ansible_root,
+    apply_repair,
+    build_repair_plan,
+)
 
 
 class RepairTests(unittest.TestCase):
@@ -24,16 +35,145 @@ class RepairTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "planned" for item in result["results"]))
         self.assertNotIn("--remove-orphans", plan["actions"][1]["command"])
 
+    def test_ansible_root_requires_a_complete_non_symlink_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "deploy" / "ansible"
+            (root / "roles").mkdir(parents=True)
+            (root / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
+            (root / "repair.yml").write_text("---\n", encoding="utf-8")
+            self.assertTrue(_usable_ansible_root(root))
+
+            real_config = root / "ansible.cfg.real"
+            real_config.write_text("[defaults]\n", encoding="utf-8")
+            (root / "ansible.cfg").unlink()
+            try:
+                (root / "ansible.cfg").symlink_to(real_config)
+            except (OSError, NotImplementedError):
+                return
+            self.assertFalse(_usable_ansible_root(root))
+
+    def test_controller_path_classification_is_fail_closed(self) -> None:
+        self.assertTrue(_safe_relative_controller_path("inventory/production/hosts.yml"))
+        self.assertFalse(_safe_relative_controller_path("../hosts.yml"))
+        self.assertFalse(_safe_relative_controller_path(7))  # type: ignore[arg-type]
+        absolute = str((Path.cwd() / "deploy" / "ansible" / "repair.yml").resolve())
+        self.assertTrue(_safe_absolute_controller_path(absolute))
+        self.assertFalse(_safe_absolute_controller_path("repair.yml"))
+        self.assertFalse(_safe_absolute_controller_path(7))  # type: ignore[arg-type]
+
+    def test_ansible_root_can_be_discovered_from_an_installed_data_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            installed_root = temporary / "site" / "share" / "archiveweaver" / "deploy" / "ansible"
+            (installed_root / "roles").mkdir(parents=True)
+            (installed_root / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
+            (installed_root / "repair.yml").write_text("---\n", encoding="utf-8")
+
+            class InstalledDistribution:
+                files = (
+                    Path("share/archiveweaver/deploy/ansible/ansible.cfg"),
+                )
+
+                def locate_file(self, _path: object) -> Path:
+                    return installed_root / "ansible.cfg"
+
+            fake_module = temporary / "package" / "archiveweaver" / "repair.py"
+            with (
+                patch("archiveweaver.repair.Path.cwd", return_value=temporary),
+                patch("archiveweaver.repair.__file__", str(fake_module)),
+                patch(
+                    "archiveweaver.repair.distribution",
+                    return_value=InstalledDistribution(),
+                ),
+            ):
+                self.assertEqual(_find_ansible_root(), installed_root.resolve())
+
+    def test_ansible_bundle_path_rejects_unsafe_trust_boundaries(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "deploy" / "ansible"
+        with patch(
+            "archiveweaver.repair.has_symlink_component",
+            side_effect=lambda path: Path(path) == root,
+        ):
+            with self.assertRaisesRegex(ValueError, "symlinked Ansible bundle"):
+                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+
+        unresolved = root / "repair.yml"
+        with patch(
+            "archiveweaver.repair.has_symlink_component",
+            side_effect=lambda path: Path(path) == unresolved,
+        ):
+            with self.assertRaisesRegex(ValueError, "must not resolve through a symlink"):
+                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+
+    def test_readiness_manifest_requires_the_ansible_directory_after_resolution(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "deploy" / "ansible"
+        outside = root.parent / "outside.json"
+        with patch(
+            "archiveweaver.repair._resolve_ansible_bundle_path",
+            return_value=outside,
+        ):
+            with self.assertRaisesRegex(ValueError, "Ansible playbook directory"):
+                _resolve_readiness_manifest_path("outside.json", root)
+
     def test_applied_repair_results_redact_command_output(self) -> None:
-        plan = {
-            "status": "ready",
-            "actions": [{"name": "safe-probe", "command": [sys.executable, "-c", "print('sensitive-output')"]}],
-        }
-        result = apply_repair(plan)
+        plan = build_repair_plan(self.catalog, "paperless-ngx", "raw")
+        completed = type("Completed", (), {"returncode": 0})()
+        with patch(
+            "archiveweaver.repair.subprocess.run", return_value=completed
+        ) as run:
+            result = apply_repair(plan)
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["results"][0]["output_redacted"])
         self.assertNotIn("stdout", result["results"][0])
         self.assertNotIn("stderr", result["results"][0])
+        self.assertIs(run.call_args.kwargs["stdout"], subprocess.DEVNULL)
+        self.assertIs(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+        self.assertNotIn("capture_output", run.call_args.kwargs)
+
+    def test_apply_repair_stops_on_command_failure_and_preserves_environment(self) -> None:
+        plan = build_repair_plan(self.catalog, "paperless-ngx", "ansible")
+        completed = type("Completed", (), {"returncode": 9})()
+        with patch("archiveweaver.repair.subprocess.run", return_value=completed) as run:
+            result = apply_repair(plan)
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["returncode"], 9)
+        self.assertEqual(
+            run.call_args.kwargs["env"]["ANSIBLE_CONFIG"],
+            str(Path.cwd() / "deploy" / "ansible" / "ansible.cfg"),
+        )
+
+    def test_apply_repair_rejects_forged_and_modified_ready_plans(self) -> None:
+        forged = {
+            "status": "ready",
+            "actions": [
+                {"name": "forged", "command": [sys.executable, "-c", "pass"]}
+            ],
+        }
+        with patch("archiveweaver.repair.subprocess.run") as run:
+            rejected = apply_repair(forged)
+        self.assertEqual(rejected["status"], "blocked")
+        self.assertIn("trusted plan builder", rejected["blockers"][0])
+        run.assert_not_called()
+
+        modified = build_repair_plan(self.catalog, "paperless-ngx", "raw")
+        modified["actions"][0]["command"] = [sys.executable, "-c", "pass"]
+        with patch("archiveweaver.repair.subprocess.run") as run:
+            rejected = apply_repair(modified)
+        self.assertEqual(rejected["status"], "blocked")
+        self.assertIn("changed after it was reviewed", rejected["blockers"][0])
+        run.assert_not_called()
+
+    def test_apply_repair_handles_blocked_and_process_errors(self) -> None:
+        blocked = apply_repair({"status": "blocked"})
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["blockers"], ["repair plan is not ready"])
+
+        plan = build_repair_plan(self.catalog, "paperless-ngx", "raw")
+        with patch("archiveweaver.repair.subprocess.run", side_effect=OSError("missing")):
+            failed = apply_repair(plan)
+        self.assertEqual(failed["status"], "fail")
+        self.assertTrue(failed["results"][0]["output_redacted"])
 
     def test_pacemaker_is_gated(self) -> None:
         plan = build_repair_plan(self.catalog, "nextcloud-server", "pacemaker")
@@ -87,15 +227,18 @@ class RepairTests(unittest.TestCase):
         self.assertIn("non-HTTPS", result["detail"])
 
     def test_health_check_rejects_redirect_responses(self) -> None:
+        headers = Message()
+        headers["Location"] = "https://other.example.org/"
         redirect = urllib.error.HTTPError(
             "https://health.example.org/",
             302,
             "Found",
-            {"Location": "https://other.example.org/"},
+            headers,
             None,
         )
         with patch("archiveweaver.checks._open_health_request", side_effect=redirect):
             result = check_url("https://health.example.org/")
+        redirect.close()
         self.assertEqual(result["status"], "fail")
         self.assertIn("do not follow redirects", result["detail"])
 
@@ -187,6 +330,73 @@ class RepairTests(unittest.TestCase):
         plan = build_repair_plan(self.catalog, "paperless-ngx", "ansible", underlying_mode="pacemaker")
         self.assertEqual(plan["status"], "blocked")
         self.assertEqual(plan["actions"], [])
+
+    def test_repair_plans_cover_each_runtime_family(self) -> None:
+        cases = (
+            ("raw", {"service": "paperless"}, "restart-service"),
+            ("podman-quadlet", {"unit": "paperless.service"}, "restart-quadlet"),
+            (
+                "pacemaker",
+                {"resource": "paperless", "allow_fencing_actions": True},
+                "resource-cleanup",
+            ),
+            ("docker-swarm", {"compose_file": "stack.yml"}, "redeploy-stack"),
+            (
+                "rke2",
+                {"namespace": "archive", "deployment": "paperless"},
+                "rollout-restart",
+            ),
+        )
+        for mode, options, expected_action in cases:
+            with self.subTest(mode=mode):
+                plan = build_repair_plan(
+                    self.catalog,
+                    "paperless-ngx",
+                    mode,
+                    **options,
+                )
+                self.assertEqual(plan["status"], "ready")
+                self.assertIn(expected_action, [item["name"] for item in plan["actions"]])
+
+    def test_ansible_only_arguments_are_rejected_for_other_modes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be its own"):
+            build_repair_plan(
+                self.catalog,
+                "paperless-ngx",
+                "ansible",
+                underlying_mode="ansible",
+            )
+        with self.assertRaisesRegex(ValueError, "only valid when --mode ansible"):
+            build_repair_plan(
+                self.catalog,
+                "paperless-ngx",
+                "docker",
+                underlying_mode="raw",
+            )
+        with self.assertRaisesRegex(ValueError, "only valid when --mode ansible"):
+            build_repair_plan(
+                self.catalog,
+                "paperless-ngx",
+                "docker",
+                readiness_manifest="release-manifest.json",
+            )
+
+    def test_ansible_repair_requires_approved_playbook_and_runner(self) -> None:
+        with self.assertRaisesRegex(ValueError, "approved Ansible repair.yml"):
+            build_repair_plan(
+                self.catalog,
+                "paperless-ngx",
+                "ansible",
+                playbook="deploy/ansible/site.yml",
+            )
+
+        runner_name = "run-ansible-operational.sh"
+        with patch(
+            "archiveweaver.repair.has_symlink_component",
+            side_effect=lambda path: Path(path).name == runner_name,
+        ):
+            with self.assertRaisesRegex(ValueError, "runner is missing or unsafe"):
+                build_repair_plan(self.catalog, "paperless-ngx", "ansible")
 
     def test_ansible_repair_rejects_unsafe_readiness_path(self) -> None:
         with self.assertRaises(ValueError):

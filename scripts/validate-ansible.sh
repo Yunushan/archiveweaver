@@ -7,6 +7,7 @@ ansible_root="${repo_root}/deploy/ansible"
 
 cd "${ansible_root}"
 python3 "${repo_root}/scripts/validate-controller-contract.py"
+python3 "${repo_root}/scripts/compile-ansible-lock.py" --check
 if ! cmp -s requirements.txt execution-environment/requirements.txt; then
   echo "Ansible controller and execution-environment requirement locks differ" >&2
   exit 1

@@ -1,5 +1,14 @@
 # Repair mechanisms
 
+Repair execution accepts only an in-process plan produced by the trusted plan
+builder. The builder seals the complete nested plan with a process-local
+capability, and apply authenticates a private snapshot before executing it.
+JSON-round-tripped, forged, or post-review-modified plan dictionaries are
+blocked. Child-process stdout and stderr are sent directly to the operating
+system null device because the repair API returns only redacted status; this
+also prevents unused command output from exposing secrets or exhausting
+controller memory.
+
 ## Default workflow
 
 ```bash

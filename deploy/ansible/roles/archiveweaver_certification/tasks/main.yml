@@ -190,6 +190,9 @@
       {{ {
         'name': item.item.name,
         'status': 'pass' if item.rc == 0 else 'fail',
+        'evidence': (archiveweaver_certification_evidence_dir
+          | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', ''))
+          ~ '/' ~ item.item.name ~ '.json',
         'solution': archiveweaver_solution_id,
         'runtime': 'ansible',
         'underlying_runtime': archiveweaver_runtime,

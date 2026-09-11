@@ -45,6 +45,11 @@ The repository does not claim that every product has an official Helm chart, Doc
 
 The core has no third-party Python runtime dependency.
 
+Release validation uses the separately reviewed, wheel-only hash lock at
+`requirements/release-tools.txt`; it is not a runtime dependency of the core
+package. See the [supply-chain controls](docs/operations/supply-chain.md) for
+regeneration and verification instructions.
+
 ```bash
 git clone https://github.com/Yunushan/archiveweaver.git
 cd archiveweaver
@@ -123,11 +128,12 @@ Production operations use the fixed approved playbooks through
 `scripts/run-ansible-operational.sh`.
 Build the controller execution environment only through
 `scripts/build-ansible-execution-environment.sh`; it requires an immutable
-base-image digest before Podman or Docker is invoked.
+base-image digest before Podman or Docker is invoked and verifies the locked
+Ansible Core, Ansible Runner, and ansible-lint toolchain.
 
 The operational runner requires exactly one of the protected production,
-staging, or restore inventories and accepts only explicit
-`archiveweaver_*` key/value bindings; inventory directories, extra-vars files,
+staging, or restore inventories and accepts only explicit keys in
+`deploy/ansible/controller/allowed-extra-vars.txt`; inventory directories, extra-vars files,
 raw YAML/JSON variables, controller/transport overrides, ambient Ansible
 plugin paths, and Python import-path overrides are rejected or cleared.
 

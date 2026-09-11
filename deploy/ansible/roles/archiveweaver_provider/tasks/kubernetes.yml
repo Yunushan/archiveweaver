@@ -76,6 +76,21 @@
   when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
   tags: [provider, deploy]
 
+- name: Reject ambiguous or nonportable Kustomize filenames
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_kustomize_relative_path is match('^[A-Za-z0-9._/-]+$')
+    fail_msg: "Kustomize bundle filenames must use the portable digest alphabet."
+  vars:
+    archiveweaver_provider_kustomize_relative_path: >-
+      {{ item.path | replace(archiveweaver_kustomize_path ~ '/', '', 1) }}
+  loop: "{{ archiveweaver_provider_kustomize_files.files | default([]) }}"
+  loop_control:
+    label: "{{ archiveweaver_provider_kustomize_relative_path }}"
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
 - name: Build deterministic Kustomize bundle digest input
   ansible.builtin.set_fact:
     archiveweaver_provider_kustomize_digest_input: >-

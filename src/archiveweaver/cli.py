@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,7 @@ from . import __version__
 from .catalog import Catalog
 from .checks import run_checks
 from .evidence import build_evidence_index, verify_evidence_index
+from .hook_digest import inspect_hook_command
 from .planner import build_plan
 from .provider_digest import digest_file, digest_quadlet, digest_tree
 from .repair import apply_repair, build_repair_plan
@@ -34,6 +37,46 @@ def _dump(value: Any, as_json: bool = False) -> None:
         print(json.dumps(value, indent=2, ensure_ascii=False))
 
 
+def _write_render_output(path: Path, content: str) -> None:
+    """Atomically replace a render output without following its final symlink."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if has_symlink_component(path):
+        raise ValueError("render output must not resolve through a symlink")
+    if path.exists() and not path.is_file():
+        raise ValueError("render output must be a regular file")
+
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+
+        # Re-check components after creating the temporary file. ``os.replace``
+        # replaces a final symlink itself instead of opening its target, closing
+        # the final-component swap window left by ``Path.write_text``.
+        if has_symlink_component(path.parent):
+            raise ValueError("render output must not resolve through a symlink")
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            try:
+                Path(temporary_name).unlink()
+            except OSError:
+                pass
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [len(header) for header in headers]
     for row in rows:
@@ -53,6 +96,11 @@ def _add_common_plan_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stonith", action="store_true", help="confirm STONITH is configured for Pacemaker")
     parser.add_argument("--qdevice", action="store_true", help="confirm a quorum device/witness is planned")
     parser.add_argument("--external-datastore", action="store_true", help="confirm consensus state is externalized")
+    parser.add_argument(
+        "--external-storage",
+        action="store_true",
+        help="confirm tested shared or replicated application storage",
+    )
     parser.add_argument("--allow-conditional", action="store_true", help="allow a conditional plan after design review")
     parser.add_argument("--underlying-mode", choices=UNDERLYING_RUNTIME_CHOICES, help="underlying provider when --mode ansible is selected")
     parser.add_argument("--json", action="store_true")
@@ -121,6 +169,17 @@ def build_parser() -> argparse.ArgumentParser:
     digest_parser.add_argument("--service-name", help="Quadlet service name when --kind quadlet is selected")
     digest_parser.add_argument("--json", action="store_true")
 
+    hook_digest_parser = subparsers.add_parser(
+        "hook-digest",
+        help="bind a reviewed hook executable and its complete argument vector",
+    )
+    hook_digest_parser.add_argument(
+        "hook_argv",
+        nargs="+",
+        help="hook executable and arguments; use -- before arguments beginning with a dash",
+    )
+    hook_digest_parser.add_argument("--json", action="store_true")
+
     render_parser = subparsers.add_parser("render", help="render a safe provider envelope")
     render_parser.add_argument("--solution", required=True)
     render_parser.add_argument("--mode", required=True, choices=RENDER_RUNTIME_CHOICES)
@@ -128,9 +187,18 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--os", dest="os_id", default="ubuntu-24.04")
     render_parser.add_argument("--namespace", default="archiveweaver")
     render_parser.add_argument("--underlying-mode", choices=UNDERLYING_RUNTIME_CHOICES, help="underlying provider when --mode ansible is selected")
-    render_parser.add_argument("--image", help="pinned image reference; required when the catalog has no image hint")
-    render_parser.add_argument("--allow-floating", action="store_true", help="allow a floating image tag such as :latest")
+    render_parser.add_argument("--image", help="immutable OCI digest reference; required when the catalog has no image hint")
+    render_parser.add_argument(
+        "--allow-floating",
+        action="store_true",
+        help="allow a mutable tag or untagged image for non-production rendering",
+    )
     render_parser.add_argument("--allow-conditional", action="store_true")
+    render_parser.add_argument(
+        "--external-storage",
+        action="store_true",
+        help="confirm tested shared or replicated application storage",
+    )
     render_parser.add_argument("--output", help="write the rendered envelope to a file")
     render_parser.add_argument("--json", action="store_true")
     return parser
@@ -186,7 +254,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "plan":
-            plan = build_plan(catalog, args.solution, args.mode, args.nodes, args.os_id, namespace=args.namespace, stonith=args.stonith, qdevice=args.qdevice, external_datastore=args.external_datastore, allow_conditional=args.allow_conditional, underlying_mode=args.underlying_mode).as_dict()
+            plan = build_plan(
+                catalog,
+                args.solution,
+                args.mode,
+                args.nodes,
+                args.os_id,
+                namespace=args.namespace,
+                stonith=args.stonith,
+                qdevice=args.qdevice,
+                external_datastore=args.external_datastore,
+                external_storage=args.external_storage,
+                allow_conditional=args.allow_conditional,
+                underlying_mode=args.underlying_mode,
+            ).as_dict()
             if args.json:
                 _dump(plan, True)
             else:
@@ -196,19 +277,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check":
             report = run_checks(catalog, args.solution, mode=args.mode, url=args.url, service=args.service, paths=args.paths, config=args.config)
             _dump(report, args.json)
-            return 2 if report["summary"]["status"] == "fail" else 0
+            if report["summary"]["status"] == "fail":
+                return 2
+            return 1 if report["summary"]["status"] == "warn" else 0
 
         if args.command == "repair":
             plan = build_repair_plan(catalog, args.solution, args.mode, service=args.service, compose_file=args.compose_file, playbook=args.playbook, inventory=args.inventory, readiness_manifest=args.readiness_manifest, namespace=args.namespace, deployment=args.deployment, unit=args.unit, resource=args.resource, allow_fencing_actions=args.allow_fencing_actions, underlying_mode=args.underlying_mode, operator=args.operator, fixture_set=args.fixture_set, execution_environment_digest=args.execution_environment_digest)
             result = apply_repair(plan, dry_run=not args.apply)
-            payload = {"plan": plan, "execution": result}
-            _dump(payload, args.json)
+            repair_payload = {"plan": plan, "execution": result}
+            _dump(repair_payload, args.json)
             return 2 if result["status"] == "fail" or plan.get("status") == "blocked" else 0
 
         if args.command == "validate-catalog":
             errors = validate_catalog(catalog)
-            payload = {"status": "fail" if errors else "pass", "errors": errors, "solutions": len(catalog.solutions), "modes": len(catalog.runtimes), "operating_systems": len(catalog.operating_systems)}
-            _dump(payload, args.json)
+            catalog_payload = {"status": "fail" if errors else "pass", "errors": errors, "solutions": len(catalog.solutions), "modes": len(catalog.runtimes), "operating_systems": len(catalog.operating_systems)}
+            _dump(catalog_payload, args.json)
             return 2 if errors else 0
 
         if args.command == "readiness":
@@ -223,10 +306,10 @@ def main(argv: list[str] | None = None) -> int:
                 report = verify_evidence_index(Path(args.verify))
             else:
                 directory = Path(args.directory)
-                output = Path(args.output)
-                if not output.is_absolute():
-                    output = directory / output
-                report = {"status": "pass", "index": str(output), "files": len(build_evidence_index(directory, output)["files"])}
+                index_output = Path(args.output)
+                if not index_output.is_absolute():
+                    index_output = directory / index_output
+                report = {"status": "pass", "index": str(index_output), "files": len(build_evidence_index(directory, index_output)["files"])}
             _dump(report, args.json)
             return 0 if report["status"] == "pass" else 2
 
@@ -240,22 +323,40 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.service_name:
                     raise ValueError("--service-name is required when --kind quadlet is selected")
                 digest = digest_quadlet(path, args.service_name)
-            payload = {"status": "pass", "kind": args.kind, "path": str(path), "digest": digest}
-            _dump(payload if args.json else digest, args.json)
+            digest_payload = {"status": "pass", "kind": args.kind, "path": str(path), "digest": digest}
+            _dump(digest_payload if args.json else digest, args.json)
+            return 0
+
+        if args.command == "hook-digest":
+            hook_payload = {"status": "pass", **inspect_hook_command(args.hook_argv)}
+            if args.json:
+                _dump(hook_payload, True)
+            else:
+                print(f"executable_sha256={hook_payload['executable_sha256']}")
+                print(f"argv_sha256={hook_payload['argv_sha256']}")
             return 0
 
         if args.command == "render":
-            output = Path(args.output) if args.output else None
-            if output is not None and has_symlink_component(output):
+            render_output = Path(args.output) if args.output else None
+            if render_output is not None and has_symlink_component(render_output):
                 raise ValueError("render output must not resolve through a symlink")
-            plan, content = render(catalog, args.solution, args.mode, args.nodes, args.os_id, namespace=args.namespace, image=args.image, allow_floating=args.allow_floating, allow_conditional=args.allow_conditional, underlying_mode=args.underlying_mode)
-            if output is not None:
-                output.parent.mkdir(parents=True, exist_ok=True)
-                if has_symlink_component(output):
-                    raise ValueError("render output must not resolve through a symlink")
-                output.write_text(content, encoding="utf-8")
-                payload = {"status": "pass", "output": str(output), "plan": plan}
-                _dump(payload, args.json)
+            plan, content = render(
+                catalog,
+                args.solution,
+                args.mode,
+                args.nodes,
+                args.os_id,
+                namespace=args.namespace,
+                image=args.image,
+                allow_floating=args.allow_floating,
+                allow_conditional=args.allow_conditional,
+                external_storage=args.external_storage,
+                underlying_mode=args.underlying_mode,
+            )
+            if render_output is not None:
+                _write_render_output(render_output, content)
+                render_payload = {"status": "pass", "output": str(render_output), "plan": plan}
+                _dump(render_payload, args.json)
             elif args.json:
                 _dump({"status": "pass", "plan": plan, "content": content}, True)
             else:

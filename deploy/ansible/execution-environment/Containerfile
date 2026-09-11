@@ -5,8 +5,49 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG BASE_IMAGE
-RUN if ! printf '%s\n' "$BASE_IMAGE" | python3 -c "import re,sys; sys.exit(0 if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[0-9a-f]{64}', sys.stdin.read().strip()) else 1)"; then echo 'BASE_IMAGE must be an OCI reference with a 64-character SHA-256 digest' >&2; exit 1; fi
+ARG RELEASE_VERSION
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="ArchiveWeaver Ansible execution environment" \
+      org.opencontainers.image.description="Pinned non-root controller environment for ArchiveWeaver Ansible operations" \
+      org.opencontainers.image.source="https://github.com/Yunushan/archiveweaver" \
+      org.opencontainers.image.licenses="0BSD" \
+      org.opencontainers.image.version="${RELEASE_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.base.name="${BASE_IMAGE}" \
+      ansible-execution-environment="true"
+RUN if ! printf '%s\n' "$BASE_IMAGE" | python3 -c "import re,sys; sys.exit(0 if re.fullmatch(r'[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+@sha256:[0-9a-f]{64}', sys.stdin.read().strip()) else 1)"; then echo 'BASE_IMAGE must be a fully qualified lowercase OCI repository with a 64-character SHA-256 digest' >&2; exit 1; fi
+RUN if ! printf '%s\n' "$RELEASE_VERSION" | python3 -c "import re,sys; value=sys.stdin.read().strip(); sys.exit(0 if re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', value) and value.lower() != 'latest' and 'replace_with' not in value.lower() else 1)"; then echo 'RELEASE_VERSION must be a safe immutable release label' >&2; exit 1; fi
+RUN if ! printf '%s\n' "$SOURCE_REVISION" | python3 -c "import re,sys; sys.exit(0 if re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', sys.stdin.read().strip()) else 1)"; then echo 'SOURCE_REVISION must be a full lowercase commit SHA' >&2; exit 1; fi
+RUN python3 -c "import platform,sys; sys.exit(0 if sys.version_info[:2] in ((3,13),(3,14)) and platform.system() == 'Linux' and platform.machine() == 'x86_64' else 'ArchiveWeaver EE requires CPython 3.13/3.14 on Linux x86_64')"
 
+USER 0:0
 COPY requirements.txt /tmp/archiveweaver-controller-requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /tmp/archiveweaver-controller-requirements.txt \
+RUN python3 -m pip install --disable-pip-version-check --no-input --no-cache-dir \
+      --require-hashes --only-binary=:all: \
+      -r /tmp/archiveweaver-controller-requirements.txt \
     && rm -f /tmp/archiveweaver-controller-requirements.txt
+RUN command -v dumb-init >/dev/null \
+    && dumb-init --version >/dev/null
+RUN set -eu; \
+    if grep -Eq '^(archiveweaver:|[^:]*:[^:]*:65532:)' /etc/group; then \
+      echo 'BASE_IMAGE already assigns the archiveweaver name or GID 65532' >&2; \
+      exit 1; \
+    fi; \
+    if grep -Eq '^(archiveweaver:|[^:]*:[^:]*:65532:)' /etc/passwd; then \
+      echo 'BASE_IMAGE already assigns the archiveweaver name or UID 65532' >&2; \
+      exit 1; \
+    fi; \
+    printf 'archiveweaver:x:65532:\n' >> /etc/group; \
+    printf 'archiveweaver:x:65532:65532:ArchiveWeaver controller:/runner:/bin/bash\n' >> /etc/passwd; \
+    mkdir -p /runner; \
+    chown 65532:65532 /runner; \
+    chmod 0700 /runner
+
+ENV HOME=/runner \
+    USER=archiveweaver \
+    LOGNAME=archiveweaver \
+    PYTHONDONTWRITEBYTECODE=1
+WORKDIR /runner
+USER 65532:65532
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["bash"]

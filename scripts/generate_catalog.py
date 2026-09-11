@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +27,10 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(result)
 
 
-def mode_matrix(solution: dict, runtimes: list[dict]) -> str:
-    rows = []
+def mode_matrix(
+    solution: dict[str, Any], runtimes: list[dict[str, Any]]
+) -> str:
+    rows: list[list[str]] = []
     for runtime in runtimes:
         status = solution["mode_support"][runtime["id"]]
         policy = runtime["topology"]
@@ -41,8 +45,12 @@ def mode_matrix(solution: dict, runtimes: list[dict]) -> str:
     return markdown_table(["Mode", "Product fit", "1 node", "2 nodes", "3 nodes", "3+ nodes"], rows)
 
 
-def solution_page(solution: dict, runtimes: list[dict], formats: dict) -> str:
-    format_rows = []
+def solution_page(
+    solution: dict[str, Any],
+    runtimes: list[dict[str, Any]],
+    formats: dict[str, dict[str, Any]],
+) -> str:
+    format_rows: list[list[str]] = []
     for group in solution["format_profiles"]:
         item = formats[group]
         format_rows.append([item["label"], item["extensions"]])
@@ -83,7 +91,7 @@ def solution_page(solution: dict, runtimes: list[dict], formats: dict) -> str:
 
 
 def main() -> None:
-    data = catalog()
+    data = cast(dict[str, Any], catalog())
     data_dir = ROOT / "src" / "archiveweaver" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     write(data_dir / "catalog.json", json.dumps(data, indent=2, ensure_ascii=False))
@@ -130,10 +138,21 @@ def main() -> None:
             solution["official_docs"],
             solution["homepage"],
         ])
+    non_github_sources = sorted(
+        solution["name"]
+        for solution in data["solutions"]
+        if urlparse(solution["source_repo"]).hostname != "github.com"
+    )
+    external_source_summary = ", ".join(non_github_sources[:-1])
+    if len(non_github_sources) > 1:
+        external_source_summary += f", and {non_github_sources[-1]}"
+    elif non_github_sources:
+        external_source_summary = non_github_sources[0]
     write(
         ROOT / "docs" / "reference" / "upstream-sources.md",
         "# Upstream sources\n\n"
-        "Links below are maintained as catalog facts and should be rechecked when a product release is pinned. GitHub is not the canonical forge for every product; Maarch, Mayan EDMS, Asalae, and SeedDMS use other official channels.\n\n"
+        "Links below are maintained as catalog facts and should be rechecked when a product release is pinned. "
+        f"GitHub is not the canonical forge for every product; {external_source_summary} use other official channels.\n\n"
         + markdown_table(["Product", "Upstream / project page", "Canonical source", "Official docs", "Homepage"], source_rows),
     )
 

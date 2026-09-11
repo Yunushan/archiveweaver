@@ -100,9 +100,14 @@
       - archiveweaver_serial | int > 0
       - archiveweaver_ansible_core_version is string
       - archiveweaver_ansible_core_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - archiveweaver_ansible_lint_version is string
+      - archiveweaver_ansible_lint_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - archiveweaver_ansible_runner_version is string
+      - archiveweaver_ansible_runner_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
       - archiveweaver_execution_environment_digest is string
       - archiveweaver_topology_design_approved | string | lower in ['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']
       - archiveweaver_single_node_production_approved | string | lower in ['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']
+      - archiveweaver_external_storage_ready | string | lower in ['true', 'false', 'yes', 'no', 'on', 'off', '1', '0']
     fail_msg: "Required deployment inputs are missing or unsafe; review group_vars/all/main.yml."
   tags: [always, preflight]
 
@@ -673,6 +678,21 @@
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s', 'docker-swarm']
     - archiveweaver_nodes == '2'
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require shared or replicated storage for multi-node Swarm
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_external_storage_ready | bool
+    fail_msg: >-
+      Multi-node Docker Swarm requires reviewed shared or replicated storage
+      with successful restore evidence.
+  when:
+    - not archiveweaver_preflight_is_staging_preview | bool
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'docker-swarm'
+    - archiveweaver_nodes != '1'
   no_log: true
   tags: [always, preflight]
 

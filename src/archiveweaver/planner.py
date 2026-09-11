@@ -20,6 +20,7 @@ class Plan:
     status: str
     support_level: str
     topology_level: str
+    external_storage: bool
     blockers: list[str]
     warnings: list[str]
     prerequisites: list[str]
@@ -108,6 +109,7 @@ def build_plan(
     stonith: bool = False,
     qdevice: bool = False,
     external_datastore: bool = False,
+    external_storage: bool = False,
     allow_conditional: bool = False,
     underlying_mode: str | None = None,
 ) -> Plan:
@@ -137,23 +139,45 @@ def build_plan(
         blockers.append("The solution marks this deployment mode as not-recommended.")
     if support_level == "conditional" and not allow_conditional:
         blockers.append("This product/mode is conditional; rerun with --allow-conditional after a design review.")
+    if support_level == "portable":
+        warnings.append(
+            "This product/runtime pairing is a portable infrastructure pattern; certify the exact product release and dependency stack before production."
+        )
     if mode == "ansible" and selected_underlying_mode is not None:
         underlying_support = solution["mode_support"][selected_underlying_mode]
         if underlying_support == "not-recommended":
             blockers.append(f"The selected underlying runtime '{selected_underlying_mode}' is not-recommended for this product.")
         if underlying_support == "conditional" and not allow_conditional:
             blockers.append(f"The product/underlying-runtime pairing '{selected_underlying_mode}' is conditional; rerun with --allow-conditional after a design review.")
-    if topology_level == "not-recommended" and not allow_conditional:
-        blockers.append(f"The {underlying_runtime['name']} topology policy marks {bucket} nodes as not-recommended.")
+    if topology_level == "conditional":
+        if not allow_conditional:
+            blockers.append(
+                f"The {underlying_runtime['name']} topology policy is conditional for {bucket} nodes; rerun with --allow-conditional only after a design review."
+            )
+        else:
+            warnings.append(
+                f"The conditional {underlying_runtime['name']} {bucket}-node topology requires recorded design approval and failure testing."
+            )
+    if topology_level == "not-recommended":
+        if not allow_conditional:
+            blockers.append(f"The {underlying_runtime['name']} topology policy marks {bucket} nodes as not-recommended.")
+        else:
+            warnings.append(
+                f"A documented exception is being used for the not-recommended {underlying_runtime['name']} {bucket}-node topology."
+            )
     if topology_level == "supported-with-stonith" and not stonith:
         blockers.append("Pacemaker two-node plans require --stonith; STONITH fencing cannot be optional in production.")
     if selected_underlying_mode == "pacemaker" and bucket == "2" and not qdevice:
         warnings.append("A quorum device or third witness is strongly recommended for a two-node Pacemaker cluster.")
-    if selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s", "docker-swarm"} and bucket in {"2", "3+"}:
+    if selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s", "docker-swarm"} and bucket in {"2", "3", "3+"}:
         if bucket == "2" and not external_datastore:
             blockers.append("Two-node consensus is not a resilient baseline; use three control/manager nodes or an external quorum-capable datastore.")
-        if bucket == "3+":
+        if bucket in {"2", "3", "3+"}:
             warnings.append("Keep the application database, object storage, and search cluster outside the scheduler's local ephemeral storage.")
+    if selected_underlying_mode == "docker-swarm" and bucket != "1" and not external_storage:
+        blockers.append(
+            "Multi-node Docker Swarm requires explicitly confirmed shared or replicated application storage; rerun with --external-storage only after validating the storage driver and recovery path."
+        )
     if operating_system["tier"] == "legacy-conditional":
         warnings.append("This OS is a legacy-conditional baseline; pin dependencies and run the full integration test before production.")
     if operating_system["tier"] == "forward-validate":
@@ -208,7 +232,17 @@ def build_plan(
         "Never bypass STONITH, quorum, TLS verification, or application authentication to make a check green.",
         "Take or verify a restorable backup before migrations, index rebuilds, or failover actions.",
     ]
-    status = "blocked" if blockers else ("conditional" if warnings or support_level == "conditional" else "ready")
+    status = (
+        "blocked"
+        if blockers
+        else (
+            "conditional"
+            if warnings
+            or support_level in {"conditional", "portable"}
+            or topology_level == "conditional"
+            else "ready"
+        )
+    )
     return Plan(
         solution=solution_id,
         solution_name=solution["name"],
@@ -221,6 +255,7 @@ def build_plan(
         status=status,
         support_level=support_level,
         topology_level=topology_level,
+        external_storage=external_storage,
         blockers=blockers,
         warnings=warnings,
         prerequisites=prerequisites,

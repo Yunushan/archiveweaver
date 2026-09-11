@@ -44,7 +44,8 @@ The built-in CLI implements layers 1–5. Layers 6–7 are intentionally explici
 
 ## Exit status
 
-- `0`: no failures reported;
+- `0`: at least one application, endpoint, path, or configuration probe passed and no warnings or failures were reported;
+- `1`: the run was incomplete or reported warnings, including a run with no meaningful application probe;
 - `2`: one or more checks failed or the plan is blocked;
 - `3`: wrapper refused an unsupported apply operation.
 

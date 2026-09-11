@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a scoped operational capability or support-policy change.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operational problem
+      description: Describe the operator or reliability problem without prescribing a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include the affected product, runtime, topology, and OS where applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety, rollback, and evidence impact
+      description: Explain new mutation authority, failure modes, rollback, and required certification evidence.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope confirmation
+      options:
+        - label: I understand a generic provider envelope is not a product-specific production certification.
+          required: true
+        - label: This request contains no credentials, customer data, or private infrastructure details.
+          required: true

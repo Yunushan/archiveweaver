@@ -16,6 +16,9 @@ except ImportError as exc:  # pragma: no cover - exercised by the controller boo
 
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "deploy" / "ansible" / "controller" / "workflow.yml"
+EXTRA_VARS_ALLOWLIST_NAME = "allowed-extra-vars.txt"
+EXTRA_VARS_ALLOWLIST_REFERENCE = f"controller/{EXTRA_VARS_ALLOWLIST_NAME}"
+EXTRA_VARS_ALLOWLIST_PATH = CONTRACT_PATH.parent / EXTRA_VARS_ALLOWLIST_NAME
 HEX_DIGEST = r"[0-9a-f]{64}"
 TEMPLATE_DIGEST = "sha256:REPLACE_WITH_64_HEX_DIGEST"
 REQUIRED_WORKFLOW_ORDER = [
@@ -148,6 +151,7 @@ OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS = [
     "archiveweaver_environment",
     "archiveweaver_ansible_core_version",
     "archiveweaver_ansible_lint_version",
+    "archiveweaver_ansible_runner_version",
     "archiveweaver_bundle_root",
     "archiveweaver_readiness_python",
     "archiveweaver_readiness_pythonpath",
@@ -576,7 +580,12 @@ def _required_extra_vars_by_runtime(
     )
 
 
-def _validate_runner_extra_var(workflow_id: str, payload: str, errors: list[str]) -> None:
+def _validate_runner_extra_var(
+    workflow_id: str,
+    payload: str,
+    allowed_keys: set[str],
+    errors: list[str],
+) -> None:
     if payload.startswith("@") or payload.startswith("{") or payload.startswith("[") or "=" not in payload:
         errors.append(
             f"workflow.{workflow_id} operational extra-vars must be explicit archiveweaver_* key=value bindings"
@@ -585,6 +594,10 @@ def _validate_runner_extra_var(workflow_id: str, payload: str, errors: list[str]
     key = payload.split("=", 1)[0]
     if not re.fullmatch(r"archiveweaver_[A-Za-z0-9_]+", key):
         errors.append(f"workflow.{workflow_id} operational extra-vars contain an unapproved key {key!r}")
+    elif key not in allowed_keys:
+        errors.append(
+            f"workflow.{workflow_id} operational extra-vars key {key!r} is outside the reviewed allowlist"
+        )
     if re.search(r",\s*[A-Za-z_][A-Za-z0-9_]*=", payload):
         errors.append(f"workflow.{workflow_id} operational extra-vars must carry one binding per option")
     protected_pattern = r"(?:^|,)\s*(?:" + "|".join(
@@ -598,6 +611,7 @@ def _validate_runner_command_bindings(
     workflow_id: str,
     tokens: list[str],
     expected_inventory: set[str],
+    allowed_extra_vars: set[str],
     errors: list[str],
 ) -> None:
     inventories: list[str] = []
@@ -633,7 +647,7 @@ def _validate_runner_command_bindings(
             + ", ".join(sorted(expected_inventory))
         )
     for payload in extra_var_payloads:
-        _validate_runner_extra_var(workflow_id, payload, errors)
+        _validate_runner_extra_var(workflow_id, payload, allowed_extra_vars, errors)
 
 
 def _validate_runner_option_shape(
@@ -676,6 +690,68 @@ def _validate_operational_runner(
     workflows: dict[str, dict[str, Any]],
     errors: list[str],
 ) -> None:
+    allowed_extra_vars: set[str] = set()
+    try:
+        allowlist_lines = EXTRA_VARS_ALLOWLIST_PATH.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        errors.append(f"operational runner extra-vars allowlist cannot be read: {exc}")
+        allowlist_lines = []
+    allowlist_entries = [
+        line.strip()
+        for line in allowlist_lines
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if allowlist_entries != sorted(allowlist_entries):
+        errors.append("operational runner extra-vars allowlist must be sorted")
+    if len(allowlist_entries) != len(set(allowlist_entries)):
+        errors.append("operational runner extra-vars allowlist must not contain duplicates")
+    invalid_allowlist_entries = [
+        value
+        for value in allowlist_entries
+        if not re.fullmatch(r"archiveweaver_[A-Za-z0-9_]+", value)
+    ]
+    if invalid_allowlist_entries:
+        errors.append("operational runner extra-vars allowlist contains invalid keys")
+    allowed_extra_vars = set(allowlist_entries)
+    protected_overlap = sorted(
+        allowed_extra_vars.intersection(OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS)
+    )
+    if protected_overlap:
+        errors.append(
+            "operational runner extra-vars allowlist contains protected keys: "
+            + ", ".join(protected_overlap)
+        )
+
+    declared_extra_vars: set[str] = set()
+    for item in workflows.values():
+        required = item.get("required_extra_vars")
+        if isinstance(required, list):
+            declared_extra_vars.update(
+                value for value in required if isinstance(value, str)
+            )
+        by_runtime = item.get("required_extra_vars_by_runtime")
+        if isinstance(by_runtime, dict):
+            for runtime, values in by_runtime.items():
+                if runtime != "unsupported_runtimes" and isinstance(values, list):
+                    declared_extra_vars.update(
+                        value for value in values if isinstance(value, str)
+                    )
+    runtime_bindings = contract.get("required_runtime_bindings")
+    if isinstance(runtime_bindings, dict):
+        for values in runtime_bindings.values():
+            if isinstance(values, list):
+                declared_extra_vars.update(
+                    value
+                    for value in values
+                    if isinstance(value, str) and value.startswith("archiveweaver_")
+                )
+    missing_allowlist_keys = sorted(declared_extra_vars - allowed_extra_vars)
+    if missing_allowlist_keys:
+        errors.append(
+            "operational runner extra-vars allowlist is missing declared keys: "
+            + ", ".join(missing_allowlist_keys)
+        )
+
     runner = _mapping(contract.get("operational_runner"), "operational_runner", errors)
     if runner.get("path") != OPERATIONAL_RUNNER_PATH:
         errors.append(f"operational_runner.path must be {OPERATIONAL_RUNNER_PATH}")
@@ -697,6 +773,7 @@ def _validate_operational_runner(
         errors.append("operational_runner.environment_policy must clear ambient Ansible and Python import overrides")
     expected_extra_vars_policy = {
         "key_prefix": "archiveweaver_",
+        "allowed_keys_file": EXTRA_VARS_ALLOWLIST_REFERENCE,
         "reject_sources": ["@file", "raw-yaml", "raw-json"],
         "protected_keys": OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS,
     }
@@ -748,7 +825,13 @@ def _validate_operational_runner(
                 errors.append(f"workflow.{workflow_id} must not invoke raw ansible-playbook")
             option_tokens = tokens[runner_index + 2 :]
             _validate_runner_option_shape(workflow_id, option_tokens, errors)
-            _validate_runner_command_bindings(workflow_id, option_tokens, expected_inventory, errors)
+            _validate_runner_command_bindings(
+                workflow_id,
+                option_tokens,
+                expected_inventory,
+                allowed_extra_vars,
+                errors,
+            )
             for token in tokens:
                 if any(
                     token == option
@@ -805,12 +888,12 @@ def validate(contract: Any) -> list[str]:
         errors.append("execution_environment.digest must be a SHA-256 digest or the explicit template binding")
     if isinstance(image, str) and isinstance(digest, str) and "@sha256:" in image and not image.endswith("REPLACE_WITH_64_HEX_DIGEST") and digest != "sha256:" + image.rsplit("@sha256:", 1)[1]:
         errors.append("execution_environment.digest must match execution_environment.image")
-    for key in ("controller_identity_env", "ansible_core", "ansible_lint"):
+    for key in ("controller_identity_env", "ansible_core", "ansible_lint", "ansible_runner"):
         if key not in execution_environment:
             errors.append(f"execution_environment.{key} is required")
     if execution_environment.get("controller_identity_env") != "ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST":
         errors.append("execution_environment.controller_identity_env is not the trusted digest binding")
-    for key in ("ansible_core", "ansible_lint"):
+    for key in ("ansible_core", "ansible_lint", "ansible_runner"):
         if key in execution_environment and (not isinstance(execution_environment[key], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", execution_environment[key])):
             errors.append(f"execution_environment.{key} must be pinned to a semantic version")
 
@@ -972,8 +1055,12 @@ def validate(contract: Any) -> list[str]:
             ("weekly-restore-drill", "backup-and-restore-gate", "7d"),
             ("monthly-failure-domain-drill", "failure-domain-drill", "30d"),
         ):
-            item = schedule_map.get(schedule_id)
-            if not isinstance(item, dict) or item.get("workflow") != workflow_id or item.get("interval") != interval:
+            schedule_item = schedule_map.get(schedule_id)
+            if (
+                not isinstance(schedule_item, dict)
+                or schedule_item.get("workflow") != workflow_id
+                or schedule_item.get("interval") != interval
+            ):
                 errors.append(f"schedule {schedule_id} must target {workflow_id} at {interval}")
 
     secret_keys = {"password", "passwd", "secret", "token", "private_key", "client_secret"}

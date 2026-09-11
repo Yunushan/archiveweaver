@@ -227,7 +227,11 @@ def _modes(raw: str = "native", docker: str = "validated") -> dict[str, str]:
     return support
 
 
-def _health(service_aliases: list[str], paths: list[str] | None = None, port: int | None = 80) -> dict:
+def _health(
+    service_aliases: list[str],
+    paths: list[str] | None = None,
+    port: int | None = 80,
+) -> dict[str, object]:
     return {
         "service_aliases": service_aliases,
         "http_paths": paths or ["/"],
@@ -255,7 +259,7 @@ def _solution(
     paths: list[str] | None = None,
     port: int = 80,
     image_hint: str | None = None,
-) -> dict:
+) -> dict[str, object]:
     return {
         "id": id,
         "name": name,
@@ -276,7 +280,7 @@ def _solution(
 
 
 SOLUTIONS = [
-    _solution("invenio-rdm", "InvenioRDM", "research-data-management", "https://github.com/inveniosoftware/invenio-rdm", "https://inveniordm.docs.cern.ch/install/", "https://inveniosoftware.org/products/rdm/", "MIT", ["Invenio application", "PostgreSQL", "OpenSearch/Elasticsearch", "Redis", "RabbitMQ", "S3-compatible object storage"], ["documents", "spreadsheets", "presentations", "images", "audio", "video", "ebooks", "archives", "scientific", "structured"], ["Python", "PostgreSQL", "Redis", "OpenSearch/Elasticsearch", "RabbitMQ", "S3"], ["invenio", "nginx", "gunicorn"], notes=["Treat the application as a distributed service; keep object storage and database outside the web process."]),
+    _solution("invenio-rdm", "InvenioRDM", "research-data-management", "https://github.com/inveniosoftware/invenio-app-rdm", "https://inveniordm.docs.cern.ch/install/", "https://inveniosoftware.org/products/rdm/", "MIT", ["Invenio application", "PostgreSQL", "OpenSearch/Elasticsearch", "Redis", "RabbitMQ", "S3-compatible object storage"], ["documents", "spreadsheets", "presentations", "images", "audio", "video", "ebooks", "archives", "scientific", "structured"], ["Python", "PostgreSQL", "Redis", "OpenSearch/Elasticsearch", "RabbitMQ", "S3"], ["invenio", "nginx", "gunicorn"], notes=["Treat the application as a distributed service; keep object storage and database outside the web process."]),
     _solution("dspace", "DSpace", "institutional-repository", "https://github.com/DSpace/DSpace", "https://wiki.lyrasis.org/display/DSDOC10x/Installing+DSpace", "https://dspace.org/", "BSD-3-Clause", ["DSpace backend", "DSpace Angular UI", "PostgreSQL", "Solr", "Tomcat", "S3-compatible storage"], ["documents", "spreadsheets", "presentations", "images", "audio", "video", "ebooks", "archives", "scientific", "structured"], ["Java", "Maven", "Ant", "PostgreSQL", "Solr", "Tomcat"], ["dspace", "tomcat", "solr"], paths=["/server/api", "/home"]),
     _solution("archivematica", "Archivematica", "digital-preservation", "https://github.com/artefactual/archivematica", "https://www.archivematica.org/en/docs/archivematica-latest/admin-manual/installation-setup/", "https://www.archivematica.org/", "AGPL-3.0", ["Archivematica dashboard", "Storage Service", "MCP server", "MCP client", "PostgreSQL", "Elasticsearch", "RabbitMQ", "Gearman", "Bag/S3 storage"], ["documents", "images", "audio", "video", "ebooks", "archives", "email", "web", "scientific", "preservation"], ["Python", "PostgreSQL", "Elasticsearch", "RabbitMQ", "Gearman", "FPR tools", "S3/NFS"], ["archivematica", "archivematica-storage-service", "nginx"], notes=["Preservation workflows are multi-service; a single container health check is not enough."]),
     _solution("dataverse", "Dataverse", "research-data-management", "https://github.com/IQSS/dataverse", "https://guides.dataverse.org/en/latest/installation/", "https://dataverse.org/", "Apache-2.0", ["Dataverse web application", "Payara", "PostgreSQL", "Solr", "S3/file storage", "SMTP"], ["documents", "spreadsheets", "presentations", "images", "audio", "video", "archives", "scientific", "structured"], ["Java", "Payara", "PostgreSQL", "Solr", "S3", "SMTP"], ["dataverse", "payara", "solr"], paths=["/api/info/version"], port=8080),
@@ -309,7 +313,7 @@ SOLUTIONS = [
 ]
 
 
-def catalog() -> dict:
+def catalog() -> dict[str, object]:
     return {
         "schema_version": 1,
         "generated_by": "scripts/generate_catalog.py",

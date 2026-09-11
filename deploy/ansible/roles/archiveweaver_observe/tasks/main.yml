@@ -29,14 +29,29 @@
     fail_msg: "Observation requires an HTTPS health URL, an absolute checker path, and a bounded systemd interval."
   tags: [observe]
 
+- name: Build the exact managed health-check argv
+  ansible.builtin.set_fact:
+    archiveweaver_observe_command_argv:
+      - "{{ archiveweaver_check_command }}"
+      - check
+      - --solution
+      - "{{ archiveweaver_solution_id }}"
+      - --mode
+      - "{{ archiveweaver_runtime }}"
+      - --url
+      - "{{ archiveweaver_health_url }}"
+      - --json
+  no_log: true
+  tags: [observe]
+
 - name: Verify the reviewed health-check executable
   ansible.builtin.include_tasks: "{{ role_path | dirname }}/archiveweaver_controller_preflight/tasks/hook-boundary.yml"
   vars:
     archiveweaver_hook_specs:
       - name: health-check
-        command:
-          - "{{ archiveweaver_check_command }}"
+        command: "{{ archiveweaver_observe_command_argv }}"
         sha256: "{{ archiveweaver_check_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_check_command_argv_sha256 }}"
   no_log: true
   tags: [observe]
 

@@ -18,10 +18,59 @@ class RenderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             render(self.catalog, "paperless-ngx", "docker", "1", "ubuntu-24.04", image="paperlessngx/paperless-ngx")
 
+    def test_docker_renderer_blocks_mutable_version_tag(self) -> None:
+        with self.assertRaises(ValueError):
+            render(
+                self.catalog,
+                "paperless-ngx",
+                "docker",
+                "1",
+                "ubuntu-24.04",
+                image="paperlessngx/paperless-ngx:2.14",
+            )
+
+    def test_non_production_override_allows_mutable_version_tag(self) -> None:
+        _, content = render(
+            self.catalog,
+            "paperless-ngx",
+            "docker",
+            "1",
+            "ubuntu-24.04",
+            image="paperlessngx/paperless-ngx:2.14",
+            allow_floating=True,
+        )
+        self.assertIn("paperlessngx/paperless-ngx:2.14", content)
+
     def test_kubernetes_renderer_contains_anti_affinity(self) -> None:
         _, content = render(self.catalog, "paperless-ngx", "rke2", "3", "ubuntu-24.04", image="registry.example/paperless@sha256:" + "a" * 64)
         self.assertIn("podAntiAffinity", content)
         self.assertIn("ReadWriteMany", content)
+
+    def test_multi_node_swarm_renderer_requires_external_storage(self) -> None:
+        with self.assertRaisesRegex(ValueError, "shared or replicated"):
+            render(
+                self.catalog,
+                "paperless-ngx",
+                "docker-swarm",
+                "3",
+                "ubuntu-24.04",
+                image="registry.example/paperless@sha256:" + "a" * 64,
+            )
+
+    def test_multi_node_swarm_renderer_uses_named_external_storage(self) -> None:
+        plan, content = render(
+            self.catalog,
+            "paperless-ngx",
+            "docker-swarm",
+            "3",
+            "ubuntu-24.04",
+            image="registry.example/paperless@sha256:" + "a" * 64,
+            external_storage=True,
+        )
+        self.assertTrue(plan["external_storage"])
+        self.assertIn("external: true", content)
+        self.assertIn("ARCHIVEWEAVER_DATA_VOLUME", content)
+        self.assertNotIn("driver: local", content)
 
     def test_renderer_rejects_short_image_digest(self) -> None:
         with self.assertRaises(ValueError):
@@ -37,7 +86,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn("replace-with-upstream-command", content)
 
     def test_ansible_renderer_defaults_to_plan_only(self) -> None:
-        plan, content = render(self.catalog, "paperless-ngx", "ansible", "3", "ubuntu-24.04")
+        plan, content = render(
+            self.catalog,
+            "paperless-ngx",
+            "ansible",
+            "3",
+            "ubuntu-24.04",
+            allow_conditional=True,
+        )
         self.assertEqual(plan["mode"], "ansible")
         self.assertIn("archiveweaver_apply: false", content)
         self.assertIn("archiveweaver_preflight", content)
@@ -65,7 +121,9 @@ class RenderTests(unittest.TestCase):
             underlying_mode="rke2",
         )
         self.assertEqual(plan["underlying_mode"], "rke2")
-        self.assertIn('archiveweaver_ansible_core_version: "2.21.0"', content)
+        self.assertIn('archiveweaver_ansible_core_version: "2.21.4"', content)
+        self.assertIn('archiveweaver_ansible_lint_version: "26.8.0"', content)
+        self.assertIn('archiveweaver_ansible_runner_version: "2.4.3"', content)
         self.assertIn('archiveweaver_execution_environment_digest: ""', content)
         self.assertIn('archiveweaver_runtime: "rke2"', content)
 

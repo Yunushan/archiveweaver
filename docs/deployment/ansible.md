@@ -158,6 +158,10 @@ the manifest must be listed in that index. The Ansible preflight role reruns
 the controller-side command before apply or repair. For apply, repair, and
 verification it also derives the managed host's catalog OS identifier from
 Ansible facts and rejects a mismatch with `archiveweaver_os_id`.
+Release integrity additionally requires a fresh `make github-audit` JSON
+certificate for the manifest's exact GitHub repository ID and source commit;
+all twelve hosted production controls must pass, and the indexed report expires
+for scoring after 24 hours.
 See [`premium-readiness.md`](../operations/premium-readiness.md) for the
 contract and ownership model.
 

@@ -58,7 +58,8 @@ collection, plugin, and Vault-path variables, plus `PYTHONPATH` and
 `PYTHONHOME`, before exporting the reviewed config and role path. It requires
 exactly one of the three protected operator inventories (`production`, `staging`, or `restore`),
 rejects arbitrary inventory paths and inventory directories, and accepts only
-explicit `archiveweaver_*` key/value bindings. Extra-vars files, raw YAML/JSON
+explicit key/value bindings from `allowed-extra-vars.txt`. Extra-vars files,
+raw YAML/JSON
 documents, protected controller identity/parallelism values, and
 `ansible_*` connection or privilege values are rejected. The
 controller job template must not expose an alternate raw `ansible-playbook`
@@ -67,11 +68,12 @@ only check/diff/syntax-check flags, the single approved inventory binding, and
 explicit `archiveweaver_*` extra variables; extra positional playbooks,
 `--`, and all other unreviewed options are rejected.
 
-The playbook verifies the controller's `ansible-playbook --version` and
-`ansible-lint --version` outputs against the pinned Core and Lint versions
-before verification, repair, or mutation. A controller with a different
-toolchain is rejected so module behavior, lint policy, and safety checks cannot
-drift silently. The main, verification, and repair entry points repeat the
+The playbook verifies the controller's `ansible-playbook --version`,
+`ansible-runner --version`, and `ansible-lint --version` outputs against the
+pinned Core, Runner, and Lint versions before verification, repair, or
+mutation. A controller with a different toolchain is rejected so job execution,
+module behavior, lint policy, and safety checks cannot drift silently. The main,
+verification, and repair entry points repeat the
 signed-source check, so invoking a playbook directly cannot bypass the
 controller workflow's source-integrity node.
 
@@ -111,11 +113,14 @@ the reviewed restore source/restore/fixity argv hooks, plus separate reviewed
 rollback and post-rollback verification argv hooks. Bind
 `archiveweaver_evidence_environment` to the release target (normally
 `production`); the roles separately record the isolated execution environment.
-Each reviewed hook binding must also include the SHA-256 digest of its
-executable. Certification and failure-drill rows carry `sha256` beside their
-argv; restore, rollback, and evidence-publication hooks use their corresponding
-`*_command_sha256` variables. The shared hook preflight rejects relative,
-symlinked, missing, non-regular, or byte-changed executables before execution.
+Each reviewed hook binding must include the SHA-256 digest of its executable
+and a separate digest of the complete canonical argv. Generate both values on
+the controller with `archiveweaver hook-digest --json -- /absolute/hook arg`.
+Certification and failure-drill rows carry `sha256` and `argv_sha256` beside
+their argv; restore, rollback, observation, and evidence-publication hooks use
+their corresponding `*_command_sha256` and `*_command_argv_sha256` variables.
+The shared hook preflight rejects relative, symlinked, missing, non-regular, or
+byte-changed executables and rejects any argument change before execution.
 Inject `archiveweaver_execution_environment_digest` from the approved
 controller image and keep it equal to the signed execution-environment digest
 in the readiness manifest; applied workflows are rejected on a mismatch. Every

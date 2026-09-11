@@ -17,7 +17,12 @@
       - item.command[0] is not search('\\.\\.')
       - item.sha256 is string
       - item.sha256 is match('^[0-9a-f]{64}$')
-    fail_msg: "Reviewed hooks must use an absolute executable path and a lowercase SHA-256 binding."
+      - item.argv_sha256 is string
+      - item.argv_sha256 is match('^[0-9a-f]{64}$')
+      - >-
+        (item.command | to_json(ensure_ascii=true, separators=[',', ':']) | hash('sha256'))
+        == item.argv_sha256
+    fail_msg: "Reviewed hooks must bind an absolute executable and the complete canonical argv with lowercase SHA-256 digests."
   loop: "{{ archiveweaver_hook_specs }}"
   loop_control:
     label: "{{ item.name }}"

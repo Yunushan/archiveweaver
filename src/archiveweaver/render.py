@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from textwrap import dedent, indent
+from typing import Any
 
 from .catalog import Catalog
 from .planner import build_plan
@@ -25,21 +26,17 @@ def _safe_image(image: str, allow_floating: bool) -> str:
             raise ValueError("image digests must use sha256:<64 hex>")
     elif image.startswith((".", "/", ":", "@")) or image.endswith((".", "/", ":", "@")):
         raise ValueError("image reference has an unsafe boundary")
-    if not allow_floating:
-        last_component = image.rsplit("/", 1)[-1]
-        has_digest = bool(separator)
-        has_tag = ":" in last_component
-        if not has_digest and not has_tag:
-            raise ValueError("untagged image references are blocked; provide an immutable tag or digest, or pass --allow-floating")
-        if image.endswith(":latest") or image in {"latest", "busybox", "nginx"}:
-            raise ValueError("floating image tags are blocked; provide an immutable tag or digest, or pass --allow-floating")
+    if not allow_floating and not separator:
+        raise ValueError(
+            "mutable image references are blocked; provide an OCI sha256 digest or pass --allow-floating for non-production use"
+        )
     return image
 
 
 def render_docker(solution_id: str, image: str, port: int) -> str:
     return dedent(f"""
         # ArchiveWeaver deployment envelope for {solution_id}
-        # Pin ARCHIVEWEAVER_SOLUTION_IMAGE to a release tag or digest before use.
+        # Pin ARCHIVEWEAVER_SOLUTION_IMAGE to an approved OCI digest before use.
         services:
           app:
             image: {image}
@@ -63,7 +60,7 @@ def render_docker(solution_id: str, image: str, port: int) -> str:
 def render_kubernetes(solution_id: str, image: str, port: int, namespace: str, replicas: int) -> str:
     return dedent(f"""
         # ArchiveWeaver deployment envelope for {solution_id}
-        # Replace the image with a pinned, approved release before applying.
+        # Replace the image with a pinned, approved OCI digest before applying.
         apiVersion: v1
         kind: Namespace
         metadata:
@@ -154,7 +151,7 @@ def render_kubernetes(solution_id: str, image: str, port: int, namespace: str, r
 def render_quadlet(solution_id: str, image: str, port: int) -> str:
     return dedent(f"""
         # /etc/containers/systemd/{solution_id}.container
-        # Pin Image= to an approved release tag or digest before use.
+        # Pin Image= to an approved OCI digest before use.
         [Unit]
         Description=ArchiveWeaver envelope for {solution_id}
         Wants=network-online.target
@@ -180,8 +177,14 @@ def render_quadlet(solution_id: str, image: str, port: int) -> str:
     """).lstrip()
 
 
-def render_swarm(solution_id: str, image: str, port: int, replicas: int) -> str:
-    return dedent(f"""
+def render_swarm(
+    solution_id: str,
+    image: str,
+    port: int,
+    replicas: int,
+    external_storage: bool,
+) -> str:
+    service = dedent(f"""
         # ArchiveWeaver deployment envelope for Docker Swarm
         version: "3.9"
         services:
@@ -205,12 +208,24 @@ def render_swarm(solution_id: str, image: str, port: int, replicas: int) -> str:
                 condition: on-failure
               placement:
                 max_replicas_per_node: 1
+    """).lstrip()
+    if external_storage:
+        storage = dedent(f"""
+        volumes:
+          archiveweaver_{solution_id}_data:
+            external: true
+            name: "${{ARCHIVEWEAVER_DATA_VOLUME:?set a reviewed distributed volume name}}"
+        # The external volume must use a tested shared or replicated storage
+        # implementation and have independently verified restore evidence.
+        """)
+    else:
+        storage = dedent(f"""
         volumes:
           archiveweaver_{solution_id}_data:
             driver: local
-        # A local volume is not shared across hosts. Replace it with a tested
-        # distributed storage driver and deploy official dependencies separately.
-    """).lstrip()
+        # This local volume is valid only for a single-node deployment.
+        """)
+    return service + storage.lstrip()
 
 
 def render_raw(solution_id: str, command: str) -> str:
@@ -254,6 +269,7 @@ def render_ansible(
     port: int,
     underlying_mode: str = "raw",
     image: str = "",
+    external_storage: bool = False,
 ) -> str:
     image_value = _yaml_string(image) if image else '""'
     common_vars = dedent(f"""
@@ -262,13 +278,15 @@ def render_ansible(
         archiveweaver_os_id: {_yaml_string(os_id)}
         archiveweaver_namespace: {_yaml_string(namespace)}
         archiveweaver_app_port: {port}
-        archiveweaver_ansible_core_version: "2.21.0"
-        archiveweaver_ansible_lint_version: "26.6.0"
+        archiveweaver_ansible_core_version: "2.21.4"
+        archiveweaver_ansible_lint_version: "26.8.0"
+        archiveweaver_ansible_runner_version: "2.4.3"
         archiveweaver_execution_environment_digest: ""
         archiveweaver_environment: "production"
         archiveweaver_evidence_environment: "production"
         archiveweaver_runtime: {_yaml_string(underlying_mode)}
         archiveweaver_image: {image_value}
+        archiveweaver_external_storage_ready: {str(external_storage).lower()}
         archiveweaver_release: "REPLACE_WITH_PINNED_RELEASE"
         archiveweaver_change_id: "CHG-REPLACE"
         archiveweaver_operator: ""
@@ -356,12 +374,23 @@ def render(
     image: str | None = None,
     allow_floating: bool = False,
     allow_conditional: bool = False,
+    external_storage: bool = False,
     underlying_mode: str | None = None,
-) -> tuple[dict, str]:
+) -> tuple[dict[str, Any], str]:
     if mode != "ansible" and underlying_mode is not None:
         raise ValueError("--underlying-mode is only valid when --mode ansible is selected")
     selected_underlying_mode = underlying_mode or "raw"
-    plan = build_plan(catalog, solution_id, mode, nodes, os_id, namespace=namespace, allow_conditional=allow_conditional, underlying_mode=selected_underlying_mode if mode == "ansible" else None)
+    plan = build_plan(
+        catalog,
+        solution_id,
+        mode,
+        nodes,
+        os_id,
+        namespace=namespace,
+        allow_conditional=allow_conditional,
+        external_storage=external_storage,
+        underlying_mode=selected_underlying_mode if mode == "ansible" else None,
+    )
     if plan.status == "blocked":
         raise ValueError("render blocked: " + " ".join(plan.blockers))
     solution = catalog.solution(solution_id)
@@ -376,7 +405,16 @@ def render(
         catalog.runtime(selected_underlying_mode)
         selected_image = _safe_image(image, allow_floating) if image else ""
         port = int(solution["health"]["default_port"] or 8080)
-        return plan.as_dict(), render_ansible(solution_id, nodes, os_id, namespace, port, selected_underlying_mode, selected_image)
+        return plan.as_dict(), render_ansible(
+            solution_id,
+            nodes,
+            os_id,
+            namespace,
+            port,
+            selected_underlying_mode,
+            selected_image,
+            external_storage,
+        )
     selected_image = _safe_image(selected_image or "", allow_floating)
     port = int(solution["health"]["default_port"] or 8080)
     try:
@@ -388,7 +426,13 @@ def render(
     elif mode == "podman-quadlet":
         content = render_quadlet(solution_id, selected_image, port)
     elif mode == "docker-swarm":
-        content = render_swarm(solution_id, selected_image, port, replica_count)
+        content = render_swarm(
+            solution_id,
+            selected_image,
+            port,
+            replica_count,
+            external_storage,
+        )
     elif runtime["kind"] == "kubernetes":
         content = render_kubernetes(solution_id, selected_image, port, namespace, replica_count)
     else:

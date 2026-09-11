@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,12 +8,12 @@ version = "0.1.0"
 description = "Deployment planning, health checking, and safe repair automation for digital archiving platforms"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { file = "LICENSE" }
+license = "0BSD"
+license-files = ["LICENSE"]
 authors = [{ name = "ArchiveWeaver contributors" }]
 keywords = ["digital-archives", "digital-preservation", "dms", "devops", "ha", "kubernetes", "ansible", "site-reliability"]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: Zero-Clause BSD",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.9",
@@ -24,6 +24,12 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3.15",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Yunushan/archiveweaver"
+Documentation = "https://github.com/Yunushan/archiveweaver/tree/main/docs"
+Repository = "https://github.com/Yunushan/archiveweaver.git"
+Issues = "https://github.com/Yunushan/archiveweaver/issues"
 
 [project.scripts]
 archiveweaver = "archiveweaver.cli:main"
@@ -40,4 +46,19 @@ archiveweaver = ["data/*.json"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["archiveweaver"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
 

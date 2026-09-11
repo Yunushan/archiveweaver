@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ class AnsibleEditionTests(unittest.TestCase):
         for relative in (
             "ansible.cfg",
             ".ansible-lint",
+            "requirements.in",
             "requirements.txt",
             "requirements.yml",
             "release-manifest.example.json",
@@ -25,8 +27,11 @@ class AnsibleEditionTests(unittest.TestCase):
             "rollback.yml",
             "product-certification.yml",
             "controller/workflow.yml",
+            "controller/allowed-extra-vars.txt",
             "controller/README.md",
             "../../scripts/validate-controller-contract.py",
+            "../../scripts/compile-ansible-lock.py",
+            "../../scripts/generate-ansible-sbom.py",
             "execution-environment/Containerfile",
             "execution-environment/requirements.txt",
             "execution-environment/README.md",
@@ -65,7 +70,19 @@ class AnsibleEditionTests(unittest.TestCase):
         containerfile = (ANSIBLE_ROOT / "execution-environment/Containerfile").read_text(encoding="utf-8")
         self.assertIn("ARG BASE_IMAGE", containerfile)
         self.assertIn("@sha256:[0-9a-f]{64}", containerfile)
-        self.assertIn("BASE_IMAGE must be an OCI reference with a 64-character SHA-256 digest", containerfile)
+        self.assertIn(
+            "BASE_IMAGE must be a fully qualified lowercase OCI repository with a 64-character SHA-256 digest",
+            containerfile,
+        )
+        self.assertIn("--only-binary=:all:", containerfile)
+        self.assertIn("--require-hashes", containerfile)
+        self.assertIn("CPython 3.13/3.14 on Linux x86_64", containerfile)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", containerfile)
+        self.assertIn('ansible-execution-environment="true"', containerfile)
+        self.assertIn("WORKDIR /runner", containerfile)
+        self.assertIn("USER 65532:65532", containerfile)
+        self.assertIn('ENTRYPOINT ["dumb-init", "--"]', containerfile)
+        self.assertIn('CMD ["bash"]', containerfile)
 
         self.assertEqual(
             (ANSIBLE_ROOT / "requirements.txt").read_bytes(),
@@ -76,9 +93,111 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("--engine podman|docker", builder)
         self.assertIn("--build-arg", builder)
         self.assertIn("--tag", builder)
+        self.assertIn("--source-revision", builder)
+        self.assertIn("--user 65532:65532", builder)
+        self.assertIn("ansible-playbook --version", builder)
+        self.assertIn("ansible-runner --version", builder)
+        self.assertIn("dumb-init --version", builder)
+        self.assertIn("pwd.getpwuid", builder)
+        self.assertIn("ansible-execution-environment", builder)
+        self.assertIn("--module-name ping", builder)
+        self.assertIn("org.opencontainers.image.revision", builder)
+        self.assertIn("{{ index .Labels", builder)
+        self.assertIn("{{.Config.User}}", builder)
+        self.assertIn('default_user" == "65532:65532', builder)
         self.assertIn("latest", builder)
         validator = (ROOT / "scripts/validate-ansible.sh").read_text(encoding="utf-8")
         self.assertIn("cmp -s requirements.txt execution-environment/requirements.txt", validator)
+        self.assertIn('compile-ansible-lock.py" --check', validator)
+
+    def test_ansible_version_bindings_match_the_controller_lock(self) -> None:
+        lock = (ANSIBLE_ROOT / "requirements.txt").read_text(encoding="utf-8")
+        requirements = dict(
+            re.findall(r"(?m)^([a-z0-9-]+)==([^\s\\]+)\s+\\$", lock)
+        )
+        self.assertGreaterEqual(len(requirements), 20)
+        self.assertGreaterEqual(lock.count("--hash=sha256:"), len(requirements))
+        self.assertIn(
+            "Approved artifact scope: CPython 3.13 and 3.14 on Linux x86_64",
+            lock,
+        )
+        self.assertNotIn(ROOT.as_posix(), lock)
+        self.assertNotRegex(lock, r"(?m)^[a-z0-9-]+(?:>=|<=|~=|!=|>|<)")
+        for requirement in (ANSIBLE_ROOT / "requirements.in").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if not requirement or requirement.startswith("#"):
+                continue
+            name, version = requirement.lower().split("==", 1)
+            self.assertEqual(requirements[name], version)
+        main_vars = (ANSIBLE_ROOT / "group_vars/all/main.yml").read_text(encoding="utf-8")
+        workflow = (ANSIBLE_ROOT / "controller/workflow.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            f'archiveweaver_ansible_core_version: "{requirements["ansible-core"]}"',
+            main_vars,
+        )
+        self.assertIn(
+            f'archiveweaver_ansible_lint_version: "{requirements["ansible-lint"]}"',
+            main_vars,
+        )
+        self.assertIn(
+            f'archiveweaver_ansible_runner_version: "{requirements["ansible-runner"]}"',
+            main_vars,
+        )
+        self.assertIn(f'ansible_core: {requirements["ansible-core"]}', workflow)
+        self.assertIn(f'ansible_lint: {requirements["ansible-lint"]}', workflow)
+        self.assertIn(f'ansible_runner: {requirements["ansible-runner"]}', workflow)
+
+    def test_manifest_template_evidence_records_carry_release_identity(self) -> None:
+        manifest = json.loads(
+            (ANSIBLE_ROOT / "release-manifest.example.json").read_text(encoding="utf-8")
+        )
+        service = manifest["service"]
+        required = {
+            "name",
+            "solution",
+            "runtime",
+            "underlying_runtime",
+            "os_id",
+            "release",
+            "environment",
+            "execution_environment_digest",
+            "recorded_at",
+            "operator",
+            "fixture_set",
+        }
+        evidence_records: list[dict[str, object]] = []
+
+        def collect(value: object) -> None:
+            if isinstance(value, dict):
+                if "status" in value and isinstance(value.get("evidence"), str):
+                    evidence_records.append(value)
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(manifest)
+        self.assertGreater(len(evidence_records), 20)
+        for record in evidence_records:
+            self.assertFalse(required - record.keys(), record.get("evidence"))
+            self.assertEqual(record["solution"], service["solution_id"])
+            self.assertEqual(record["runtime"], service["runtime"])
+            self.assertEqual(record["underlying_runtime"], service["underlying_runtime"])
+            self.assertEqual(record["os_id"], service["os_id"])
+        certification = manifest["product_certification"]["test_matrix"]
+        failure_tests = manifest["resilience"]["failure_tests"]
+        self.assertEqual(
+            {record["name"] for record in certification},
+            {"dependencies", "smoke", "migration", "formats", "api"},
+        )
+        self.assertEqual(
+            {record["name"] for record in failure_tests},
+            {"node", "service", "dependency", "storage"},
+        )
+        paths = [record["evidence"] for record in evidence_records]
+        self.assertEqual(len(paths), len(set(paths)))
 
     def test_core_operational_playbooks_pin_serial_execution(self) -> None:
         for playbook in ("site.yml", "verify.yml", "repair.yml", "restore-drill.yml", "failure-drill.yml", "rollback.yml", "product-certification.yml"):
@@ -98,9 +217,12 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("archiveweaver_runtime: rke2", main_vars)
         self.assertIn("archiveweaver_environment: production", main_vars)
         self.assertIn("archiveweaver_observe_enabled: false", main_vars)
+        self.assertIn("archiveweaver_manage_packages: false", main_vars)
         self.assertIn("archiveweaver_external_consensus_ready: false", main_vars)
-        self.assertIn('archiveweaver_ansible_core_version: "2.21.0"', main_vars)
-        self.assertIn('archiveweaver_ansible_lint_version: "26.6.0"', main_vars)
+        self.assertIn("archiveweaver_external_storage_ready: false", main_vars)
+        self.assertIn('archiveweaver_ansible_core_version: "2.21.4"', main_vars)
+        self.assertIn('archiveweaver_ansible_lint_version: "26.8.0"', main_vars)
+        self.assertIn('archiveweaver_ansible_runner_version: "2.4.3"', main_vars)
         self.assertIn('archiveweaver_execution_environment_digest: ""', main_vars)
         self.assertIn('archiveweaver_readiness_pythonpath: "{{ archiveweaver_bundle_root }}/../../src"', main_vars)
         self.assertIn('archiveweaver_product_stack_sha256: ""', main_vars)
@@ -113,6 +235,10 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn(".get('underlying_runtime') == archiveweaver_runtime", (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8"))
         self.assertIn(".get('environment') == archiveweaver_environment", (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8"))
         self.assertIn("Verify the pinned Ansible Core on the controller", (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8"))
+        self.assertIn(
+            "Require shared or replicated storage for multi-node Swarm",
+            (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8"),
+        )
         self.assertIn("Seal the controller evidence root with a SHA-256 index", (ANSIBLE_ROOT / "roles/archiveweaver_evidence/tasks/main.yml").read_text(encoding="utf-8"))
         self.assertIn("Verify the sealed controller evidence index", (ANSIBLE_ROOT / "roles/archiveweaver_evidence/tasks/main.yml").read_text(encoding="utf-8"))
         for playbook, apply_var in (
@@ -130,10 +256,15 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("archiveweaver_evidence_publish_command: []", main_vars)
         self.assertIn("archiveweaver_evidence_verify_command: []", main_vars)
         self.assertIn('archiveweaver_evidence_publish_command_sha256: ""', main_vars)
+        self.assertIn('archiveweaver_evidence_publish_command_argv_sha256: ""', main_vars)
         self.assertIn('archiveweaver_evidence_verify_command_sha256: ""', main_vars)
+        self.assertIn('archiveweaver_evidence_verify_command_argv_sha256: ""', main_vars)
         self.assertIn('archiveweaver_restore_command_sha256: ""', main_vars)
+        self.assertIn('archiveweaver_restore_command_argv_sha256: ""', main_vars)
         self.assertIn('archiveweaver_fixity_command_sha256: ""', main_vars)
+        self.assertIn('archiveweaver_fixity_command_argv_sha256: ""', main_vars)
         self.assertIn('archiveweaver_check_command_sha256: ""', main_vars)
+        self.assertIn('archiveweaver_check_command_argv_sha256: ""', main_vars)
         self.assertIn("archiveweaver_evidence_retention_days: 0", main_vars)
         host = (ANSIBLE_ROOT / "roles/archiveweaver_host/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Create application, log, and release-record directories", host)
@@ -188,6 +319,11 @@ class AnsibleEditionTests(unittest.TestCase):
         preflight = (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Require an odd control-plane shape for consensus runtimes", preflight)
         self.assertIn("Require an external quorum design for two-node consensus", preflight)
+        self.assertIn(
+            "Require shared or replicated storage for multi-node Swarm",
+            preflight,
+        )
+        self.assertIn("archiveweaver_external_storage_ready | bool", preflight)
         self.assertIn("Require fencing before any Pacemaker mutation", preflight)
         self.assertIn("Require inventory cardinality for the declared topology", preflight)
         self.assertIn("Require explicit design approval for a conditional multi-node provider", preflight)
@@ -256,6 +392,7 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST", preflight)
         controller_preflight = (ANSIBLE_ROOT / "roles/archiveweaver_controller_preflight/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Require the pinned Ansible Core execution environment", controller_preflight)
+        self.assertIn("Require the pinned Ansible Runner execution environment", controller_preflight)
         self.assertIn("Inspect the controller Ansible Lint version", controller_preflight)
         self.assertIn("Require the pinned Ansible Lint execution environment", controller_preflight)
         self.assertIn("Reject tag-filtered operational workflows", controller_preflight)
@@ -296,6 +433,9 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("item.stat.mode[0] == '0'", hook_boundary)
         self.assertIn("item.stat.mode[-1] not in", hook_boundary)
         self.assertIn("item.stat.checksum | default('') == item.item.sha256", hook_boundary)
+        self.assertIn("item.argv_sha256 is match('^[0-9a-f]{64}$')", hook_boundary)
+        self.assertIn("to_json(ensure_ascii=true, separators=[',', ':'])", hook_boundary)
+        self.assertIn("== item.argv_sha256", hook_boundary)
         for hook_role in (
             "archiveweaver_certification",
             "archiveweaver_failure",
@@ -413,6 +553,8 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Require immutable images in the rendered Kustomize model", kubernetes)
         self.assertIn("replace(archiveweaver_kustomize_path", kubernetes)
         self.assertIn("Reject symlinks inside the staged product Kustomize bundle", kubernetes)
+        self.assertIn("Reject ambiguous or nonportable Kustomize filenames", kubernetes)
+        self.assertIn("^[A-Za-z0-9._/-]+$", kubernetes)
         self.assertIn("Render the staged product Kustomize bundle read-only", kubernetes)
         verify_bundle = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/verify-bundle.yml").read_text(encoding="utf-8")
         self.assertIn("Require the verified Compose bundle to match its release digest", verify_bundle)
@@ -422,6 +564,11 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Require immutable images in the verified Kustomize model", verify_bundle)
         self.assertIn("replace(archiveweaver_kustomize_path", verify_bundle)
         self.assertIn("Reject symlinks inside the verified Kustomize bundle", verify_bundle)
+        self.assertIn(
+            "Reject ambiguous or nonportable verified Kustomize filenames",
+            verify_bundle,
+        )
+        self.assertIn("^[A-Za-z0-9._/-]+$", verify_bundle)
         self.assertIn("Require the verified raw provider unit to match its release digest", verify_bundle)
         self.assertIn("Require the verified Quadlet provider to match its release digest", verify_bundle)
         self.assertIn("Define solution-scoped Quadlet files during verification", verify_bundle)
@@ -485,6 +632,9 @@ class AnsibleEditionTests(unittest.TestCase):
         observe = (ANSIBLE_ROOT / "roles/archiveweaver_observe/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("hook-boundary.yml", observe)
         self.assertIn("health-check", observe)
+        self.assertIn("archiveweaver_observe_command_argv", observe)
+        self.assertIn("- --solution", observe)
+        self.assertIn("- --url", observe)
         self.assertIn("and not (ansible_check_mode | bool)", evidence)
         self.assertIn("or (archiveweaver_evidence_seal_enabled | default(false) | bool)", evidence)
         restore = (ANSIBLE_ROOT / "roles/archiveweaver_restore/tasks/main.yml").read_text(encoding="utf-8")
@@ -497,6 +647,8 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Reject colliding restore evidence filenames", restore)
         self.assertIn("Inspect controller evidence boundaries before writing", restore)
         self.assertIn("Reject symlinked controller evidence boundaries", restore)
+        self.assertIn("Write independent restore and fixity evidence", restore)
+        self.assertIn("'evidence': (archiveweaver_restore_evidence_dir", restore)
         failure_drill = (ANSIBLE_ROOT / "roles/archiveweaver_failure/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Refuse to execute failure hooks in check mode", failure_drill)
         self.assertIn("Require safe failure-drill argv elements", failure_drill)
@@ -504,6 +656,8 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Reject colliding failure-drill evidence filenames", failure_drill)
         self.assertIn("Inspect controller evidence boundaries before writing", failure_drill)
         self.assertIn("Reject symlinked controller evidence boundaries", failure_drill)
+        self.assertIn("Write independently attributable failure-domain evidence", failure_drill)
+        self.assertIn("'evidence': (archiveweaver_failure_evidence_dir", failure_drill)
         rollback = (ANSIBLE_ROOT / "roles/archiveweaver_rollback/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Refuse to execute rollback hooks in check mode", rollback)
         self.assertIn("rollback-", rollback)

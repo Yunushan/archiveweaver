@@ -72,6 +72,40 @@
   no_log: true
   tags: [always, controller]
 
+- name: Validate the pinned Ansible Runner declaration
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_ansible_runner_version is string
+      - archiveweaver_ansible_runner_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+    fail_msg: "The controller Ansible Runner version must be a pinned semantic version."
+  tags: [always, controller]
+
+- name: Inspect the controller Ansible Runner version
+  ansible.builtin.command:
+    argv: [ansible-runner, --version]
+  register: archiveweaver_controller_preflight_ansible_runner_version
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the pinned Ansible Runner execution environment
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_ansible_runner_version.rc == 0
+      - archiveweaver_controller_preflight_ansible_runner_version.stdout | trim == archiveweaver_ansible_runner_version
+    fail_msg: "The controller is not using the pinned Ansible Runner execution environment."
+  no_log: true
+  tags: [always, controller]
+
+- name: Validate the pinned Ansible Lint declaration
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_ansible_lint_version is string
+      - archiveweaver_ansible_lint_version is match('^[0-9]+\\.[0-9]+\\.[0-9]+$')
+    fail_msg: "The controller Ansible Lint version must be a pinned semantic version."
+  tags: [always, controller]
+
 - name: Inspect the controller Ansible Lint version
   ansible.builtin.command:
     argv: [ansible-lint, --version]

@@ -12,7 +12,7 @@ source_root = Path(__file__).resolve().parents[1] / "src"
 if str(source_root) not in sys.path:
     sys.path.insert(0, str(source_root))
 
-from archiveweaver.path_utils import has_symlink_component
+from archiveweaver.path_utils import has_symlink_component  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
