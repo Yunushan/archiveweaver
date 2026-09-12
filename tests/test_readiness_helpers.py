@@ -19,6 +19,7 @@ from archiveweaver.readiness import (
     _attestation_subject_bindings,
     _attestation_subject_digests,
     _claim_evidence_ok,
+    _cyclonedx_sbom_valid,
     _digest_matches,
     _evidence_context,
     _evidence_index_errors,
@@ -359,6 +360,21 @@ class ReadinessHelperTests(unittest.TestCase):
                 self.assertFalse(
                     _sbom_binds_name("unused.json", "artifact", root, context)
                 )
+
+    def test_cyclonedx_rejects_malformed_component_types_without_crashing(self) -> None:
+        payload = {
+            "$schema": "https://cyclonedx.org/schema/bom-1.7.schema.json",
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.7",
+            "serialNumber": "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79",
+            "version": 1,
+            "metadata": {
+                "timestamp": "2026-09-11T12:00:00Z",
+                "component": {"type": "application", "name": "artifact"},
+            },
+            "components": [{"type": [], "name": "artifact"}],
+        }
+        self.assertFalse(_cyclonedx_sbom_valid(payload))
 
     def test_supply_chain_documents_require_production_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

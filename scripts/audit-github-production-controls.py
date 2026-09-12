@@ -72,6 +72,7 @@ REQUIRED_ENVIRONMENT_VARIABLES = frozenset(
 )
 REQUIRED_ENVIRONMENT_SECRETS = frozenset({"ARCHIVEWEAVER_RELEASE_SETTINGS_TOKEN"})
 MAX_API_JSON_NESTING = 128
+MAX_API_JSON_BYTES = 16 * 1024 * 1024
 
 
 class GitHubAuditError(RuntimeError):
@@ -102,6 +103,36 @@ def _reject_excessive_json_nesting(payload: str, endpoint: str) -> None:
                 )
         elif character in "]}" and depth:
             depth -= 1
+
+
+def _reject_non_finite_json_constant(value: str) -> Any:
+    """Reject JavaScript-style numeric values that are not standard JSON."""
+    raise ValueError(f"non-standard JSON numeric value: {value}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous duplicate object keys in authoritative API responses."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def _load_api_json(raw: str, endpoint: str) -> Any:
+    """Parse a bounded, standard JSON response from the GitHub API."""
+    if len(raw.encode("utf-8", errors="surrogatepass")) > MAX_API_JSON_BYTES:
+        raise GitHubAuditError(f"GitHub returned oversized JSON for {endpoint}")
+    _reject_excessive_json_nesting(raw, endpoint)
+    try:
+        return json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+    except (ValueError, RecursionError) as exc:
+        raise GitHubAuditError(f"GitHub returned malformed JSON for {endpoint}") from exc
 
 
 @dataclass(frozen=True)
@@ -171,11 +202,7 @@ class GitHubClient:
         raw = self._run(endpoint, allow_not_found=allow_not_found)
         if raw is None:
             return None
-        _reject_excessive_json_nesting(raw, endpoint)
-        try:
-            value = json.loads(raw)
-        except (ValueError, RecursionError) as exc:
-            raise GitHubAuditError(f"GitHub returned malformed JSON for {endpoint}") from exc
+        value = _load_api_json(raw, endpoint)
         if not isinstance(value, dict):
             raise GitHubAuditError(f"GitHub returned a non-object for {endpoint}")
         return value
@@ -184,11 +211,7 @@ class GitHubClient:
         raw = self._run(endpoint)
         if raw is None:  # pragma: no cover - impossible without allow_not_found
             raise GitHubAuditError(f"GitHub returned no response for {endpoint}")
-        _reject_excessive_json_nesting(raw, endpoint)
-        try:
-            value = json.loads(raw)
-        except (ValueError, RecursionError) as exc:
-            raise GitHubAuditError(f"GitHub returned malformed JSON for {endpoint}") from exc
+        value = _load_api_json(raw, endpoint)
         if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
             raise GitHubAuditError(f"GitHub returned a non-object array for {endpoint}")
         return value
@@ -328,7 +351,7 @@ def verify_source_commit(
     )
     if (
         not isinstance(comparison, dict)
-        or comparison.get("status") not in {"ahead", "identical"}
+        or comparison.get("status") not in ("ahead", "identical")
     ):
         raise GitHubAuditError(
             "source revision must be reachable from the protected main branch"
@@ -436,7 +459,7 @@ def _reviewer_rule_passes(rule: dict[str, Any]) -> bool:
         reviewer_id = reviewer.get("id") if isinstance(reviewer, dict) else None
         if (
             not isinstance(entry, dict)
-            or entry.get("type") not in {"User", "Team"}
+            or entry.get("type") not in ("User", "Team")
             or isinstance(reviewer_id, bool)
             or not isinstance(reviewer_id, int)
             or reviewer_id <= 0
@@ -520,7 +543,7 @@ def evaluate_snapshot(snapshot: GitHubSnapshot) -> list[ControlResult]:
         # GitHub's documented list/get response currently omits the policy type.
         # Reject an explicit non-tag value, but accept omission and require the
         # release workflow's successful tag deployment as runtime proof.
-        and snapshot.environment_policies[0].get("type") in {None, "tag"}
+        and snapshot.environment_policies[0].get("type") in (None, "tag")
     )
     variable_names = _names(snapshot.environment_variables)
     secret_names = _names(snapshot.environment_secrets)
@@ -604,7 +627,8 @@ def build_report(
     repository_id = snapshot.repository.get("id")
     repository_node_id = snapshot.repository.get("node_id")
     if (
-        not isinstance(canonical_repository, str)
+        not isinstance(repository, str)
+        or not isinstance(canonical_repository, str)
         or REPOSITORY_RE.fullmatch(canonical_repository) is None
         or canonical_repository.casefold() != repository.casefold()
         or isinstance(repository_id, bool)
@@ -616,10 +640,13 @@ def build_report(
         raise GitHubAuditError(
             "the authoritative repository identity does not match the requested repository"
         )
-    if SOURCE_REVISION_RE.fullmatch(source_revision) is None:
+    if (
+        not isinstance(source_revision, str)
+        or SOURCE_REVISION_RE.fullmatch(source_revision) is None
+    ):
         raise GitHubAuditError("source revision must be a lowercase 40-character commit SHA")
     observed = audited_at or datetime.now(timezone.utc)
-    if observed.tzinfo is None:
+    if not isinstance(observed, datetime) or observed.tzinfo is None:
         raise GitHubAuditError("audit timestamp must include a timezone")
     observed_utc = observed.astimezone(timezone.utc)
     return {

@@ -177,6 +177,67 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["status"], "fail")
             self.assertTrue(any("service must be an object" in error for error in report["errors"]))
 
+    def test_malformed_service_types_are_not_ready_without_crashing(self) -> None:
+        base = {
+            "schema_version": 1,
+            "service": {
+                "solution_id": "paperless-ngx",
+                "runtime": "rke2",
+                "os_id": "ubuntu-24.04",
+                "environment": "production",
+            },
+            **{
+                name: {"status": "pending"}
+                for name in (
+                    "control",
+                    "release",
+                    "product_certification",
+                    "resilience",
+                    "data_protection",
+                    "security",
+                    "observability",
+                    "recovery",
+                    "governance",
+                    "support",
+                )
+            },
+        }
+        cases = (
+            ("runtime", []),
+            ("runtime", {}),
+            ("environment", []),
+            ("environment", {}),
+            ("underlying_runtime", []),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for field, value in cases:
+                with self.subTest(field=field, value=value):
+                    candidate = copy.deepcopy(base)
+                    if field == "underlying_runtime":
+                        candidate["service"]["runtime"] = "ansible"
+                    candidate["service"][field] = value
+                    manifest_path = Path(directory) / f"{field}-{type(value).__name__}.json"
+                    manifest_path.write_text(json.dumps(candidate), encoding="utf-8")
+                    report = assess_readiness(manifest_path, self.catalog)
+                    self.assertEqual(report["status"], "fail")
+                    self.assertGreaterEqual(len(report["errors"]), 1)
+
+            for section_name in base:
+                if section_name in {"schema_version", "service"}:
+                    continue
+                candidate = copy.deepcopy(base)
+                candidate[section_name]["status"] = []
+                manifest_path = Path(directory) / f"{section_name}-malformed-status.json"
+                manifest_path.write_text(json.dumps(candidate), encoding="utf-8")
+                report = assess_readiness(manifest_path, self.catalog)
+                self.assertEqual(report["status"], "fail")
+                self.assertTrue(
+                    any(
+                        f"{section_name}.status must be pass, pending, or fail" in error
+                        for error in report["errors"]
+                    )
+                )
+
     def test_cli_reports_the_example_as_not_ready(self) -> None:
         result = subprocess.run(
             [
@@ -293,6 +354,26 @@ class ReadinessTests(unittest.TestCase):
             self.assertTrue(any("secret-bearing field 'token'" in error for error in report["errors"]))
             self.assertTrue(any("path field 'evidence'" in error for error in report["errors"]))
             self.assertLess(report["score"], 100)
+
+            for key in (
+                "api_token",
+                "accessToken",
+                "API-KEY",
+                "secret_value",
+                "database_password",
+                "bearerToken",
+            ):
+                candidate = copy.deepcopy(manifest)
+                candidate["security"][key] = "must-not-be-here"
+                candidate_path = root / f"{key.replace('-', '_')}.json"
+                candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+                candidate_report = assess_readiness(candidate_path, self.catalog)
+                self.assertTrue(
+                    any(
+                        f"secret-bearing field '{key}'" in error
+                        for error in candidate_report["errors"]
+                    )
+                )
 
     def test_empty_referenced_evidence_cannot_pass(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

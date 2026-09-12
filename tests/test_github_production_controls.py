@@ -140,6 +140,27 @@ class GitHubProductionControlTests(unittest.TestCase):
         self.assertEqual(len(results), 12)
         self.assertTrue(all(results.values()))
 
+    def test_malformed_control_types_fail_closed_without_crashing(self) -> None:
+        snapshot = self.passing_snapshot()
+        malformed = replace(
+            snapshot,
+            release_environment={
+                **snapshot.release_environment,
+                "protection_rules": [
+                    {
+                        "type": "required_reviewers",
+                        "prevent_self_review": True,
+                        "reviewers": [{"type": [], "reviewer": {"id": 7}}],
+                    }
+                ],
+            },
+            environment_policies=[
+                {**snapshot.environment_policies[0], "type": []}
+            ],
+        )
+        results = self.results(malformed)
+        self.assertFalse(results["release-environment"])
+
     def test_scheduled_scorecard_is_not_a_required_pull_request_check(self) -> None:
         checks = self.audit["EXPECTED_STATUS_CHECKS"]
         self.assertNotIn("Scorecards analysis", checks)
@@ -194,6 +215,14 @@ class GitHubProductionControlTests(unittest.TestCase):
                         results,
                     )
 
+        with self.assertRaises(self.audit["GitHubAuditError"]):
+            self.audit["build_report"](
+                "example/archiveweaver",
+                [],
+                snapshot,
+                results,
+            )
+
     def test_paginated_objects_must_be_complete(self) -> None:
         self.assertEqual(
             self.audit["_items"](
@@ -230,6 +259,34 @@ class GitHubProductionControlTests(unittest.TestCase):
                 client.object("repos/example/archiveweaver")
             with self.assertRaisesRegex(self.audit["GitHubAuditError"], "malformed JSON"):
                 client.array("repos/example/archiveweaver/rulesets")
+
+    def test_github_client_rejects_non_standard_json_numbers(self) -> None:
+        client = self.audit["GitHubClient"]("example/archiveweaver")
+        with patch.object(client, "_run", return_value='{"id": NaN}'):
+            with self.assertRaisesRegex(
+                self.audit["GitHubAuditError"], "malformed JSON"
+            ):
+                client.object("repos/example/archiveweaver")
+
+    def test_github_client_rejects_duplicate_json_keys(self) -> None:
+        client = self.audit["GitHubClient"]("example/archiveweaver")
+        with patch.object(client, "_run", return_value='{"id": 1, "id": 2}'):
+            with self.assertRaisesRegex(
+                self.audit["GitHubAuditError"], "malformed JSON"
+            ):
+                client.object("repos/example/archiveweaver")
+
+    def test_github_client_rejects_oversized_json(self) -> None:
+        client = self.audit["GitHubClient"]("example/archiveweaver")
+        with patch.object(client, "_run", return_value="{}"):
+            with patch.dict(
+                self.audit["_load_api_json"].__globals__,
+                {"MAX_API_JSON_BYTES": 1},
+            ):
+                with self.assertRaisesRegex(
+                    self.audit["GitHubAuditError"], "oversized JSON"
+                ):
+                    client.object("repos/example/archiveweaver")
 
     def test_source_revision_must_be_an_existing_verified_commit(self) -> None:
         revision = "a" * 40

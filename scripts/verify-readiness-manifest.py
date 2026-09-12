@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import sys
 from pathlib import Path
@@ -13,14 +12,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from archiveweaver.path_utils import has_symlink_component  # noqa: E402
+from archiveweaver.evidence import _measure_regular_file  # noqa: E402
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
 def main(argv: list[str]) -> int:
@@ -40,8 +35,12 @@ def main(argv: list[str]) -> int:
     try:
         resolved = manifest.resolve()
         resolved.relative_to(REPOSITORY_ROOT.resolve())
-        actual = _sha256(resolved)
-    except (OSError, ValueError):
+        _, actual = _measure_regular_file(
+            resolved,
+            max_bytes=MAX_MANIFEST_BYTES,
+            label="readiness manifest",
+        )
+    except (OSError, RuntimeError, ValueError):
         print("the readiness manifest must stay inside the signed repository checkout", file=sys.stderr)
         return 1
     if actual != expected:

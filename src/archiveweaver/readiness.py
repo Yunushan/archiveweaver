@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -160,6 +161,41 @@ CLAIM_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
         "sla_verification",
     ),
 }
+_SECRET_MANIFEST_KEYS = frozenset(
+    {
+        "password",
+        "passwd",
+        "secret",
+        "secrets",
+        "token",
+        "privatekey",
+        "clientsecret",
+        "apitoken",
+        "accesstoken",
+        "refreshtoken",
+        "idtoken",
+        "apikey",
+        "credential",
+        "credentials",
+        "secretvalue",
+        "passwordvalue",
+        "tokenvalue",
+        "signingkey",
+        "encryptionkey",
+    }
+)
+_SECRET_MANIFEST_SUFFIXES = frozenset(
+    {
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "privatekey",
+        "apikey",
+        "accesskey",
+        "credential",
+    }
+)
 
 
 def _json_shape_errors(
@@ -197,6 +233,14 @@ def _has_structured_release_execution_environment(value: Any) -> bool:
 
 def _is_real_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not PLACEHOLDER_RE.search(value)
+
+
+def _is_secret_bearing_key(value: str) -> bool:
+    """Reject common secret-bearing field spellings without blocking identifiers."""
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    return normalized in _SECRET_MANIFEST_KEYS or any(
+        normalized.endswith(suffix) for suffix in _SECRET_MANIFEST_SUFFIXES
+    )
 
 
 def _is_absolute_uri(value: Any, *, allow_fragment: bool = True) -> bool:
@@ -582,7 +626,7 @@ def _path_identity(value: Any) -> str | None:
     """Return a normalized relative spelling for cross-field path checks."""
     if not isinstance(value, str) or not value.strip():
         return None
-    return Path(value).as_posix()
+    return os.path.normcase(Path(value).as_posix())
 
 
 def _artifact_proof_paths(value: Any) -> set[str]:
@@ -986,6 +1030,7 @@ def _spdx_sbom_valid(payload: dict[str, Any]) -> bool:
 def _cyclonedx_component_valid(value: Any) -> bool:
     return bool(
         isinstance(value, dict)
+        and isinstance(value.get("type"), str)
         and value.get("type") in CYCLONEDX_COMPONENT_TYPES
         and isinstance(value.get("name"), str)
         and bool(value["name"].strip())
@@ -1002,10 +1047,14 @@ def _cyclonedx_sbom_valid(payload: dict[str, Any]) -> bool:
     metadata = payload.get("metadata")
     components = payload.get("components")
     schema = payload.get("$schema")
-    expected_schemas = {
-        f"http://cyclonedx.org/schema/bom-{spec_version}.schema.json",
-        f"https://cyclonedx.org/schema/bom-{spec_version}.schema.json",
-    }
+    expected_schemas = (
+        {
+            f"http://cyclonedx.org/schema/bom-{spec_version}.schema.json",
+            f"https://cyclonedx.org/schema/bom-{spec_version}.schema.json",
+        }
+        if isinstance(spec_version, str)
+        else set()
+    )
     component_refs = [
         component.get("bom-ref")
         for component in components
@@ -1013,7 +1062,9 @@ def _cyclonedx_sbom_valid(payload: dict[str, Any]) -> bool:
     ] if isinstance(components, list) else []
     return bool(
         payload.get("bomFormat") == "CycloneDX"
+        and isinstance(spec_version, str)
         and spec_version in SUPPORTED_CYCLONEDX_VERSIONS
+        and isinstance(schema, str)
         and schema in expected_schemas
         and isinstance(payload.get("serialNumber"), str)
         and CYCLONEDX_SERIAL_RE.fullmatch(payload["serialNumber"])
@@ -1333,17 +1384,24 @@ def _evidence_context(manifest: dict[str, Any], root: Path, catalog: Catalog) ->
     expected_sha256 = _expected_evidence_index_sha256(manifest)
     if index_path is None or expected_sha256 is None:
         return None
-    report = verify_evidence_index(
-        index_path,
-        expected_sha256=expected_sha256,
-        include_entries=True,
-    )
+    try:
+        report = verify_evidence_index(
+            index_path,
+            expected_sha256=expected_sha256,
+            include_entries=True,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
     if report.get("status") != "pass":
         return None
     indexed_files = report.get("_entries")
     if not isinstance(indexed_files, dict):
         return None
-    return index_path.parent.resolve(), indexed_files, catalog
+    try:
+        evidence_root = index_path.parent.resolve()
+    except (OSError, RuntimeError):
+        return None
+    return evidence_root, indexed_files, catalog
 
 
 def _evidence_index_errors(manifest: dict[str, Any], root: Path) -> list[str]:
@@ -1355,7 +1413,10 @@ def _evidence_index_errors(manifest: dict[str, Any], root: Path) -> list[str]:
         return [
             "evidence_index_digest must be a lowercase sha256: digest of the exact index bytes"
         ]
-    report = verify_evidence_index(index_path, expected_sha256=expected_sha256)
+    try:
+        report = verify_evidence_index(index_path, expected_sha256=expected_sha256)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return [f"evidence_index verification failed: {exc}"]
     if report.get("status") == "pass":
         return []
     details = "; ".join(str(error) for error in report.get("errors", []))
@@ -1397,10 +1458,16 @@ def _all_pass_with_evidence(
     if not records_pass:
         return False
     names = [str(item["name"]).lower() for item in values]
-    evidence_paths = [str(item["evidence"]) for item in values]
+    evidence_paths = [
+        _path_identity(item.get("evidence"))
+        for item in values
+        if isinstance(item, dict)
+    ]
     return (
         (not required_names or {name.lower() for name in required_names} <= set(names))
         and len(set(names)) == len(values)
+        and len(evidence_paths) == len(values)
+        and all(path is not None for path in evidence_paths)
         and len(set(evidence_paths)) == len(values)
     )
 
@@ -1448,9 +1515,18 @@ def _claim_evidence_ok(
         for field, record in zip(required_fields, records)
     ):
         return False
-    evidence_paths = [str(record["evidence"]) for record in records if isinstance(record, dict)]
+    evidence_paths = [
+        _path_identity(record.get("evidence"))
+        for record in records
+        if isinstance(record, dict)
+    ]
     names = [str(record["name"]).lower() for record in records if isinstance(record, dict)]
-    return len(set(evidence_paths)) == len(records) and len(set(names)) == len(records)
+    return (
+        len(evidence_paths) == len(records)
+        and all(path is not None for path in evidence_paths)
+        and len(set(evidence_paths)) == len(records)
+        and len(set(names)) == len(records)
+    )
 
 
 def _matching_passing_value(
@@ -1996,7 +2072,11 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
                 errors.append("service.underlying_runtime must identify the runtime coordinated by Ansible")
             if underlying == "ansible":
                 errors.append("service.underlying_runtime cannot be ansible")
-        if solution is not None and selected_runtime in catalog.runtimes:
+        if (
+            solution is not None
+            and isinstance(selected_runtime, str)
+            and selected_runtime in catalog.runtimes
+        ):
             support_level = solution["mode_support"].get(selected_runtime)
             if support_level == "not-recommended":
                 errors.append(f"service runtime '{selected_runtime}' is not-recommended for {solution_id}")
@@ -2006,7 +2086,10 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
             catalog.operating_system(str(service.get("os_id")))
         except ValueError:
             errors.append("service.os_id must identify an operating system in the catalog")
-        if service.get("environment") not in ENVIRONMENT_VALUES:
+        if (
+            not isinstance(service.get("environment"), str)
+            or service.get("environment") not in ENVIRONMENT_VALUES
+        ):
             errors.append("service.environment must identify a supported target environment")
     release = manifest.get("release", {})
     if isinstance(release, dict) and not _is_real_text(release.get("version")):
@@ -2156,7 +2239,10 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
         section = manifest.get(section_name)
         if not isinstance(section, dict):
             errors.append(f"{section_name} must be an object")
-        elif section.get("status") not in STATUS_VALUES:
+        elif (
+            not isinstance(section.get("status"), str)
+            or section.get("status") not in STATUS_VALUES
+        ):
             errors.append(f"{section_name}.status must be pass, pending, or fail")
     governance = manifest.get("governance")
     if isinstance(governance, dict) and governance.get("status") == "pass":
@@ -2206,7 +2292,7 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     if solution is not None:
         errors.extend(_catalog_coverage_errors(manifest.get("product_certification"), solution))
     for key, value in _walk_keys(manifest):
-        if key.lower() in {"password", "passwd", "secret", "token", "private_key", "client_secret"}:
+        if _is_secret_bearing_key(key):
             errors.append(f"secret-bearing field '{key}' is not allowed in a readiness manifest")
         if key.lower() in {
             "path",
@@ -2290,8 +2376,9 @@ def _evidence_metadata_errors(
                     # The path validator rejects traversal and absolute paths;
                     # normalize harmless spelling differences so `./proof.json`
                     # cannot evade the one-record/one-file rule.
-                    normalized_evidence = Path(evidence).as_posix()
-                    evidence_references.setdefault(normalized_evidence, []).append(path or "<root>")
+                    normalized_evidence = _path_identity(evidence)
+                    if normalized_evidence is not None:
+                        evidence_references.setdefault(normalized_evidence, []).append(path or "<root>")
                 if not _is_real_text(value.get("name")):
                     errors.append(f"{path}.name must identify the evidence record")
                 if value.get("solution") != solution_id:

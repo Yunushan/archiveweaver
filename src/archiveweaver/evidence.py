@@ -16,6 +16,23 @@ from .path_utils import has_symlink_component
 WINDOWS_ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{2})")
 MAX_EVIDENCE_INDEX_BYTES = 16 * 1024 * 1024
 MAX_EVIDENCE_INDEX_FILES = 10_000
+MAX_EVIDENCE_BUNDLE_ENTRIES = MAX_EVIDENCE_INDEX_FILES * 4
+
+
+def _bundle_paths(root: Path) -> list[Path]:
+    """Enumerate a bundle as a bounded operation that reports traversal errors."""
+    paths: list[Path] = []
+    try:
+        for path in root.rglob("*"):
+            if len(paths) >= MAX_EVIDENCE_BUNDLE_ENTRIES:
+                raise ValueError(
+                    "evidence bundle exceeds the "
+                    f"{MAX_EVIDENCE_BUNDLE_ENTRIES}-entry safety limit"
+                )
+            paths.append(path)
+    except (OSError, RuntimeError) as exc:
+        raise OSError(f"cannot enumerate evidence bundle safely: {root}: {exc}") from exc
+    return sorted(paths)
 
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -159,7 +176,7 @@ def build_evidence_index(directory: Path, output: Path) -> dict[str, Any]:
         raise ValueError("evidence index must be written inside the evidence directory") from exc
 
     files: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*")):
+    for path in _bundle_paths(root):
         if has_symlink_component(path):
             raise ValueError(f"evidence bundle must not contain symlinked paths: {path}")
         if not path.is_file() or path.resolve() == output_resolved:
@@ -247,6 +264,13 @@ def verify_evidence_index(
         }
 
     root = index_path.parent
+    try:
+        resolved_index_path = index_path.resolve()
+    except (OSError, RuntimeError) as exc:
+        return {
+            "status": "fail",
+            "errors": [f"cannot resolve evidence index safely: {exc}"],
+        }
     errors: list[str] = []
     indexed: set[str] = set()
     seen_paths: set[str] = set()
@@ -284,11 +308,15 @@ def verify_evidence_index(
             errors.append(f"evidence digest mismatch: {relative}")
 
     actual: set[str] = set()
-    for path in root.rglob("*"):
-        if has_symlink_component(path):
-            errors.append(f"symlink is not permitted in evidence bundle: {path.relative_to(root).as_posix()}")
-        elif path.is_file() and path.resolve() != index_path.resolve():
-            actual.add(path.relative_to(root).as_posix())
+    try:
+        for path in _bundle_paths(root):
+            relative = path.relative_to(root).as_posix()
+            if has_symlink_component(path):
+                errors.append(f"symlink is not permitted in evidence bundle: {relative}")
+            elif path.is_file() and path.resolve() != resolved_index_path:
+                actual.add(relative)
+    except (OSError, RuntimeError, ValueError) as exc:
+        errors.append(f"evidence bundle could not be enumerated safely: {exc}")
     for relative in sorted(actual - indexed):
         errors.append(f"unindexed evidence file: {relative}")
     for relative in sorted(indexed - actual):

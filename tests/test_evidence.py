@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from archiveweaver.evidence import (
+    _bundle_paths,
     _safe_file,
     build_evidence_index,
     verify_evidence_index,
@@ -16,6 +17,17 @@ from archiveweaver.evidence import (
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_bundle_enumeration_has_an_entry_limit(self) -> None:
+        root = Path("evidence")
+        with patch.object(
+            Path,
+            "rglob",
+            return_value=iter((root / "first", root / "second")),
+        ):
+            with patch("archiveweaver.evidence.MAX_EVIDENCE_BUNDLE_ENTRIES", 1):
+                with self.assertRaisesRegex(ValueError, "1-entry safety limit"):
+                    _bundle_paths(root)
+
     def test_builder_rejects_missing_root_and_external_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -369,6 +381,25 @@ class EvidenceTests(unittest.TestCase):
             index_path.write_bytes(b"{\xff")
             report = verify_evidence_index(index_path)
             self.assertEqual(report["status"], "fail")
+
+    def test_directory_enumeration_errors_are_reported_as_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            index_path = Path(directory) / "evidence-index.json"
+            index_path.write_text(
+                json.dumps(
+                    {"schema_version": 1, "algorithm": "sha256", "files": []}
+                ),
+                encoding="utf-8",
+            )
+            with patch(
+                "archiveweaver.evidence.Path.rglob",
+                side_effect=OSError("permission denied"),
+            ):
+                report = verify_evidence_index(index_path)
+            self.assertEqual(report["status"], "fail")
+            self.assertTrue(
+                any("could not be enumerated safely" in error for error in report["errors"])
+            )
 
     def test_duplicate_index_keys_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
