@@ -25,6 +25,27 @@ MAX_API_JSON_NUMBER_DIGITS = 4_300
 Fetcher = Callable[[str], dict[str, Any]]
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the fixed GitHub API origin from being redirected elsewhere."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        response: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> None:
+        return None
+
+
+def _open_github_request(request: urllib.request.Request, timeout: int) -> Any:
+    """Open a GitHub API request without following untrusted redirects."""
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    return opener.open(request, timeout=timeout)
+
+
 def github_slug(url: object) -> str | None:
     if not isinstance(url, str):
         return None
@@ -157,7 +178,7 @@ def github_fetcher(token: str | None) -> Fetcher:
             try:
                 # The request origin is the fixed HTTPS GITHUB_API constant and
                 # ``slug`` is constrained to a canonical owner/repository pair.
-                with urllib.request.urlopen(request, timeout=20) as response:  # nosec B310
+                with _open_github_request(request, timeout=20) as response:
                     result = _load_api_json(response, slug)
                 if not isinstance(result, dict):
                     raise ValueError(f"GitHub returned a non-object for {slug}")

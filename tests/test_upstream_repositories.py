@@ -4,13 +4,14 @@ import runpy
 import unittest
 import urllib.error
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 MODULE = runpy.run_path("scripts/validate-upstream-repositories.py")
 audit = MODULE["audit"]
 github_slug = MODULE["github_slug"]
 github_fetcher = MODULE["github_fetcher"]
+no_redirect_handler = MODULE["_NoRedirectHandler"]
 
 
 class _Response:
@@ -41,21 +42,49 @@ class UpstreamRepositoryTests(unittest.TestCase):
             b'{"full_name": ' + (b"9" * 4301) + b"}",
             b"[" * 2000 + b"0" + b"]" * 2000,
         ):
-            with self.subTest(payload=payload[:40]), patch.object(
-                MODULE["urllib"].request,
-                "urlopen",
-                return_value=_Response(payload),
+            with self.subTest(payload=payload[:40]), patch.dict(
+                github_fetcher.__globals__,
+                {"_open_github_request": Mock(return_value=_Response(payload))},
             ):
                 with self.assertRaisesRegex(ValueError, "malformed JSON"):
                     fetch("example/repo")
 
+    def test_github_fetcher_does_not_follow_redirects(self) -> None:
+        handler = no_redirect_handler()
+        request = MODULE["urllib"].request.Request("https://api.github.com/repos/example/repo")
+        self.assertIsNone(
+            handler.redirect_request(
+                request,
+                object(),
+                302,
+                "Found",
+                {},
+                "https://example.org/redirected",
+            )
+        )
+        fetch = github_fetcher(None)
+        redirect = urllib.error.HTTPError(
+            request.full_url,
+            302,
+            "Found",
+            {},
+            None,
+        )
+        opened = Mock(side_effect=redirect)
+        try:
+            with patch.dict(github_fetcher.__globals__, {"_open_github_request": opened}):
+                with self.assertRaises(urllib.error.HTTPError):
+                    fetch("example/repo")
+            opened.assert_called_once()
+        finally:
+            redirect.close()
+
     def test_github_fetcher_rejects_oversized_json_before_materializing_it(self) -> None:
         fetch = github_fetcher(None)
         with patch.dict(github_fetcher.__globals__, {"MAX_API_JSON_BYTES": 1}):
-            with patch.object(
-                MODULE["urllib"].request,
-                "urlopen",
-                return_value=_Response(b"{}"),
+            with patch.dict(
+                github_fetcher.__globals__,
+                {"_open_github_request": Mock(return_value=_Response(b"{}"))},
             ):
                 with self.assertRaisesRegex(ValueError, "oversized JSON"):
                     fetch("example/repo")
