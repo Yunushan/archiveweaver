@@ -630,7 +630,12 @@ def _path_identity(value: Any) -> str | None:
 
 
 def _artifact_proof_paths(value: Any) -> set[str]:
-    """Return the artifact, SBOM, and detached-signature path identities."""
+    """Return every proof path associated with one artifact."""
+    return set(_artifact_proof_path_entries(value))
+
+
+def _artifact_core_proof_paths(value: Any) -> set[str]:
+    """Return the three primary paths required for one artifact."""
     if not isinstance(value, dict):
         return set()
     paths = {
@@ -640,8 +645,28 @@ def _artifact_proof_paths(value: Any) -> set[str]:
     return {path for path in paths if path is not None}
 
 
+def _artifact_proof_path_entries(value: Any) -> list[str]:
+    """Return every indexed path used to prove one artifact."""
+    if not isinstance(value, dict):
+        return []
+    paths = [
+        _path_identity(value.get(field))
+        for field in ("path", "sbom", "signature")
+    ]
+    for field in ("signature_verification", "verification"):
+        verification = value.get(field)
+        if isinstance(verification, dict):
+            paths.append(_path_identity(verification.get("evidence")))
+    return [path for path in paths if path is not None]
+
+
 def _execution_environment_proof_paths(value: Any) -> set[str]:
-    """Return the controller-image attestation, SBOM, and signature paths."""
+    """Return every proof path associated with the controller image."""
+    return set(_execution_environment_proof_path_entries(value))
+
+
+def _execution_environment_core_proof_paths(value: Any) -> set[str]:
+    """Return the three primary paths required for the controller image."""
     if not isinstance(value, dict):
         return set()
     paths = {
@@ -651,31 +676,80 @@ def _execution_environment_proof_paths(value: Any) -> set[str]:
     return {path for path in paths if path is not None}
 
 
-def _github_controls_proof_paths(value: Any) -> set[str]:
+def _execution_environment_proof_path_entries(value: Any) -> list[str]:
+    """Return every indexed path used to prove the controller image."""
     if not isinstance(value, dict):
-        return set()
-    paths = {
-        _path_identity(value.get(field)) for field in ("path", "signature")
-    }
+        return []
+    paths = [
+        _path_identity(value.get(field))
+        for field in ("provenance", "sbom", "signature")
+    ]
+    verification = value.get("signature_verification")
+    if isinstance(verification, dict):
+        paths.append(_path_identity(verification.get("evidence")))
+    return [path for path in paths if path is not None]
+
+
+def _github_controls_proof_paths(value: Any) -> set[str]:
+    return set(_github_controls_proof_path_entries(value))
+
+
+def _github_controls_proof_path_entries(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    paths = [_path_identity(value.get(field)) for field in ("path", "signature")]
     signature_verification = value.get("signature_verification")
     if isinstance(signature_verification, dict):
-        paths.add(_path_identity(signature_verification.get("evidence")))
-    return {path for path in paths if path is not None}
+        paths.append(_path_identity(signature_verification.get("evidence")))
+    return [path for path in paths if path is not None]
 
 
 def _release_proof_paths(value: Any) -> set[str]:
     """Return every local proof path owned by a release section."""
+    return set(_release_proof_path_entries(value))
+
+
+def _release_proof_path_entries(value: Any) -> list[str]:
+    """Return every local proof path owned by a release section."""
     if not isinstance(value, dict):
-        return set()
-    paths: set[str] = set()
+        return []
+    paths: list[str] = []
+    for field in ("evidence", "provenance"):
+        path = _path_identity(value.get(field))
+        if path is not None:
+            paths.append(path)
     artifacts = value.get("artifacts")
     if isinstance(artifacts, list):
         for artifact in artifacts:
-            paths.update(_artifact_proof_paths(artifact))
-    paths.update(_artifact_proof_paths(value.get("provider_bundle")))
-    paths.update(_execution_environment_proof_paths(value.get("execution_environment")))
-    paths.update(_github_controls_proof_paths(value.get("github_controls")))
+            paths.extend(_artifact_proof_path_entries(artifact))
+    paths.extend(_artifact_proof_path_entries(value.get("provider_bundle")))
+    paths.extend(
+        _execution_environment_proof_path_entries(value.get("execution_environment"))
+    )
+    paths.extend(_github_controls_proof_path_entries(value.get("github_controls")))
     return paths
+
+
+def _release_proof_names(value: Any) -> set[str]:
+    """Return normalized artifact identities owned by a release section."""
+    return set(_release_proof_name_entries(value))
+
+
+def _release_proof_name_entries(value: Any) -> list[str]:
+    """Return every normalized artifact identity owned by a release section."""
+    if not isinstance(value, dict):
+        return []
+    names: list[str] = []
+    artifacts = value.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and _is_real_text(artifact.get("name")):
+                names.append(str(artifact["name"]).casefold())
+    for field in ("provider_bundle", "execution_environment"):
+        item = value.get(field)
+        if isinstance(item, dict) and _is_real_text(item.get("name")):
+            names.append(str(item["name"]).casefold())
+    return names
 
 
 def _structured_json_payload(
@@ -1641,14 +1715,27 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         _signed_artifact_ok(item, root, context, manifest) for item in artifacts
     ):
         return False
+    release_proof_path_entries = _release_proof_path_entries(section)
+    if len(release_proof_path_entries) != len(set(release_proof_path_entries)):
+        return False
+    release_proof_name_entries = _release_proof_name_entries(section)
+    if len(release_proof_name_entries) != len(set(release_proof_name_entries)):
+        return False
     release_artifact_proof_paths: set[str] = set()
     for artifact in artifacts:
         artifact_paths = _artifact_proof_paths(artifact)
-        if len(artifact_paths) != 3 or release_artifact_proof_paths.intersection(artifact_paths):
+        if (
+            len(_artifact_core_proof_paths(artifact)) != 3
+            or release_artifact_proof_paths.intersection(artifact_paths)
+        ):
             return False
         release_artifact_proof_paths.update(artifact_paths)
     service = manifest.get("service")
-    artifact_names = [str(item.get("name", "")) for item in artifacts if isinstance(item, dict)]
+    artifact_names = [
+        str(item.get("name", "")).casefold()
+        for item in artifacts
+        if isinstance(item, dict)
+    ]
     artifact_relative_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
     if len(artifact_names) != len(set(artifact_names)) or len(artifact_relative_paths) != len(set(artifact_relative_paths)):
         return False
@@ -1682,10 +1769,14 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     if isinstance(service, dict) and service.get("runtime") == "ansible":
         provider_bundle = section.get("provider_bundle")
         if isinstance(provider_bundle, dict):
-            if str(provider_bundle.get("name", "")) in artifact_names:
+            provider_name = str(provider_bundle.get("name", "")).casefold()
+            if provider_name in artifact_names:
                 return False
             provider_paths = _artifact_proof_paths(provider_bundle)
-            if len(provider_paths) != 3 or all_release_proof_paths.intersection(provider_paths):
+            if (
+                len(_artifact_core_proof_paths(provider_bundle)) != 3
+                or all_release_proof_paths.intersection(provider_paths)
+            ):
                 return False
             all_release_proof_paths.update(provider_paths)
             expected_release_digests.add(str(provider_bundle.get("digest", "")))
@@ -1702,7 +1793,7 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     execution_environment = section.get("execution_environment")
     execution_environment_proof_paths = _execution_environment_proof_paths(execution_environment)
     if (
-        len(execution_environment_proof_paths) != 3
+        len(_execution_environment_core_proof_paths(execution_environment)) != 3
         or all_release_proof_paths.intersection(execution_environment_proof_paths)
     ):
         return False
@@ -1951,6 +2042,8 @@ def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
         and not _artifact_proof_paths(rollback_artifact).intersection(
             _release_proof_paths(release)
         )
+        and str(rollback_artifact.get("name", "")).casefold()
+        not in _release_proof_names(release)
     )
 
 
@@ -2216,9 +2309,23 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
             if not isinstance(verification, dict) or verification.get("status") != "pass":
                 errors.append("release.execution_environment.signature_verification must be a passing evidence record")
     if isinstance(release, dict) and release.get("status") == "pass":
+        proof_path_entries = _release_proof_path_entries(release)
+        if len(proof_path_entries) != len(set(proof_path_entries)):
+            errors.append(
+                "release proof paths must be unique across release attestations"
+            )
+        proof_name_entries = _release_proof_name_entries(release)
+        if len(proof_name_entries) != len(set(proof_name_entries)):
+            errors.append(
+                "release artifact names must be unique across release attestations"
+            )
         artifacts = release.get("artifacts")
         if isinstance(artifacts, list):
-            artifact_names = [str(item.get("name", "")) for item in artifacts if isinstance(item, dict)]
+            artifact_names = [
+                str(item.get("name", "")).casefold()
+                for item in artifacts
+                if isinstance(item, dict)
+            ]
             artifact_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
             if len(artifact_names) != len(set(artifact_names)):
                 errors.append("release.artifacts must not contain duplicate artifact names")
@@ -2226,7 +2333,7 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
                 errors.append("release.artifacts must not contain duplicate artifact paths")
             if isinstance(service, dict) and service.get("runtime") == "ansible":
                 provider_bundle = release.get("provider_bundle")
-                if isinstance(provider_bundle, dict) and str(provider_bundle.get("name", "")) in artifact_names:
+                if isinstance(provider_bundle, dict) and str(provider_bundle.get("name", "")).casefold() in artifact_names:
                     errors.append("release.provider_bundle.name must be distinct from release.artifacts names")
     if _expected_evidence_index_sha256(manifest) is None:
         errors.append(
@@ -2289,6 +2396,14 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
             verification = rollback_artifact.get("signature_verification")
             if not isinstance(verification, dict) or verification.get("status") != "pass":
                 errors.append("recovery.rollback_artifact.signature_verification must be a passing evidence record")
+            rollback_name = rollback_artifact.get("name")
+            if (
+                _is_real_text(rollback_name)
+                and str(rollback_name).casefold() in _release_proof_names(release)
+            ):
+                errors.append(
+                    "recovery.rollback_artifact.name must be distinct from release artifact names"
+                )
     if solution is not None:
         errors.extend(_catalog_coverage_errors(manifest.get("product_certification"), solution))
     for key, value in _walk_keys(manifest):

@@ -646,6 +646,70 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["score"], 100)
 
+            def assert_identity_collision_fails(
+                error_fragment: str, criterion_index: int
+            ) -> None:
+                write_evidence_payloads(manifest)
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                build_evidence_index(root, index_path)
+                collision_report = assess_readiness(manifest_path, self.catalog)
+                self.assertEqual(
+                    collision_report["criteria"][criterion_index]["status"], "fail"
+                )
+                self.assertTrue(
+                    any(
+                        error_fragment in error
+                        for error in collision_report["errors"]
+                    )
+                )
+
+            original_provider_name = manifest["release"]["provider_bundle"]["name"]
+            manifest["release"]["provider_bundle"]["name"] = "product-artifact"
+            assert_identity_collision_fails("release artifact names must be unique", 1)
+            manifest["release"]["provider_bundle"]["name"] = original_provider_name
+
+            original_execution_environment_name = manifest["release"][
+                "execution_environment"
+            ]["name"]
+            manifest["release"]["execution_environment"]["name"] = "product-artifact"
+            assert_identity_collision_fails("release artifact names must be unique", 1)
+            manifest["release"]["execution_environment"][
+                "name"
+            ] = original_execution_environment_name
+
+            original_rollback_name = manifest["recovery"]["rollback_artifact"]["name"]
+            original_rollback_sbom = (root / "rollback.spdx.json").read_text(encoding="utf-8")
+            manifest["recovery"]["rollback_artifact"]["name"] = "product-artifact"
+            (root / "rollback.spdx.json").write_text(
+                json.dumps(_spdx_document("product-artifact")), encoding="utf-8"
+            )
+            assert_identity_collision_fails("recovery.rollback_artifact.name", 7)
+            manifest["recovery"]["rollback_artifact"]["name"] = original_rollback_name
+            (root / "rollback.spdx.json").write_text(
+                original_rollback_sbom, encoding="utf-8"
+            )
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, index_path)
+
+            original_release_evidence = manifest["release"]["evidence"]
+            manifest["release"]["evidence"] = manifest["release"]["artifacts"][0][
+                "signature"
+            ]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, index_path)
+            path_collision_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(path_collision_report["criteria"][1]["status"], "fail")
+            self.assertTrue(
+                any(
+                    "release proof paths must be unique" in error
+                    for error in path_collision_report["errors"]
+                )
+            )
+            manifest["release"]["evidence"] = original_release_evidence
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, index_path)
+
             invalid_audits = []
             candidate = copy.deepcopy(github_audit)
             candidate["passed"] = False
