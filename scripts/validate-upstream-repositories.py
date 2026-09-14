@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -18,6 +19,9 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "src" / "archiveweaver" / "data" / "solutions.json"
 GITHUB_API = "https://api.github.com"
+MAX_API_JSON_BYTES = 16 * 1024 * 1024
+MAX_API_JSON_NESTING = 128
+MAX_API_JSON_NUMBER_DIGITS = 4_300
 Fetcher = Callable[[str], dict[str, Any]]
 
 
@@ -52,6 +56,92 @@ def github_slug(url: object) -> str | None:
     return f"{owner}/{repository}"
 
 
+def _reject_excessive_json_nesting(payload: str, slug: str) -> None:
+    """Reject upstream metadata JSON that exceeds a bounded parser depth."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_API_JSON_NESTING:
+                raise ValueError(
+                    f"GitHub returned malformed JSON for {slug}"
+                )
+        elif character in "]}" and depth:
+            depth -= 1
+
+
+def _reject_non_finite_json_constant(value: str) -> Any:
+    """Reject JavaScript-style numeric values that are not standard JSON."""
+    raise ValueError(f"non-standard JSON numeric value: {value}")
+
+
+def _reject_oversized_json_integer(value: str) -> int:
+    """Reject huge integer tokens before older Python versions materialize them."""
+    if len(value.lstrip("-")) > MAX_API_JSON_NUMBER_DIGITS:
+        raise ValueError("oversized JSON number")
+    return int(value)
+
+
+def _reject_oversized_or_non_finite_json_float(value: str) -> float:
+    """Bound decimal tokens and reject non-finite binary floats."""
+    if len(value) > MAX_API_JSON_NUMBER_DIGITS:
+        raise ValueError("oversized JSON number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return parsed
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous duplicate object keys in upstream metadata."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def _load_api_json(response: Any, slug: str) -> Any:
+    """Read and parse one bounded, standard GitHub repository response."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = response.read(min(64 * 1024, MAX_API_JSON_BYTES - total + 1))
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise ValueError(f"GitHub returned a non-byte response for {slug}")
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_API_JSON_BYTES:
+            raise ValueError(f"GitHub returned oversized JSON for {slug}")
+        chunks.append(bytes(chunk))
+    try:
+        payload = b"".join(chunks).decode("utf-8", errors="strict")
+        _reject_excessive_json_nesting(payload, slug)
+        return json.loads(
+            payload,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_non_finite_json_constant,
+            parse_float=_reject_oversized_or_non_finite_json_float,
+            parse_int=_reject_oversized_json_integer,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"GitHub returned malformed JSON for {slug}") from exc
+
+
 def github_fetcher(token: str | None) -> Fetcher:
     def fetch(slug: str) -> dict[str, Any]:
         headers = {
@@ -68,7 +158,7 @@ def github_fetcher(token: str | None) -> Fetcher:
                 # The request origin is the fixed HTTPS GITHUB_API constant and
                 # ``slug`` is constrained to a canonical owner/repository pair.
                 with urllib.request.urlopen(request, timeout=20) as response:  # nosec B310
-                    result = json.load(response)
+                    result = _load_api_json(response, slug)
                 if not isinstance(result, dict):
                     raise ValueError(f"GitHub returned a non-object for {slug}")
                 return result

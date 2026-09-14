@@ -4,14 +4,62 @@ import runpy
 import unittest
 import urllib.error
 from typing import Any
+from unittest.mock import patch
 
 
 MODULE = runpy.run_path("scripts/validate-upstream-repositories.py")
 audit = MODULE["audit"]
 github_slug = MODULE["github_slug"]
+github_fetcher = MODULE["github_fetcher"]
+
+
+class _Response:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> "_Response":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            payload, self.payload = self.payload, b""
+            return payload
+        payload, self.payload = self.payload[:size], self.payload[size:]
+        return payload
 
 
 class UpstreamRepositoryTests(unittest.TestCase):
+    def test_github_fetcher_rejects_ambiguous_or_unsafe_json(self) -> None:
+        fetch = github_fetcher(None)
+        for payload in (
+            b'{"full_name": "example/repo", "full_name": "other/repo"}',
+            b'{"full_name": NaN}',
+            b'{"full_name": 1e9999}',
+            b'{"full_name": ' + (b"9" * 4301) + b"}",
+            b"[" * 2000 + b"0" + b"]" * 2000,
+        ):
+            with self.subTest(payload=payload[:40]), patch.object(
+                MODULE["urllib"].request,
+                "urlopen",
+                return_value=_Response(payload),
+            ):
+                with self.assertRaisesRegex(ValueError, "malformed JSON"):
+                    fetch("example/repo")
+
+    def test_github_fetcher_rejects_oversized_json_before_materializing_it(self) -> None:
+        fetch = github_fetcher(None)
+        with patch.dict(github_fetcher.__globals__, {"MAX_API_JSON_BYTES": 1}):
+            with patch.object(
+                MODULE["urllib"].request,
+                "urlopen",
+                return_value=_Response(b"{}"),
+            ):
+                with self.assertRaisesRegex(ValueError, "oversized JSON"):
+                    fetch("example/repo")
+
     def test_github_slug_accepts_only_canonical_https_repository_urls(self) -> None:
         self.assertEqual(
             github_slug("https://github.com/inveniosoftware/invenio-app-rdm"),
