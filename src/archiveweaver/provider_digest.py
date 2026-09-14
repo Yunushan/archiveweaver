@@ -126,10 +126,46 @@ def digest_quadlet(directory: Path, service_name: str) -> str:
         raise ValueError("Quadlet service name must be a safe lowercase systemd name")
     if has_symlink_component(directory) or not directory.is_dir():
         raise ValueError(f"Quadlet directory must be a real directory: {directory}")
+    root_before, snapshot_before = _tree_snapshot(directory)
     files = (
         ("network", directory / f"archiveweaver-{service_name}.network"),
         ("volume", directory / f"archiveweaver-{service_name}.volume"),
         ("container", directory / f"{service_name}.container"),
     )
-    entries = [f"{name}:{digest_file(path).removeprefix('sha256:')}" for name, path in files]
+    snapshot_by_path = {
+        relative: (path, is_file)
+        for relative, path, is_file, _ in snapshot_before
+    }
+    entries: list[str] = []
+    total_bytes = 0
+    for name, path in files:
+        relative = path.relative_to(directory).as_posix()
+        observed = snapshot_by_path.get(relative)
+        if observed is None or not observed[1]:
+            raise ValueError(f"Quadlet provider file must be a regular file: {path}")
+        measured, digest = _measure_regular_file(
+            path,
+            max_bytes=MAX_PROVIDER_FILE_BYTES,
+            label="provider",
+        )
+        total_bytes += measured
+        if total_bytes > MAX_PROVIDER_TREE_BYTES:
+            raise ValueError(
+                "Quadlet provider files exceed the "
+                f"{MAX_PROVIDER_TREE_BYTES}-byte safety limit"
+            )
+        entries.append(f"{name}:{digest}")
+    root_after, snapshot_after = _tree_snapshot(directory)
+    before_identity = [
+        (relative, is_file, identity)
+        for relative, _, is_file, identity in snapshot_before
+    ]
+    after_identity = [
+        (relative, is_file, identity)
+        for relative, _, is_file, identity in snapshot_after
+    ]
+    if root_before != root_after or before_identity != after_identity:
+        raise OSError(
+            f"Quadlet directory changed while it was being measured: {directory}"
+        )
     return "sha256:" + hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()

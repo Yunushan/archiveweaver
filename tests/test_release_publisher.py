@@ -255,6 +255,24 @@ class ReleasePublisherTests(unittest.TestCase):
                 ):
                     self.publisher["_api_object"]("repos/example/archiveweaver")
 
+    def test_github_api_json_rejects_oversized_responses(self) -> None:
+        with patch.dict(
+            self.publisher["_api_object"].__globals__, {"MAX_API_JSON_BYTES": 1}
+        ), patch.object(
+            self.publisher["subprocess"],
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["gh", "api"],
+                0,
+                "{}",
+                "",
+            ),
+        ):
+            with self.assertRaisesRegex(
+                self.publisher["ReleasePublicationError"], "oversized JSON"
+            ):
+                self.publisher["_api_object"]("repos/example/archiveweaver")
+
     def test_exact_existing_immutable_release_is_read_only(self) -> None:
         fake = FakeGitHub()
         fake.release = fake.release_payload(

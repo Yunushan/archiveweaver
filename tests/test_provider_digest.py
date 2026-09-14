@@ -64,6 +64,30 @@ class ProviderDigestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "regular file"):
                 digest_quadlet(root, "paperless-ngx")
 
+    def test_quadlet_digest_rejects_bundle_mutation_during_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            network = root / "archiveweaver-paperless-ngx.network"
+            volume = root / "archiveweaver-paperless-ngx.volume"
+            container = root / "paperless-ngx.container"
+            network.write_bytes(b"[Network]\n")
+            volume.write_bytes(b"[Volume]\n")
+            container.write_bytes(b"[Container]\n")
+            original_measure = provider_digest._measure_regular_file
+
+            def mutate_after_network(path: Path, **kwargs: object) -> tuple[int, str]:
+                result = original_measure(path, **kwargs)
+                if path == network:
+                    container.write_bytes(b"[Container]\nImage=changed\n")
+                return result
+
+            with patch(
+                "archiveweaver.provider_digest._measure_regular_file",
+                side_effect=mutate_after_network,
+            ):
+                with self.assertRaisesRegex(OSError, "Quadlet directory changed"):
+                    digest_quadlet(root, "paperless-ngx")
+
     def test_provider_digest_rejects_symlinked_directory_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

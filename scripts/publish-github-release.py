@@ -33,6 +33,7 @@ GH_COMMAND_TIMEOUT_SECONDS = 60
 MAX_RELEASE_ASSETS = 64
 MAX_RELEASE_ASSET_BYTES = 1024 * 1024 * 1024
 MAX_RELEASE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+MAX_API_JSON_BYTES = 16 * 1024 * 1024
 MAX_API_JSON_NESTING = 128
 
 
@@ -132,6 +133,8 @@ def _api_object(
     )
     if payload is None:
         return None
+    if len(payload.encode("utf-8", errors="surrogatepass")) > MAX_API_JSON_BYTES:
+        raise ReleasePublicationError("GitHub returned oversized JSON")
     _reject_excessive_json_nesting(payload)
 
     def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
