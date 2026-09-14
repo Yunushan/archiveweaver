@@ -2404,6 +2404,12 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
                 errors.append(
                     "recovery.rollback_artifact.name must be distinct from release artifact names"
                 )
+            if _artifact_proof_paths(rollback_artifact).intersection(
+                _release_proof_paths(release)
+            ):
+                errors.append(
+                    "recovery.rollback_artifact proof paths must be distinct from release attestations"
+                )
     if solution is not None:
         errors.extend(_catalog_coverage_errors(manifest.get("product_certification"), solution))
     for key, value in _walk_keys(manifest):
