@@ -237,6 +237,8 @@ class ReleasePublisherTests(unittest.TestCase):
         for payload in (
             '{"id": 1, "id": 2}',
             '{"id": NaN}',
+            '{"id": 1e9999}',
+            '{"id": ' + ("9" * 4301) + "}",
             "[" * 2000 + "0" + "]" * 2000,
         ):
             with self.subTest(payload=payload[:40]), patch.object(

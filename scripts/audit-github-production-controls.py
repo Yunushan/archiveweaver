@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -73,6 +74,7 @@ REQUIRED_ENVIRONMENT_VARIABLES = frozenset(
 REQUIRED_ENVIRONMENT_SECRETS = frozenset({"ARCHIVEWEAVER_RELEASE_SETTINGS_TOKEN"})
 MAX_API_JSON_NESTING = 128
 MAX_API_JSON_BYTES = 16 * 1024 * 1024
+MAX_API_JSON_NUMBER_DIGITS = 4_300
 
 
 class GitHubAuditError(RuntimeError):
@@ -110,6 +112,23 @@ def _reject_non_finite_json_constant(value: str) -> Any:
     raise ValueError(f"non-standard JSON numeric value: {value}")
 
 
+def _reject_oversized_json_integer(value: str) -> int:
+    """Reject huge integer tokens before older Python versions materialize them."""
+    if len(value.lstrip("-")) > MAX_API_JSON_NUMBER_DIGITS:
+        raise ValueError("oversized JSON number")
+    return int(value)
+
+
+def _reject_oversized_or_non_finite_json_float(value: str) -> float:
+    """Bound decimal tokens and reject non-finite binary floats."""
+    if len(value) > MAX_API_JSON_NUMBER_DIGITS:
+        raise ValueError("oversized JSON number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return parsed
+
+
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """Reject ambiguous duplicate object keys in authoritative API responses."""
     result: dict[str, Any] = {}
@@ -130,6 +149,8 @@ def _load_api_json(raw: str, endpoint: str) -> Any:
             raw,
             object_pairs_hook=_reject_duplicate_json_keys,
             parse_constant=_reject_non_finite_json_constant,
+            parse_float=_reject_oversized_or_non_finite_json_float,
+            parse_int=_reject_oversized_json_integer,
         )
     except (ValueError, RecursionError) as exc:
         raise GitHubAuditError(f"GitHub returned malformed JSON for {endpoint}") from exc

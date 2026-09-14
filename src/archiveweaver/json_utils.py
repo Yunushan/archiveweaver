@@ -6,6 +6,7 @@ from typing import Any
 
 
 MAX_JSON_PARSER_NESTING = 128
+MAX_JSON_NUMBER_DIGITS = 4_300
 
 
 def _reject_excessive_json_nesting(text: str) -> None:
@@ -53,6 +54,26 @@ def _finite_json_float(value: str) -> float:
     return parsed
 
 
+def _bounded_json_int(value: str) -> int:
+    """Reject huge integer tokens before older Python versions materialize them."""
+    if len(value.lstrip("-")) > MAX_JSON_NUMBER_DIGITS:
+        raise ValueError(
+            "JSON integer exceeds the "
+            f"{MAX_JSON_NUMBER_DIGITS}-digit safety limit"
+        )
+    return int(value)
+
+
+def _bounded_json_float(value: str) -> float:
+    """Bound decimal token size before converting it to a binary float."""
+    if len(value) > MAX_JSON_NUMBER_DIGITS:
+        raise ValueError(
+            "JSON number exceeds the "
+            f"{MAX_JSON_NUMBER_DIGITS}-digit safety limit"
+        )
+    return _finite_json_float(value)
+
+
 def load_json_document(text: str) -> Any:
     """Parse JSON while rejecting ambiguous duplicate object keys."""
     _reject_excessive_json_nesting(text)
@@ -61,7 +82,8 @@ def load_json_document(text: str) -> Any:
             text,
             object_pairs_hook=_reject_duplicate_json_keys,
             parse_constant=_reject_json_constant,
-            parse_float=_finite_json_float,
+            parse_float=_bounded_json_float,
+            parse_int=_bounded_json_int,
         )
     except RecursionError as exc:
         # Callers apply stricter semantic depth limits after parsing, but the

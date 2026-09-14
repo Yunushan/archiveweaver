@@ -262,11 +262,18 @@ class GitHubProductionControlTests(unittest.TestCase):
 
     def test_github_client_rejects_non_standard_json_numbers(self) -> None:
         client = self.audit["GitHubClient"]("example/archiveweaver")
-        with patch.object(client, "_run", return_value='{"id": NaN}'):
-            with self.assertRaisesRegex(
-                self.audit["GitHubAuditError"], "malformed JSON"
+        for payload in (
+            '{"id": NaN}',
+            '{"id": 1e9999}',
+            '{"id": ' + ("9" * 4301) + "}",
+        ):
+            with self.subTest(payload=payload[:40]), patch.object(
+                client, "_run", return_value=payload
             ):
-                client.object("repos/example/archiveweaver")
+                with self.assertRaisesRegex(
+                    self.audit["GitHubAuditError"], "malformed JSON"
+                ):
+                    client.object("repos/example/archiveweaver")
 
     def test_github_client_rejects_duplicate_json_keys(self) -> None:
         client = self.audit["GitHubClient"]("example/archiveweaver")

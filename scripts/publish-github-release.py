@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -35,6 +36,7 @@ MAX_RELEASE_ASSET_BYTES = 1024 * 1024 * 1024
 MAX_RELEASE_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_API_JSON_BYTES = 16 * 1024 * 1024
 MAX_API_JSON_NESTING = 128
+MAX_API_JSON_NUMBER_DIGITS = 4_300
 
 
 class ReleasePublicationError(RuntimeError):
@@ -148,11 +150,26 @@ def _api_object(
     def reject_non_finite(value: str) -> None:
         raise ValueError(f"non-finite JSON number: {value}")
 
+    def reject_oversized_integer(value: str) -> int:
+        if len(value.lstrip("-")) > MAX_API_JSON_NUMBER_DIGITS:
+            raise ValueError("oversized JSON number")
+        return int(value)
+
+    def reject_oversized_or_non_finite_float(value: str) -> float:
+        if len(value) > MAX_API_JSON_NUMBER_DIGITS:
+            raise ValueError("oversized JSON number")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"non-finite JSON number: {value}")
+        return parsed
+
     try:
         value = json.loads(
             payload,
             object_pairs_hook=reject_duplicate_keys,
             parse_constant=reject_non_finite,
+            parse_float=reject_oversized_or_non_finite_float,
+            parse_int=reject_oversized_integer,
         )
     except (ValueError, RecursionError) as exc:
         raise ReleasePublicationError(
