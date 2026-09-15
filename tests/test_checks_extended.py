@@ -72,10 +72,18 @@ class ExtendedCheckTests(unittest.TestCase):
     ) -> None:
         command.return_value = (0, "active", "")
         self.assertEqual(check_service("archive")["status"], "pass")
+        command.assert_called_with("systemctl", "is-active", "--", "archive")
         command.return_value = (3, "failed", "journal unavailable")
         self.assertEqual(check_service("archive")["status"], "warn")
         command.return_value = (4, "unknown", "not found")
         self.assertEqual(check_service("archive")["status"], "skip")
+
+    def test_service_rejects_option_and_control_syntax(self) -> None:
+        for value in ("--root=/tmp", "archive\nforged", "archive\x1b[2J"):
+            with self.subTest(value=value):
+                result = check_service(value)
+                self.assertEqual(result["status"], "fail")
+                self.assertNotIn(value, str(result))
 
     @patch("archiveweaver.checks.shutil.which", return_value=None)
     def test_time_sync_skips_when_timedatectl_is_unavailable(self, _which: MagicMock) -> None:

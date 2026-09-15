@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import socket
 import subprocess
@@ -25,6 +26,7 @@ COMMAND_ALIASES = {
     "CSI-backed storage": ["kubectl"],
     "Ansible Core": ["ansible-playbook"],
 }
+_MAX_SERVICE_NAME_LENGTH = 255
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -51,6 +53,16 @@ def _command(*args: str, timeout: int = 10) -> tuple[int, str, str]:
         return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 127, "", str(exc)
+
+
+def _safe_service_name(value: object) -> bool:
+    """Accept a systemd unit name without allowing option or control syntax."""
+    return bool(
+        isinstance(value, str)
+        and 1 <= len(value) <= _MAX_SERVICE_NAME_LENGTH
+        and not value.startswith("-")
+        and not re.search(r"[\x00-\x1f\x7f\s]", value)
+    )
 
 
 def detect_host() -> dict[str, Any]:
@@ -87,9 +99,15 @@ def check_commands(commands: list[str], name: str = "commands") -> dict[str, Any
 
 
 def check_service(service: str) -> dict[str, Any]:
+    if not _safe_service_name(service):
+        return _result(
+            "service:<invalid>",
+            "fail",
+            "service unit name is invalid or contains option/control syntax",
+        )
     if shutil.which("systemctl") is None:
         return _result(f"service:{service}", "skip", "systemctl is not available")
-    code, stdout, stderr = _command("systemctl", "is-active", service)
+    code, stdout, stderr = _command("systemctl", "is-active", "--", service)
     if code == 0 and stdout == "active":
         return _result(f"service:{service}", "pass", "active", stdout)
     if code == 3 and stdout in {"inactive", "failed", "activating", "deactivating"}:
