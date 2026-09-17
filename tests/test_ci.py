@@ -573,7 +573,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("pyyaml==6.0.3", ci_yaml_lock)
         self.assertGreaterEqual(ci_yaml_lock.count("--hash=sha256:"), 7)
         self.assertIn("cython==3.3.0", ci_yaml_build_lock)
-        self.assertIn("setuptools==83.0.0", ci_yaml_build_lock)
+        self.assertIn("setuptools==84.0.0", ci_yaml_build_lock)
         self.assertGreaterEqual(ci_yaml_build_lock.count("--hash=sha256:"), 3)
         self.assertEqual(workflow.count("-r requirements/ci-yaml.txt"), 3)
         self.assertEqual(workflow.count("-r requirements/ci-yaml-build.txt"), 1)
