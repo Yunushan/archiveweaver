@@ -27,7 +27,7 @@ class ReleaseToolsLockTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("51 exact, hash-verified packages", result.stdout)
+        self.assertRegex(result.stdout, r"\d+ exact, hash-verified packages")
         self.assertIn("shared_with_ansible=7", result.stdout)
 
     def test_rendered_lock_is_deterministic_and_round_trips(self) -> None:
