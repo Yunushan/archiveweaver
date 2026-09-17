@@ -71,13 +71,10 @@ class UpstreamRepositoryTests(unittest.TestCase):
             None,
         )
         opened = Mock(side_effect=redirect)
-        try:
-            with patch.dict(github_fetcher.__globals__, {"_open_github_request": opened}):
-                with self.assertRaises(urllib.error.HTTPError):
-                    fetch("example/repo")
-            opened.assert_called_once()
-        finally:
-            redirect.close()
+        with patch.dict(github_fetcher.__globals__, {"_open_github_request": opened}):
+            with self.assertRaises(urllib.error.HTTPError):
+                fetch("example/repo")
+        opened.assert_called_once()
 
     def test_github_fetcher_rejects_oversized_json_before_materializing_it(self) -> None:
         fetch = github_fetcher(None)
