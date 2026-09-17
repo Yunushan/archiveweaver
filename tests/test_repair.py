@@ -7,12 +7,14 @@ import tempfile
 import urllib.error
 import unittest
 from email.message import Message
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import patch
 
 from archiveweaver.catalog import Catalog
 from archiveweaver.checks import _command, check_url
 from archiveweaver.repair import (
+    _SealedRepairPlan,
     _find_ansible_root,
     _resolve_ansible_bundle_path,
     _resolve_readiness_manifest_path,
@@ -71,10 +73,14 @@ class RepairTests(unittest.TestCase):
 
             class InstalledDistribution:
                 files = (
+                    Path("unrelated.txt"),
+                    Path("invalid/share/archiveweaver/deploy/ansible/ansible.cfg"),
                     Path("share/archiveweaver/deploy/ansible/ansible.cfg"),
                 )
 
-                def locate_file(self, _path: object) -> Path:
+                def locate_file(self, path: object) -> Path:
+                    if str(path).startswith("invalid/"):
+                        return temporary / "missing" / "ansible.cfg"
                     return installed_root / "ansible.cfg"
 
             fake_module = temporary / "package" / "archiveweaver" / "repair.py"
@@ -87,6 +93,83 @@ class RepairTests(unittest.TestCase):
                 ),
             ):
                 self.assertEqual(_find_ansible_root(), installed_root.resolve())
+
+    def test_ansible_root_uses_package_bundle_then_fails_closed_when_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            package_root = temporary / "package"
+            installed_root = package_root / "deploy" / "ansible"
+            (installed_root / "roles").mkdir(parents=True)
+            (installed_root / "ansible.cfg").write_text("[defaults]\n", encoding="utf-8")
+            (installed_root / "repair.yml").write_text("---\n", encoding="utf-8")
+            unrelated_cwd = temporary / "cwd"
+            unrelated_cwd.mkdir()
+            fake_module = package_root / "src" / "archiveweaver" / "repair.py"
+
+            with (
+                patch("archiveweaver.repair.Path.cwd", return_value=unrelated_cwd),
+                patch("archiveweaver.repair.__file__", str(fake_module)),
+            ):
+                self.assertEqual(_find_ansible_root(), installed_root)
+
+        with (
+            patch("archiveweaver.repair._usable_ansible_root", return_value=False),
+            patch(
+                "archiveweaver.repair.distribution",
+                side_effect=PackageNotFoundError("archiveweaver"),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "could not locate"):
+                _find_ansible_root()
+
+        empty_distribution = type("Distribution", (), {"files": ()})()
+        with (
+            patch("archiveweaver.repair._usable_ansible_root", return_value=False),
+            patch("archiveweaver.repair.distribution", return_value=empty_distribution),
+        ):
+            with self.assertRaisesRegex(ValueError, "could not locate"):
+                _find_ansible_root()
+
+    def test_ansible_bundle_resolution_rechecks_each_component(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "deploy" / "ansible"
+        target = root / "repair.yml"
+
+        with patch("archiveweaver.repair.Path.cwd", return_value=root):
+            self.assertEqual(
+                _resolve_ansible_bundle_path("repair.yml", root, "--playbook"),
+                target,
+            )
+
+        with (
+            patch("archiveweaver.repair.has_symlink_component", return_value=False),
+            patch.object(
+                Path,
+                "is_symlink",
+                autospec=True,
+                side_effect=lambda candidate: candidate == target,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "must not resolve through a symlink"):
+                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+
+        with (
+            patch("archiveweaver.repair.has_symlink_component", return_value=False),
+            patch.object(Path, "is_symlink", side_effect=OSError("denied")),
+        ):
+            with self.assertRaisesRegex(ValueError, "could not be inspected safely"):
+                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+
+    def test_repair_plan_seal_rejects_unauthorized_and_unserializable_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only be sealed by the plan builder"):
+            _SealedRepairPlan({}, object())
+
+        plan = build_repair_plan(self.catalog, "paperless-ngx", "raw")
+        plan["actions"][0]["command"].append({"unsupported"})
+        with patch("archiveweaver.repair.subprocess.run") as run:
+            rejected = apply_repair(plan)
+        self.assertEqual(rejected["status"], "blocked")
+        self.assertIn("changed after it was reviewed", rejected["blockers"][0])
+        run.assert_not_called()
 
     def test_ansible_bundle_path_rejects_unsafe_trust_boundaries(self) -> None:
         root = Path(__file__).resolve().parents[1] / "deploy" / "ansible"

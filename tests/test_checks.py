@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from archiveweaver.catalog import Catalog
@@ -93,6 +95,60 @@ class CheckTests(unittest.TestCase):
         )
         self.assertEqual(report["summary"]["status"], "pass")
         self.assertEqual(report["summary"]["meaningful_passes"], 1)
+
+    @patch("archiveweaver.checks.check_commands")
+    @patch("archiveweaver.checks.check_service")
+    @patch("archiveweaver.checks.check_time_sync")
+    @patch("archiveweaver.checks.detect_host", return_value=HOST)
+    def test_runtime_paths_and_configuration_are_reported(
+        self,
+        _host: object,
+        time_sync: object,
+        service: object,
+        commands: object,
+    ) -> None:
+        time_sync.return_value = {"name": "host-time", "status": "pass", "detail": "ok"}
+        service.return_value = {"name": "service:test", "status": "pass", "detail": "active"}
+        commands.return_value = {"name": "runtime:docker", "status": "pass", "detail": "ok"}
+        with tempfile.TemporaryDirectory() as directory:
+            existing = Path(directory) / "existing.conf"
+            existing.write_text("validated\n", encoding="utf-8")
+            missing = Path(directory) / "missing.conf"
+            report = run_checks(
+                Catalog(),
+                "paperless-ngx",
+                mode="docker",
+                paths=[str(existing), str(missing)],
+                config=str(existing),
+            )
+
+        by_name = {item["name"]: item for item in report["checks"]}
+        self.assertEqual(by_name["runtime:docker"]["status"], "pass")
+        self.assertEqual(by_name["service:test"]["status"], "pass")
+        self.assertEqual(by_name[f"path:{existing}"]["status"], "pass")
+        self.assertEqual(by_name[f"path:{missing}"]["status"], "fail")
+        self.assertEqual(by_name["configuration"]["status"], "pass")
+        self.assertEqual(report["summary"]["status"], "fail")
+
+    @patch("archiveweaver.checks.check_time_sync")
+    @patch("archiveweaver.checks.detect_host", return_value=HOST)
+    def test_empty_service_aliases_and_missing_configuration_are_explicit(
+        self,
+        _host: object,
+        time_sync: object,
+    ) -> None:
+        time_sync.return_value = {"name": "host-time", "status": "pass", "detail": "ok"}
+        catalog = Catalog()
+        catalog.solutions["paperless-ngx"]["health"]["service_aliases"] = []
+        report = run_checks(
+            catalog,
+            "paperless-ngx",
+            config="missing-production-configuration.yml",
+        )
+        names = {item["name"] for item in report["checks"]}
+        self.assertNotIn("services", names)
+        configuration = next(item for item in report["checks"] if item["name"] == "configuration")
+        self.assertEqual(configuration["status"], "fail")
 
 
 if __name__ == "__main__":

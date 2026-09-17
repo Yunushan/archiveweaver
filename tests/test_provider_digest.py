@@ -61,6 +61,8 @@ class ProviderDigestTests(unittest.TestCase):
             root = Path(directory)
             with self.assertRaisesRegex(ValueError, "safe lowercase systemd name"):
                 digest_quadlet(root, "Unsafe Name")
+            with self.assertRaisesRegex(ValueError, "real directory"):
+                digest_quadlet(root / "missing", "paperless-ngx")
             with self.assertRaisesRegex(ValueError, "regular file"):
                 digest_quadlet(root, "paperless-ngx")
 
@@ -140,6 +142,34 @@ class ProviderDigestTests(unittest.TestCase):
             with patch("archiveweaver.provider_digest.MAX_PROVIDER_TREE_BYTES", 3):
                 with self.assertRaisesRegex(ValueError, "3-byte safety limit"):
                     digest_tree(root)
+
+    def test_quadlet_digest_enforces_total_byte_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in (
+                "archiveweaver-paperless-ngx.network",
+                "archiveweaver-paperless-ngx.volume",
+                "paperless-ngx.container",
+            ):
+                (root / name).write_bytes(b"xx")
+            with patch("archiveweaver.provider_digest.MAX_PROVIDER_TREE_BYTES", 3):
+                with self.assertRaisesRegex(ValueError, "3-byte safety limit"):
+                    digest_quadlet(root, "paperless-ngx")
+
+    def test_tree_snapshot_translates_recursive_traversal_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(Path, "rglob", side_effect=RecursionError):
+                with self.assertRaisesRegex(ValueError, "nesting exceeds"):
+                    digest_tree(root)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO creation is unavailable")
+    def test_provider_digest_rejects_special_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.mkfifo(root / "provider.pipe")
+            with self.assertRaisesRegex(ValueError, "regular files and directories"):
+                digest_tree(root)
 
     def test_provider_digest_rejects_tree_mutation_during_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from archiveweaver.evidence import (
     _bundle_paths,
+    _measure_regular_file,
     _safe_file,
     build_evidence_index,
     verify_evidence_index,
@@ -74,6 +75,41 @@ class EvidenceTests(unittest.TestCase):
             with patch("archiveweaver.evidence.Path.resolve", side_effect=OSError("denied")):
                 self.assertIsNone(_safe_file(root, "host.json"))
 
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            link = root / "linked.json"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                pass
+            else:
+                self.assertIsNone(_safe_file(root, "linked.json"))
+
+    def test_regular_file_measurement_rejects_special_and_racing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(OSError, "not a regular file"):
+                _measure_regular_file(root)
+
+            evidence = root / "host.json"
+            evidence.write_bytes(b"{}")
+            observed = evidence.stat()
+            before = type(
+                "ObservedFile",
+                (),
+                {"st_mode": observed.st_mode, "st_nlink": 1, "st_size": 0},
+            )()
+            with patch("archiveweaver.evidence.os.fstat", return_value=before):
+                with self.assertRaisesRegex(OSError, "1-byte safety limit"):
+                    _measure_regular_file(evidence, max_bytes=1)
+
+            with patch(
+                "archiveweaver.evidence._stat_identity",
+                side_effect=[(1, 1, 1, 1, 1, 1), (2, 2, 2, 2, 2, 2)],
+            ):
+                with self.assertRaisesRegex(OSError, "changed while it was being measured"):
+                    _measure_regular_file(evidence)
+
     def test_index_round_trip_and_tamper_detection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -89,6 +125,8 @@ class EvidenceTests(unittest.TestCase):
             )
             self.assertEqual(verified["status"], "pass")
             self.assertEqual(verified["sha256"], expected_digest)
+            with_entries = verify_evidence_index(index_path, include_entries=True)
+            self.assertEqual(set(with_entries["_entries"]), {"host.json", "plan.json"})
             mismatch = verify_evidence_index(
                 index_path,
                 expected_sha256="0" * 64,
@@ -295,6 +333,44 @@ class EvidenceTests(unittest.TestCase):
             report = verify_evidence_index(index_path)
             self.assertEqual(report["status"], "fail")
             self.assertIn("regular, non-symlink", report["errors"][0])
+
+    def test_builder_rejects_symlinked_index_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            output = root / "evidence-index.json"
+            try:
+                output.symlink_to(target)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"file symlinks are unavailable: {exc}")
+            with self.assertRaisesRegex(ValueError, "output must not be a symlink"):
+                build_evidence_index(root, output)
+
+    def test_builder_preserves_replace_failure_when_temporary_cleanup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "host.json").write_text("{}\n", encoding="utf-8")
+            with patch("archiveweaver.evidence.os.replace", side_effect=OSError("replace denied")):
+                with patch("archiveweaver.evidence.Path.unlink", side_effect=OSError("unlink denied")):
+                    with self.assertRaisesRegex(OSError, "replace denied"):
+                        build_evidence_index(root, root / "evidence-index.json")
+
+    def test_verifier_reports_index_resolution_and_measurement_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "host.json"
+            evidence.write_text("{}\n", encoding="utf-8")
+            index_path = root / "evidence-index.json"
+            build_evidence_index(root, index_path)
+
+            with patch.object(Path, "resolve", side_effect=OSError("resolve denied")):
+                report = verify_evidence_index(index_path)
+            self.assertTrue(any("cannot resolve evidence index safely" in error for error in report["errors"]))
+
+            with patch("archiveweaver.evidence._measure_regular_file", side_effect=OSError("measure denied")):
+                report = verify_evidence_index(index_path)
+            self.assertTrue(any("could not be measured safely" in error for error in report["errors"]))
 
     def test_index_rejects_symlinked_directory_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

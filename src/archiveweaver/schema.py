@@ -55,16 +55,6 @@ def _is_string_list(value: Any) -> bool:
 
 def validate_catalog(catalog: Catalog) -> list[str]:
     errors: list[str] = []
-    solution_ids = list(catalog.solutions)
-    if len(solution_ids) != len(set(solution_ids)):
-        errors.append("solution ids must be unique")
-    runtime_ids = list(catalog.runtimes)
-    if len(runtime_ids) != len(set(runtime_ids)):
-        errors.append("runtime ids must be unique")
-    os_ids = list(catalog.operating_systems)
-    if len(os_ids) != len(set(os_ids)):
-        errors.append("operating-system ids must be unique")
-
     for solution_key, solution in catalog.solutions.items():
         prefix = f"solution '{solution.get('id', '<missing>')}'"
         missing = REQUIRED_SOLUTION_FIELDS - set(solution)
@@ -172,4 +162,3 @@ def validate_catalog(catalog: Catalog) -> list[str]:
                 errors.append(f"{prefix} field '{field}' must be a non-empty string")
 
     return errors
-

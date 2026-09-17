@@ -34,6 +34,7 @@ EXPECTED_ACTION_PATTERNS = frozenset(
         "anchore/scan-action@*",
         "docker/login-action@*",
         "github/codeql-action/*@*",
+        "google/clusterfuzzlite/actions/*@*",
         "ossf/scorecard-action@*",
         "sigstore/cosign-installer@*",
         "sigstore/gh-action-sigstore-python@*",
@@ -43,6 +44,7 @@ EXPECTED_STATUS_CHECKS = frozenset(
     {
         "Built distributions",
         "CodeQL",
+        "ClusterFuzzLite Python",
         "Dependency review",
         "Python lint and types",
         "Python static analysis",

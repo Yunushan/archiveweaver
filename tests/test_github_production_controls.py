@@ -164,6 +164,7 @@ class GitHubProductionControlTests(unittest.TestCase):
     def test_scheduled_scorecard_is_not_a_required_pull_request_check(self) -> None:
         checks = self.audit["EXPECTED_STATUS_CHECKS"]
         self.assertNotIn("Scorecards analysis", checks)
+        self.assertIn("ClusterFuzzLite Python", checks)
         self.assertIn("CodeQL", checks)
         self.assertIn("Dependency review", checks)
 

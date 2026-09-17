@@ -4,7 +4,9 @@
 
 # Changes to execution, release, and trust boundaries require explicit review.
 /.github/workflows/ @Yunushan
+/.clusterfuzzlite/ @Yunushan
 /deploy/ansible/ @Yunushan
+/fuzz/ @Yunushan
 /packaging/ @Yunushan
 /requirements/ @Yunushan
 /scripts/ @Yunushan

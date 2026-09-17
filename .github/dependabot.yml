@@ -40,3 +40,11 @@ updates:
     groups:
       release-validation-tools:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      clusterfuzzlite-builder:
+        patterns: ["*"]

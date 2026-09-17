@@ -1,0 +1,54 @@
+name: ClusterFuzzLite batch fuzzing
+
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: cflite-batch
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: ClusterFuzzLite batch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build Python fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          github-token: ${{ github.token }}
+          sanitizer: address
+      - name: Run scheduled batch fuzzing
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          fuzz-seconds: 1200
+          mode: batch
+          output-sarif: true
+          parallel-fuzzing: true
+          sanitizer: address
+      - name: Upload fuzzing SARIF
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: cifuzz-sarif/results.sarif
+      - name: Prune fuzzing corpora
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          fuzz-seconds: 300
+          mode: prune
+          sanitizer: address

@@ -16,6 +16,10 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(node_bucket("3"), "3")
         self.assertEqual(node_bucket("7"), "3+")
         self.assertEqual(node_bucket("3+"), "3+")
+        with self.assertRaisesRegex(ValueError, r"nodes must be 1, 2, 3, or 3\+"):
+            node_bucket("many")
+        with self.assertRaisesRegex(ValueError, "at least 1"):
+            node_bucket("0")
 
     def test_three_node_rke2_is_not_blocked(self) -> None:
         plan = build_plan(self.catalog, "paperless-ngx", "rke2", "3", "ubuntu-24.04")
@@ -122,3 +126,60 @@ class PlannerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_plan(self.catalog, "paperless-ngx", "rke2", "1", "ubuntu-24.04", namespace="archive; rm -rf /")
 
+    def test_underlying_runtime_is_rejected_outside_ansible(self) -> None:
+        with self.assertRaisesRegex(ValueError, "only valid when --mode ansible"):
+            build_plan(
+                self.catalog,
+                "paperless-ngx",
+                "docker",
+                "1",
+                "ubuntu-24.04",
+                underlying_mode="rke2",
+            )
+
+    def test_explicit_solution_support_policies_block_promotion(self) -> None:
+        support = self.catalog.solutions["paperless-ngx"]["mode_support"]
+        support["docker"] = "not-recommended"
+        not_recommended = build_plan(
+            self.catalog,
+            "paperless-ngx",
+            "docker",
+            "1",
+            "ubuntu-24.04",
+        )
+        self.assertTrue(any("not-recommended" in item for item in not_recommended.blockers))
+
+        support["docker"] = "conditional"
+        conditional = build_plan(
+            self.catalog,
+            "paperless-ngx",
+            "docker",
+            "1",
+            "ubuntu-24.04",
+        )
+        self.assertTrue(any("product/mode is conditional" in item for item in conditional.blockers))
+
+    def test_ansible_underlying_solution_policy_blocks_promotion(self) -> None:
+        support = self.catalog.solutions["paperless-ngx"]["mode_support"]
+        support["rke2"] = "not-recommended"
+        not_recommended = build_plan(
+            self.catalog,
+            "paperless-ngx",
+            "ansible",
+            "3",
+            "ubuntu-24.04",
+            underlying_mode="rke2",
+            allow_conditional=True,
+        )
+        self.assertTrue(any("underlying runtime 'rke2' is not-recommended" in item for item in not_recommended.blockers))
+
+        support["rke2"] = "conditional"
+        conditional = build_plan(
+            self.catalog,
+            "paperless-ngx",
+            "ansible",
+            "3",
+            "ubuntu-24.04",
+            underlying_mode="rke2",
+        )
+        self.assertTrue(any("underlying-runtime pairing 'rke2' is conditional" in item for item in conditional.blockers))
