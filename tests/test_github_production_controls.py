@@ -621,6 +621,7 @@ class GitHubProductionControlTests(unittest.TestCase):
                 self.audit["main"].__globals__,
                 {"collect_snapshot": lambda _client: failing},
             ),
+            patch.dict(self.audit["os"].environ, {"GITHUB_SHA": ""}, clear=False),
             redirect_stdout(output),
         ):
             self.assertEqual(
@@ -635,13 +636,14 @@ class GitHubProductionControlTests(unittest.TestCase):
         self.assertIn("invalid owner/repository slug", diagnostic.getvalue())
 
         diagnostic = io.StringIO()
-        with redirect_stderr(diagnostic):
-            self.assertEqual(
-                self.audit["main"](
-                    ["--repository", "example/archiveweaver", "--json"]
-                ),
-                2,
-            )
+        with patch.dict(self.audit["os"].environ, {"GITHUB_SHA": ""}, clear=False):
+            with redirect_stderr(diagnostic):
+                self.assertEqual(
+                    self.audit["main"](
+                        ["--repository", "example/archiveweaver", "--json"]
+                    ),
+                    2,
+                )
         self.assertIn("required for JSON evidence", diagnostic.getvalue())
 
         diagnostic = io.StringIO()

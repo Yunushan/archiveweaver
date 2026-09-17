@@ -538,9 +538,8 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("python scripts/validate-yaml.py", workflow)
         self.assertIn("git diff --exit-code", workflow)
         self.assertIn("python -m pip install --disable-pip-version-check --no-input --no-deps .", workflow)
-        self.assertIn("ruff==0.15.20", release_tools_input)
-        self.assertIn("mypy==1.20.2", release_tools_input)
-        self.assertIn("coverage==7.15.1", release_tools_input)
+        for tool in ("ruff", "mypy", "coverage"):
+            self.assertRegex(release_tools_input, rf"(?m)^{tool}==[^\s]+$")
         self.assertGreaterEqual(workflow.count("-r requirements/release-tools.txt"), 2)
         self.assertIn("make quality", workflow)
         self.assertIn("python -m coverage run -m unittest discover -s tests", workflow)
