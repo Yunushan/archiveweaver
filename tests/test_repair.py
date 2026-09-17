@@ -238,7 +238,6 @@ class RepairTests(unittest.TestCase):
         )
         with patch("archiveweaver.checks._open_health_request", side_effect=redirect):
             result = check_url("https://health.example.org/")
-        redirect.close()
         self.assertEqual(result["status"], "fail")
         self.assertIn("do not follow redirects", result["detail"])
 
