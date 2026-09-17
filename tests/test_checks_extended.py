@@ -144,19 +144,16 @@ class ExtendedCheckTests(unittest.TestCase):
         )
         open_request.side_effect = redirect
         self.assertEqual(check_url("https://example.org/health")["status"], "fail")
-        redirect.close()
         unauthorized = urllib.error.HTTPError(
             "https://example.org/health", 401, "unauthorized", headers, None
         )
         open_request.side_effect = unauthorized
         self.assertEqual(check_url("https://example.org/health")["status"], "warn")
-        unauthorized.close()
         unavailable = urllib.error.HTTPError(
             "https://example.org/health", 503, "unavailable", headers, None
         )
         open_request.side_effect = unavailable
         self.assertEqual(check_url("https://example.org/health")["status"], "fail")
-        unavailable.close()
         open_request.side_effect = urllib.error.URLError("certificate failure")
         result = check_url("https://example.org/health")
         self.assertEqual(result["status"], "fail")
