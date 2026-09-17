@@ -698,7 +698,7 @@ class CIWorkflowTests(unittest.TestCase):
             },
         )
         self.assertIn(
-            "base-builder-python@sha256:886fc3577cf92a953493c908b2b49ca5781c00683bccbb60bc54a3c1d94e52c4",
+            "base-builder-python@sha256:6b2b3a7e4a2da50de47f94925cffbe34747e1aae4f33d7f07ba6c681dd648b23",
             dockerfile,
         )
         self.assertIn("compile_python_fuzzer", build_script)
