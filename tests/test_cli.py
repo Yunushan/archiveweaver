@@ -2,17 +2,137 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from archiveweaver.cli import _write_render_output, main
+from archiveweaver.cli import _print_plan, _write_render_output, main
 
 
 class CLITests(unittest.TestCase):
+    def test_render_output_rejects_unsafe_targets_and_cleans_temporary_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "rendered.yml"
+
+            with patch("archiveweaver.cli.has_symlink_component", return_value=True):
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    _write_render_output(output, "safe: true\n")
+
+            non_file = root / "directory"
+            non_file.mkdir()
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                _write_render_output(non_file, "safe: true\n")
+
+            with patch(
+                "archiveweaver.cli.has_symlink_component",
+                side_effect=(False, True),
+            ):
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    _write_render_output(output, "safe: true\n")
+            self.assertEqual(list(root.glob(".rendered.yml.*.tmp")), [])
+
+            with (
+                patch(
+                    "archiveweaver.cli.has_symlink_component",
+                    side_effect=(False, True),
+                ),
+                patch.object(Path, "unlink", side_effect=OSError("denied")),
+            ):
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    _write_render_output(output, "safe: true\n")
+
+    def test_human_plan_output_includes_runtime_risks_and_actions(self) -> None:
+        plan = {
+            "solution_name": "Paperless-ngx",
+            "mode_name": "Ansible",
+            "os_name": "Ubuntu",
+            "nodes": "3",
+            "underlying_mode": "rke2",
+            "status": "blocked",
+            "support_level": "conditional",
+            "topology_level": "conditional",
+            "blockers": ["review topology"],
+            "warnings": ["validate storage"],
+            "prerequisites": ["sealed backup"],
+            "steps": ["review", "deploy"],
+            "commands": ["archiveweaver check"],
+            "data_safety": ["preserve originals"],
+        }
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            _print_plan(plan)
+        rendered = output.getvalue()
+        self.assertIn("underlying runtime: rke2", rendered)
+        self.assertIn("Blockers\n- review topology", rendered)
+        self.assertIn("Warnings\n- validate storage", rendered)
+        self.assertIn("2. deploy", rendered)
+
+    def test_evidence_index_accepts_an_absolute_output_inside_the_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "evidence"
+            evidence.mkdir()
+            (evidence / "report.txt").write_text("verified\n", encoding="utf-8")
+            index = evidence / "absolute-index.json"
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = main(
+                    [
+                        "evidence-index",
+                        "--directory",
+                        str(evidence),
+                        "--output",
+                        str(index),
+                        "--json",
+                    ]
+                )
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue())["index"], str(index))
+
+    def test_render_json_without_output_returns_the_rendered_content(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "archiveweaver.cli.render",
+                return_value=({"status": "ready"}, "safe: true\n"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            result = main(
+                [
+                    "render",
+                    "--solution",
+                    "paperless-ngx",
+                    "--mode",
+                    "docker",
+                    "--json",
+                ]
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue())["content"], "safe: true\n")
+
+    def test_unknown_future_command_fails_closed(self) -> None:
+        parser = type(
+            "Parser",
+            (),
+            {"parse_args": lambda self, argv: SimpleNamespace(command="future", json=False)},
+        )()
+        with patch("archiveweaver.cli.build_parser", return_value=parser):
+            self.assertEqual(main([]), 2)
+
+    def test_main_module_is_safe_to_import(self) -> None:
+        try:
+            module = importlib.import_module("archiveweaver.__main__")
+            self.assertTrue(callable(module.main))
+        finally:
+            sys.modules.pop("archiveweaver.__main__", None)
+
     def test_incomplete_health_check_returns_warning_exit_status(self) -> None:
         report = {
             "summary": {

@@ -62,6 +62,12 @@ class CatalogTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "entry 0 must be an object"):
                 Catalog()
 
+        malformed_solutions = copy.deepcopy(self.catalog.data)
+        malformed_solutions["solutions"] = {"not": "a list"}
+        with patch("archiveweaver.catalog._read", return_value=malformed_solutions):
+            with self.assertRaisesRegex(ValueError, "solutions must be a list"):
+                Catalog()
+
         missing_id = copy.deepcopy(self.catalog.data)
         missing_id["operating_systems"][0]["id"] = ""
         with patch("archiveweaver.catalog._read", return_value=missing_id):
@@ -146,3 +152,25 @@ class CatalogTests(unittest.TestCase):
         self.assertIn("missing mode support for 'raw'", errors)
         self.assertIn("missing topology bucket '1'", errors)
 
+    def test_schema_reports_empty_entity_ids_and_malformed_urls(self) -> None:
+        solution = self.catalog.solutions.pop("paperless-ngx")
+        solution["id"] = ""
+        solution["upstream_repo"] = "https://[invalid"
+        self.catalog.solutions[""] = solution
+
+        runtime = self.catalog.runtimes.pop("raw")
+        runtime["id"] = ""
+        self.catalog.runtimes[""] = runtime
+
+        operating_system = self.catalog.operating_systems.pop("ubuntu-24.04")
+        operating_system["id"] = ""
+        self.catalog.operating_systems[""] = operating_system
+
+        self.catalog.formats[""] = copy.deepcopy(self.catalog.formats["documents"])
+
+        errors = "\n".join(validate_catalog(self.catalog))
+        self.assertIn("solution '' field 'id' must be a non-empty string", errors)
+        self.assertIn("solution '' field 'upstream_repo' must be an http(s) URL", errors)
+        self.assertIn("runtime '' field 'id' must be a non-empty string", errors)
+        self.assertIn("operating system '' field 'id' must be a non-empty string", errors)
+        self.assertIn("format profile ids must be non-empty strings", errors)

@@ -400,8 +400,6 @@ def render(
         command = "/usr/local/lib/archiveweaver/replace-with-upstream-command"
         return plan.as_dict(), render_raw(solution_id, command)
     if mode == "ansible":
-        if selected_underlying_mode == "ansible":
-            raise ValueError("Ansible cannot be its own underlying runtime")
         catalog.runtime(selected_underlying_mode)
         selected_image = _safe_image(image, allow_floating) if image else ""
         port = int(solution["health"]["default_port"] or 8080)

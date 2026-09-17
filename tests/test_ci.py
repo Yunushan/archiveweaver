@@ -593,7 +593,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("python -m coverage run -m unittest discover -s tests", workflow)
         self.assertIn("python -m coverage report", workflow)
         coverage_configuration = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn("fail_under = 90", coverage_configuration)
+        self.assertIn("fail_under = 100", coverage_configuration)
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertEqual(workflow.count("persist-credentials: false"), 5)
         self.assertEqual(workflow.count("timeout-minutes:"), 5)

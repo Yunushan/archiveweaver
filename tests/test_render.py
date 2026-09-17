@@ -80,6 +80,23 @@ class RenderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             render(self.catalog, "paperless-ngx", "docker", "1", "ubuntu-24.04", image="repo/app:1\nmalicious")
 
+    def test_renderer_rejects_whitespace_and_unsafe_image_boundaries(self) -> None:
+        for image, message in (
+            (" registry.example/app:1", "image reference is required"),
+            ("registry.example/app/", "unsafe boundary"),
+        ):
+            with self.subTest(image=image):
+                with self.assertRaisesRegex(ValueError, message):
+                    render(
+                        self.catalog,
+                        "paperless-ngx",
+                        "docker",
+                        "1",
+                        "ubuntu-24.04",
+                        image=image,
+                        allow_floating=True,
+                    )
+
     def test_raw_renderer_is_an_envelope(self) -> None:
         _, content = render(self.catalog, "dspace", "raw", "1", "ubuntu-24.04")
         self.assertIn("ExecStart=", content)
@@ -126,6 +143,53 @@ class RenderTests(unittest.TestCase):
         self.assertIn('archiveweaver_ansible_runner_version: "2.4.3"', content)
         self.assertIn('archiveweaver_execution_environment_digest: ""', content)
         self.assertIn('archiveweaver_runtime: "rke2"', content)
+
+    def test_ansible_renderer_rejects_itself_as_underlying_provider(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be its own underlying runtime"):
+            render(
+                self.catalog,
+                "paperless-ngx",
+                "ansible",
+                "3",
+                "ubuntu-24.04",
+                underlying_mode="ansible",
+            )
+
+    def test_single_node_swarm_uses_local_storage(self) -> None:
+        plan, content = render(
+            self.catalog,
+            "paperless-ngx",
+            "docker-swarm",
+            "1",
+            "ubuntu-24.04",
+            image="registry.example/paperless@sha256:" + "a" * 64,
+        )
+        self.assertFalse(plan["external_storage"])
+        self.assertIn("driver: local", content)
+        self.assertNotIn("external: true", content)
+
+    def test_three_plus_node_kubernetes_uses_conservative_replica_default(self) -> None:
+        _, content = render(
+            self.catalog,
+            "paperless-ngx",
+            "rke2",
+            "3+",
+            "ubuntu-24.04",
+            image="registry.example/paperless@sha256:" + "a" * 64,
+        )
+        self.assertIn("replicas: 3", content)
+
+    def test_pacemaker_requires_its_documented_resource_template(self) -> None:
+        with self.assertRaisesRegex(ValueError, "documented Pacemaker resource template"):
+            render(
+                self.catalog,
+                "nextcloud-server",
+                "pacemaker",
+                "1",
+                "rocky-9",
+                allow_conditional=True,
+                image="registry.example/nextcloud@sha256:" + "a" * 64,
+            )
 
     def test_renderer_rejects_underlying_provider_for_non_ansible_mode(self) -> None:
         with self.assertRaises(ValueError):

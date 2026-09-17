@@ -7,9 +7,12 @@ from email.message import Message
 from unittest.mock import MagicMock, patch
 
 from archiveweaver.checks import (
+    _NoRedirectHandler,
     _command,
+    _open_health_request,
     _redacted_url,
     _runtime_commands,
+    _url_scheme,
     check_commands,
     check_service,
     check_time_sync,
@@ -34,7 +37,7 @@ class ExtendedCheckTests(unittest.TestCase):
     def test_detect_host_reads_os_release(
         self,
         path: MagicMock,
-        _command_mock: MagicMock,
+        command: MagicMock,
         _hostname: MagicMock,
     ) -> None:
         release = path.return_value
@@ -49,6 +52,12 @@ class ExtendedCheckTests(unittest.TestCase):
         self.assertEqual(host["kernel"], "6.1")
         self.assertEqual(host["architecture"], "x86_64")
         self.assertEqual(host["hostname"], "archive-host")
+
+        release.exists.return_value = False
+        command.side_effect = [(127, "", ""), (127, "", "")]
+        unknown = detect_host()
+        self.assertEqual(unknown["id"], "unknown")
+        self.assertEqual(unknown["kernel"], "unknown")
 
     @patch("archiveweaver.checks.shutil.which")
     def test_command_presence_reports_exact_missing_set(self, which: MagicMock) -> None:
@@ -110,6 +119,19 @@ class ExtendedCheckTests(unittest.TestCase):
         )
         self.assertEqual(_redacted_url(7), "<invalid-url>")
         self.assertEqual(_redacted_url("https://example.org/\nsecret"), "<redacted-url>")
+        self.assertEqual(_url_scheme("https://["), "")
+
+    @patch("archiveweaver.checks.urllib.request.build_opener")
+    def test_health_request_uses_the_no_redirect_opener(self, build_opener: MagicMock) -> None:
+        response = object()
+        build_opener.return_value.open.return_value = response
+        request = MagicMock()
+        self.assertIs(_open_health_request(request, 9), response)
+        build_opener.assert_called_once_with(_NoRedirectHandler)
+        build_opener.return_value.open.assert_called_once_with(request, timeout=9)
+        self.assertIsNone(
+            _NoRedirectHandler().redirect_request(None, None, 302, "redirect", {}, "https://other.example")
+        )
 
     def test_url_rejects_unsafe_or_non_http_endpoints(self) -> None:
         self.assertEqual(check_url("https://example.org/\nsecret")["status"], "fail")
@@ -143,6 +165,11 @@ class ExtendedCheckTests(unittest.TestCase):
             "https://example.org/login", 302, "redirect", headers, None
         )
         open_request.side_effect = redirect
+        self.assertEqual(check_url("https://example.org/health")["status"], "fail")
+        downgrade = urllib.error.HTTPError(
+            "http://example.org/health", 307, "downgrade", headers, None
+        )
+        open_request.side_effect = downgrade
         self.assertEqual(check_url("https://example.org/health")["status"], "fail")
         unauthorized = urllib.error.HTTPError(
             "https://example.org/health", 401, "unauthorized", headers, None

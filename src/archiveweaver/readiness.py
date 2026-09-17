@@ -1169,10 +1169,6 @@ def _sbom_payload(
     return None
 
 
-def _sbom_file(value: Any, root: Path, context: EvidenceContext | None) -> bool:
-    return _sbom_payload(value, root, context) is not None
-
-
 def _sbom_binds_name(
     value: Any,
     expected_name: str,
@@ -1709,8 +1705,6 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     ):
         return False
     artifacts = section.get("artifacts")
-    if not isinstance(artifacts, list) or not artifacts:
-        return False
     if not isinstance(artifacts, list) or not artifacts or not all(
         _signed_artifact_ok(item, root, context, manifest) for item in artifacts
     ):
@@ -1731,14 +1725,6 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
             return False
         release_artifact_proof_paths.update(artifact_paths)
     service = manifest.get("service")
-    artifact_names = [
-        str(item.get("name", "")).casefold()
-        for item in artifacts
-        if isinstance(item, dict)
-    ]
-    artifact_relative_paths = [str(item.get("path", "")) for item in artifacts if isinstance(item, dict)]
-    if len(artifact_names) != len(set(artifact_names)) or len(artifact_relative_paths) != len(set(artifact_relative_paths)):
-        return False
     expected_release_digests = {
         str(item.get("digest", "")) for item in artifacts if isinstance(item, dict)
     }
@@ -1769,9 +1755,6 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     if isinstance(service, dict) and service.get("runtime") == "ansible":
         provider_bundle = section.get("provider_bundle")
         if isinstance(provider_bundle, dict):
-            provider_name = str(provider_bundle.get("name", "")).casefold()
-            if provider_name in artifact_names:
-                return False
             provider_paths = _artifact_proof_paths(provider_bundle)
             if (
                 len(_artifact_core_proof_paths(provider_bundle)) != 3
