@@ -69,13 +69,13 @@ jobs:
           --require-hashes --only-binary=:all:
           -r requirements/release-tools.txt
       - name: Compile Python sources
-        run: python -m compileall -q src scripts tests
+        run: python -m compileall -q src scripts tests fuzz
       - name: Audit cataloged GitHub repositories
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/validate-upstream-repositories.py
       - name: Run Bandit
-        run: bandit --quiet --recursive src scripts --severity-level medium --confidence-level medium
+        run: bandit --quiet --recursive src scripts fuzz --severity-level medium --confidence-level medium
       - name: Audit pinned controller dependencies
         run: pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict
       - name: Audit pinned release validation dependencies

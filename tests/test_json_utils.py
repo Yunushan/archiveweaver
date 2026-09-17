@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from archiveweaver.json_utils import MAX_JSON_NUMBER_DIGITS, load_json_document
 
@@ -28,6 +29,10 @@ class JsonDocumentTests(unittest.TestCase):
         payload = "[" * 2000 + "0" + "]" * 2000
         with self.assertRaisesRegex(ValueError, "parser safety limit"):
             load_json_document(payload)
+
+        with patch("archiveweaver.json_utils.json.loads", side_effect=RecursionError):
+            with self.assertRaisesRegex(ValueError, "parser safety limit"):
+                load_json_document("[]")
 
     def test_parser_rejects_oversized_numeric_tokens_before_conversion(self) -> None:
         for payload in (

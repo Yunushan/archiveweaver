@@ -20,7 +20,7 @@ generate:
 
 validate: generate
 	PYTHONPATH=src python3 -m archiveweaver validate-catalog --json
-	python3 -m compileall -q src scripts tests
+	python3 -m compileall -q src scripts tests fuzz
 
 test: validate controller-validate yaml-validate release-tools-check
 	bash -n scripts/*.sh tests/*.sh
@@ -29,10 +29,10 @@ test: validate controller-validate yaml-validate release-tools-check
 	PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 lint:
-	python3 -m compileall -q src scripts tests
+	python3 -m compileall -q src scripts tests fuzz
 
 quality:
-	python3 -m ruff check src tests scripts setup.py
+	python3 -m ruff check src tests scripts fuzz setup.py
 	PYTHONPATH=src python3 -m mypy --strict src/archiveweaver scripts
 
 upstream-audit:
@@ -66,4 +66,3 @@ smoke:
 	PYTHONPATH=src python3 -m archiveweaver list-solutions
 	PYTHONPATH=src python3 -m archiveweaver plan --solution paperless-ngx --mode rke2 --nodes 3 --os ubuntu-24.04
 	PYTHONPATH=src python3 -m archiveweaver repair --solution paperless-ngx --mode docker
-

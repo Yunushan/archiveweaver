@@ -10,6 +10,7 @@ include scripts/compile-ansible-lock.py
 include scripts/compile-release-tools-lock.py
 include scripts/audit-github-production-controls.py
 include scripts/generate-ansible-sbom.py
+include scripts/install-local-artifact.py
 include scripts/normalize-sdist.py
 include scripts/publish-github-release.py
 include scripts/verify-release-actors.py

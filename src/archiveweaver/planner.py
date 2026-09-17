@@ -172,8 +172,7 @@ def build_plan(
     if selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s", "docker-swarm"} and bucket in {"2", "3", "3+"}:
         if bucket == "2" and not external_datastore:
             blockers.append("Two-node consensus is not a resilient baseline; use three control/manager nodes or an external quorum-capable datastore.")
-        if bucket in {"2", "3", "3+"}:
-            warnings.append("Keep the application database, object storage, and search cluster outside the scheduler's local ephemeral storage.")
+        warnings.append("Keep the application database, object storage, and search cluster outside the scheduler's local ephemeral storage.")
     if selected_underlying_mode == "docker-swarm" and bucket != "1" and not external_storage:
         blockers.append(
             "Multi-node Docker Swarm requires explicitly confirmed shared or replicated application storage; rerun with --external-storage only after validating the storage driver and recovery path."

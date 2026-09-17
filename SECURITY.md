@@ -7,10 +7,12 @@ values.
 
 ## Reporting
 
-Use the repository host's private vulnerability-reporting channel or contact
+Use [GitHub's private vulnerability-reporting form][private-report] or contact
 the project security maintainers privately. Include the affected commit or
 release, reproducible steps, impact, and a sanitized proof. Do not test against
-production systems without written authorization.
+production systems without written authorization. If the private form is not
+available, do not fall back to a public issue; use the private contact recorded
+for the deployment's named security owner.
 
 ## Operational response
 
@@ -20,3 +22,5 @@ promotion, revoke or rotate the affected credential, preserve the evidence
 index and controller job record, and follow the incident sequence in
 `docs/operations/service-management.md`. The service owner must set response
 targets and disclosure timelines for each operated deployment.
+
+[private-report]: https://github.com/Yunushan/archiveweaver/security/advisories/new
