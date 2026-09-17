@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 dist/
+dist-reproducibility/
 build/
 /.verification-*/
 .env
@@ -27,4 +28,3 @@ deploy/ansible/release-manifest.json
 deploy/ansible/release-manifest-staging.json
 deploy/ansible/evidence/
 deploy/ansible/generated/
-

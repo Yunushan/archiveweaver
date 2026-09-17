@@ -39,8 +39,32 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("/requirements/", codeowners)
         support = (ROOT / "SUPPORT.md").read_text(encoding="utf-8")
         self.assertIn("does not provide a commercial support contract", support)
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "https://github.com/Yunushan/archiveweaver/security/advisories/new",
+            security,
+        )
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertIn("* text=auto eol=lf", attributes)
+
+    def test_workflow_pip_installs_are_hash_enforced(self) -> None:
+        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        checked = 0
+        for workflow_path in workflows:
+            workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            for job_name, job in workflow.get("jobs", {}).items():
+                for step in job.get("steps", []):
+                    command = step.get("run", "")
+                    if "pip install" not in command:
+                        continue
+                    checked += 1
+                    self.assertIn(
+                        "--require-hashes",
+                        command,
+                        f"{workflow_path.name}:{job_name}:{step.get('name', '<unnamed>')}",
+                    )
+                    self.assertIn("--no-input", command)
+        self.assertGreater(checked, 0)
 
     def test_github_actions_are_pinned_to_immutable_commit_shas(self) -> None:
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
@@ -79,6 +103,9 @@ class CIWorkflowTests(unittest.TestCase):
         release_publisher = (ROOT / "scripts/publish-github-release.py").read_text(
             encoding="utf-8"
         )
+        local_artifact_installer = (
+            ROOT / "scripts/install-local-artifact.py"
+        ).read_text(encoding="utf-8")
         release_tools_input = (ROOT / "requirements/release-tools.in").read_text(
             encoding="utf-8"
         )
@@ -90,6 +117,7 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("pip-audit==2.10.1", release_tools_input)
         self.assertIn("-r requirements/release-tools.txt", security)
         self.assertIn("--require-hashes --only-binary=:all:", security)
+        self.assertIn("python -m compileall -q src scripts tests fuzz", security)
         self.assertIn("python scripts/validate-upstream-repositories.py", security)
         self.assertIn("--severity-level medium", security)
         self.assertIn("pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict", security)
@@ -126,7 +154,11 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("-r requirements/release-tools.txt", release)
         self.assertIn("--require-hashes --only-binary=:all:", release)
         self.assertIn("python -m build --no-isolation", release)
-        self.assertIn("--no-build-isolation", release)
+        self.assertIn("python scripts/install-local-artifact.py dist/*.whl", release)
+        self.assertIn("python scripts/install-local-artifact.py dist/*.tar.gz", release)
+        self.assertIn("--no-build-isolation", local_artifact_installer)
+        self.assertIn("--require-hashes", local_artifact_installer)
+        self.assertIn("--no-index", local_artifact_installer)
         self.assertIn("python scripts/generate-ansible-sbom.py", release)
         self.assertIn("python scripts/generate-ansible-sbom.py --check", release)
         self.assertIn("python -m spdx_tools.spdx.clitools.pyspdxtools", release)
@@ -335,8 +367,9 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("directory: /deploy/ansible", dependabot)
         self.assertIn("directory: /deploy/ansible/execution-environment", dependabot)
         self.assertIn("directory: /requirements", dependabot)
+        self.assertIn("directory: /.clusterfuzzlite", dependabot)
         configuration = yaml.safe_load(dependabot)
-        self.assertEqual(len(configuration["updates"]), 5)
+        self.assertEqual(len(configuration["updates"]), 6)
         for update in configuration["updates"]:
             self.assertLessEqual(update["open-pull-requests-limit"], 5)
             groups = update.get("groups", {})
@@ -531,13 +564,28 @@ class CIWorkflowTests(unittest.TestCase):
         release_tools_input = (ROOT / "requirements/release-tools.in").read_text(
             encoding="utf-8"
         )
-        self.assertIn("PyYAML==6.0.3", workflow)
+        ci_yaml_lock = (ROOT / "requirements/ci-yaml.txt").read_text(
+            encoding="utf-8"
+        )
+        ci_yaml_build_lock = (ROOT / "requirements/ci-yaml-build.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pyyaml==6.0.3", ci_yaml_lock)
+        self.assertGreaterEqual(ci_yaml_lock.count("--hash=sha256:"), 7)
+        self.assertIn("cython==3.3.0", ci_yaml_build_lock)
+        self.assertIn("setuptools==83.0.0", ci_yaml_build_lock)
+        self.assertGreaterEqual(ci_yaml_build_lock.count("--hash=sha256:"), 3)
+        self.assertEqual(workflow.count("-r requirements/ci-yaml.txt"), 3)
+        self.assertEqual(workflow.count("-r requirements/ci-yaml-build.txt"), 1)
         self.assertIn("--require-hashes --only-binary=:all:", workflow)
+        self.assertIn("--no-build-isolation --no-binary=PyYAML", workflow)
+        self.assertIn("matrix.python-version == '3.15'", workflow)
+        self.assertIn("matrix.python-version != '3.15'", workflow)
         self.assertIn("-r deploy/ansible/requirements.txt", workflow)
         self.assertIn("python scripts/generate_catalog.py", workflow)
         self.assertIn("python scripts/validate-yaml.py", workflow)
         self.assertIn("git diff --exit-code", workflow)
-        self.assertIn("python -m pip install --disable-pip-version-check --no-input --no-deps .", workflow)
+        self.assertNotIn("pip install --disable-pip-version-check --no-input --no-deps .", workflow)
         for tool in ("ruff", "mypy", "coverage"):
             self.assertRegex(release_tools_input, rf"(?m)^{tool}==[^\s]+$")
         self.assertGreaterEqual(workflow.count("-r requirements/release-tools.txt"), 2)
@@ -556,16 +604,23 @@ class CIWorkflowTests(unittest.TestCase):
         validator = (ROOT / "scripts/validate-installed-distribution.py").read_text(
             encoding="utf-8"
         )
+        local_artifact_installer = (
+            ROOT / "scripts/install-local-artifact.py"
+        ).read_text(encoding="utf-8")
         self.assertIn("python -m build", workflow)
         self.assertIn("-r requirements/release-tools.txt", workflow)
         self.assertIn("python -m build --no-isolation", workflow)
-        self.assertIn("--no-build-isolation", workflow)
+        self.assertIn("--no-build-isolation", local_artifact_installer)
         self.assertIn("SOURCE_DATE_EPOCH", workflow)
         self.assertIn("python scripts/normalize-sdist.py dist/*.tar.gz", workflow)
         self.assertIn("python scripts/normalize-sdist.py --check dist/*.tar.gz", workflow)
         self.assertIn("cmp dist/*.whl dist-reproducibility/*.whl", workflow)
         self.assertIn("cmp dist/*.tar.gz dist-reproducibility/*.tar.gz", workflow)
         self.assertIn("dist/*.tar.gz", workflow)
+        self.assertIn("python scripts/install-local-artifact.py dist/*.whl", workflow)
+        self.assertIn("python scripts/install-local-artifact.py dist/*.tar.gz", workflow)
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("include scripts/install-local-artifact.py", manifest)
         self.assertIn("python scripts/validate-installed-distribution.py", workflow)
         self.assertIn("python scripts/validate-installed-distribution.py", release)
         self.assertIn("SOURCE_DATE_EPOCH", release)
@@ -607,3 +662,66 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn('requires-python = ">=3.9"', metadata)
         for version in core_versions:
             self.assertIn(f'"Programming Language :: Python :: {version}"', metadata)
+
+    def test_clusterfuzzlite_is_pinned_and_covers_security_boundaries(self) -> None:
+        pr_workflow = (ROOT / ".github/workflows/cflite-pr.yml").read_text(
+            encoding="utf-8"
+        )
+        batch_workflow = (ROOT / ".github/workflows/cflite-batch.yml").read_text(
+            encoding="utf-8"
+        )
+        dockerfile = (ROOT / ".clusterfuzzlite/Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+        build_script = (ROOT / ".clusterfuzzlite/build.sh").read_text(
+            encoding="utf-8"
+        )
+        project = yaml.safe_load(
+            (ROOT / ".clusterfuzzlite/project.yaml").read_text(encoding="utf-8")
+        )
+        self.assertRegex(
+            dockerfile,
+            r"(?m)^FROM gcr\.io/oss-fuzz-base/base-builder-python@sha256:[0-9a-f]{64}$",
+        )
+        self.assertNotIn("COPY . ", dockerfile)
+        self.assertTrue(dockerignore.startswith("**\n"))
+        self.assertIn("!src/**", dockerignore)
+        self.assertIn("!fuzz/**", dockerignore)
+        self.assertIn("!.clusterfuzzlite/**", dockerignore)
+        self.assertEqual(
+            project,
+            {
+                "base_os_version": "ubuntu-24-04",
+                "language": "python",
+                "sanitizers": ["address"],
+            },
+        )
+        self.assertIn(
+            "base-builder-python@sha256:886fc3577cf92a953493c908b2b49ca5781c00683bccbb60bc54a3c1d94e52c4",
+            dockerfile,
+        )
+        self.assertIn("compile_python_fuzzer", build_script)
+        self.assertIn("fuzz/*_fuzzer.py", build_script)
+        for workflow in (pr_workflow, batch_workflow):
+            self.assertIn(
+                "google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1",
+                workflow,
+            )
+            self.assertIn(
+                "google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1",
+                workflow,
+            )
+            self.assertIn("language: python", workflow)
+            self.assertIn("security-events: write", workflow)
+            self.assertIn(
+                "github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63",
+                workflow,
+            )
+            self.assertIn("sarif_file: cifuzz-sarif/results.sarif", workflow)
+            self.assertIn("parallel-fuzzing: true", workflow)
+        self.assertIn("mode: code-change", pr_workflow)
+        self.assertIn("mode: batch", batch_workflow)
+        self.assertIn("mode: prune", batch_workflow)
+        self.assertTrue((ROOT / "fuzz/json_document_fuzzer.py").is_file())
+        self.assertTrue((ROOT / "fuzz/hook_argv_fuzzer.py").is_file())
