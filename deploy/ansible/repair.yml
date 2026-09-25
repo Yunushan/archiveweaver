@@ -7,6 +7,25 @@
     archiveweaver_run_verification: true
     archiveweaver_controller_target_group: archiveweaver_nodes
   pre_tasks:
+    - name: Require the repair action host to be the first serial batch
+      ansible.builtin.assert:
+        that:
+          - >-
+            archiveweaver_runtime != 'docker' or
+            groups['archiveweaver_app'] | default([]) | length > 0
+          - >-
+            archiveweaver_runtime != 'docker' or
+            groups['archiveweaver_nodes'][0] == groups['archiveweaver_app'][0]
+          - >-
+            archiveweaver_runtime in ['docker', 'raw', 'podman-quadlet', 'pacemaker'] or
+            groups['archiveweaver_control'] | default([]) | length > 0
+          - >-
+            archiveweaver_runtime in ['docker', 'raw', 'podman-quadlet', 'pacemaker'] or
+            groups['archiveweaver_nodes'][0] == groups['archiveweaver_control'][0]
+        fail_msg: "The Compose application host or cluster control host must be first in the managed inventory for serial repair."
+      when: archiveweaver_repair_apply | default(false) | bool
+      tags: [always, controller]
+
     - name: Preserve the post-play evidence sealing decision
       ansible.builtin.set_fact:
         archiveweaver_evidence_seal_enabled: true
@@ -14,17 +33,43 @@
     - role: archiveweaver_controller_preflight
       tags: [always, controller]
 
-- name: ArchiveWeaver guarded repair
+- name: Validate every managed host before guarded repair
   hosts: archiveweaver_nodes
   become: true
   gather_facts: true
-  serial: 1
   any_errors_fatal: true
   vars:
     archiveweaver_run_verification: true
   roles:
     - role: archiveweaver_preflight
       tags: [preflight]
+  tasks:
+    - name: Require the recorded Kubernetes target on every managed host
+      ansible.builtin.include_tasks:
+        file: roles/archiveweaver_repair/tasks/require-kubernetes-record.yml
+        apply:
+          tags: [preflight, repair]
+      when:
+        - archiveweaver_repair_apply | bool
+        - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+      tags: [preflight, repair]
+
+    - name: Attest completed repair preflight for this managed host
+      ansible.builtin.set_fact:
+        archiveweaver_repair_preflight_change_id: "{{ archiveweaver_change_id }}"
+      when: archiveweaver_preflight_completed | default(false) | bool
+      tags: [preflight, repair]
+
+- name: ArchiveWeaver guarded repair
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: false
+  order: inventory
+  serial: 1
+  any_errors_fatal: true
+  vars:
+    archiveweaver_run_verification: true
+  roles:
     - role: archiveweaver_repair
       tags: [repair]
     - role: archiveweaver_verify

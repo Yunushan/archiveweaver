@@ -12,9 +12,7 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  ingress:
-    - ports:
-        - protocol: TCP
-          port: http
-  egress:
-    - {}
+  # Add separate product-specific allow policies for reviewed ingress, DNS,
+  # database, search, queue, and object-store destinations.
+  ingress: []
+  egress: []

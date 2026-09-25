@@ -13,7 +13,6 @@ PYTHONPATH=src python3 -m archiveweaver check \
   --solution archivematica \
   --mode rke2 \
   --url https://archivematica.example.org/ \
-  --service archivematica \
   --path /srv/archivematica \
   --config /etc/rancher/rke2/config.yaml \
   --json > reports/archivematica-check.json
@@ -42,14 +41,15 @@ dependency and preservation smoke tests in layers 6–7.
 
 The built-in CLI implements layers 1–5. Layers 6–7 are intentionally explicit because credentials, schemas, collection data, and product release semantics differ.
 
+Catalog service aliases are discovery candidates. Inactive aliases are skipped because a deployment may use a different unit or runtime. Passing `--service` makes that exact systemd unit required: an inactive, failed, missing, or unqueryable unit fails the check. A successful path or configuration check verifies only that a filesystem entry exists. It cannot make the overall result pass without an active product service or a successful HTTP probe. The JSON `meaningful_passes` count includes only those two live probes, and a missing live pass adds a `product-health` warning.
+
 ## Exit status
 
-- `0`: at least one application, endpoint, path, or configuration probe passed and no warnings or failures were reported;
-- `1`: the run was incomplete or reported warnings, including a run with no meaningful application probe;
+- `0`: at least one product service or HTTP endpoint probe passed and no warnings or failures were reported;
+- `1`: the run was incomplete or reported warnings, including a run where only paths or configuration passed;
 - `2`: one or more checks failed or the plan is blocked;
 - `3`: wrapper refused an unsupported apply operation.
 
 ## Evidence
 
 Persist JSON output with the change ID. Redact tokens, cookies, document content, credentials, and personal data before sharing it.
-

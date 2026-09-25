@@ -54,8 +54,10 @@ class AnsibleEditionTests(unittest.TestCase):
             "roles/archiveweaver_controller_preflight/tasks/require-managed-complete.yml",
             "roles/archiveweaver_host/tasks/main.yml",
             "roles/archiveweaver_provider/tasks/main.yml",
+            "roles/archiveweaver_provider/tasks/record-release.yml",
             "roles/archiveweaver_provider/tasks/verify-bundle.yml",
             "roles/archiveweaver_repair/tasks/main.yml",
+            "roles/archiveweaver_repair/tasks/require-kubernetes-record.yml",
             "roles/archiveweaver_restore/tasks/main.yml",
             "roles/archiveweaver_failure/tasks/main.yml",
             "roles/archiveweaver_rollback/tasks/main.yml",
@@ -269,18 +271,17 @@ class AnsibleEditionTests(unittest.TestCase):
         host = (ANSIBLE_ROOT / "roles/archiveweaver_host/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Create application, log, and release-record directories", host)
         provider_main = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/main.yml").read_text(encoding="utf-8")
-        self.assertIn("Record the verified release identity after provider reconciliation", provider_main)
-        self.assertIn("execution_environment_digest", provider_main)
-        self.assertIn("provider_bundle_sha256", provider_main)
-        self.assertIn("product_stack_sha256", provider_main)
-        self.assertIn("kustomize_bundle_sha256", provider_main)
-        self.assertIn("source_commit", provider_main)
-        self.assertIn("readiness_manifest_sha256", provider_main)
-        self.assertIn("when: archiveweaver_apply | bool", provider_main)
-        self.assertLess(
-            provider_main.index("Fail closed for Pacemaker deployment resources"),
-            provider_main.index("Record the verified release identity after provider reconciliation"),
-        )
+        record = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/record-release.yml").read_text(encoding="utf-8")
+        site = (ANSIBLE_ROOT / "site.yml").read_text(encoding="utf-8")
+        self.assertNotIn("archiveweaver_release_record", provider_main)
+        self.assertIn("Fail closed for Pacemaker deployment resources", provider_main)
+        self.assertIn("Record the release identity after provider convergence", record)
+        for field in ("execution_environment_digest", "provider_bundle_sha256", "product_stack_sha256",
+                      "kustomize_bundle_sha256", "source_commit", "readiness_manifest_sha256"):
+            self.assertIn(field, record)
+        self.assertIn("tasks_from: record-release", site)
+        self.assertLess(site.index("meta: flush_handlers"), site.index("tasks_from: record-release"))
+        self.assertLess(site.index("tasks_from: record-release"), site.index("name: archiveweaver_verify"))
 
     def test_inventory_defines_restore_and_runtime_group_relationships(self) -> None:
         inventory = (ANSIBLE_ROOT / "inventory/production/hosts.yml.example").read_text(encoding="utf-8")
@@ -318,6 +319,14 @@ class AnsibleEditionTests(unittest.TestCase):
     def test_preflight_enforces_consensus_and_fencing_invariants(self) -> None:
         preflight = (ANSIBLE_ROOT / "roles/archiveweaver_preflight/tasks/main.yml").read_text(encoding="utf-8")
         self.assertIn("Require an odd control-plane shape for consensus runtimes", preflight)
+        swarm_gate = preflight.split("- name: Reject two-node Docker Swarm before mutation", 1)[1].split("- name:", 1)[0]
+        self.assertIn("archiveweaver_nodes != '2'", swarm_gate)
+        self.assertIn("archiveweaver_runtime == 'docker-swarm'", swarm_gate)
+        self.assertIn("archiveweaver_apply | bool or archiveweaver_repair_apply | bool", swarm_gate)
+        self.assertNotIn("archiveweaver_preflight_is_staging_preview", swarm_gate)
+        self.assertNotIn("archiveweaver_external_consensus_ready", swarm_gate)
+        two_node_quorum_gate = preflight.split("- name: Require an external quorum design for two-node consensus", 1)[1].split("- name:", 1)[0]
+        self.assertNotIn("'docker-swarm'", two_node_quorum_gate)
         self.assertIn("Require an external quorum design for two-node consensus", preflight)
         self.assertIn(
             "Require shared or replicated storage for multi-node Swarm",
@@ -351,8 +360,17 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("archiveweaver_release_record is match('^/etc/archiveweaver/' ~ archiveweaver_solution_id", preflight)
         self.assertIn("archiveweaver_approval_ticket is not search", preflight)
         self.assertIn("archiveweaver_kubeconfig is string", preflight)
-        self.assertIn("Require an explicit kubeconfig for Kubernetes-family operations", preflight)
+        self.assertIn("archiveweaver_kubeconfig_sha256 is string", preflight)
+        self.assertIn("archiveweaver_kube_context is string", preflight)
+        self.assertIn("Require an explicit kubeconfig, digest, and context for Kubernetes-family operations", preflight)
+        kube_gate = preflight.split("- name: Require an explicit kubeconfig, digest, and context for Kubernetes-family operations", 1)[1].split("- name:", 1)[0]
+        self.assertIn("archiveweaver_kubeconfig | length > 0", kube_gate)
+        self.assertIn("archiveweaver_kubeconfig_sha256 | length > 0", kube_gate)
+        self.assertIn("archiveweaver_kube_context | length > 0", kube_gate)
+        self.assertIn("archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool", kube_gate)
         self.assertIn("Require a private, regular kubeconfig on the first control host", preflight)
+        self.assertIn("archiveweaver_preflight_kubeconfig_stat.stat.uid | default(-1) | int == 0", preflight)
+        self.assertIn("archiveweaver_preflight_kubeconfig_stat.stat.checksum | default('') == archiveweaver_kubeconfig_sha256", preflight)
         self.assertIn("archiveweaver_kustomize_path is not match('/$')", preflight)
         self.assertIn("archiveweaver_compose_path is match('^/etc/archiveweaver/' ~ archiveweaver_solution_id", preflight)
         self.assertIn("archiveweaver_kustomize_path is match('^/etc/archiveweaver/' ~ archiveweaver_solution_id", preflight)
@@ -480,6 +498,10 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("Require the operational readiness manifest verifier to pass", controller_preflight)
         self.assertIn("Load the controller-approved readiness identity", controller_preflight)
         self.assertIn("Bind every applied workflow to the approved readiness identity", controller_preflight)
+        self.assertIn(
+            "get('release', {}).get('source_revision') == (lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower)",
+            " ".join(controller_preflight.split()),
+        )
         self.assertIn(
             "get('service', {}).get('environment') == archiveweaver_evidence_environment",
             " ".join(controller_preflight.split()),
@@ -719,6 +741,8 @@ class AnsibleEditionTests(unittest.TestCase):
             "archiveweaver_kustomize_path",
             "archiveweaver_kustomize_bundle_sha256",
             "archiveweaver_kubeconfig",
+            "archiveweaver_kubeconfig_sha256",
+            "archiveweaver_kube_context",
             "archiveweaver_health_url",
             "archiveweaver_execution_environment_digest",
         ):
@@ -728,10 +752,10 @@ class AnsibleEditionTests(unittest.TestCase):
             "podman-quadlet": ("archiveweaver_image", "archiveweaver_provider_bundle_sha256"),
             "docker": ("archiveweaver_compose_path", "archiveweaver_product_stack_sha256"),
             "docker-swarm": ("archiveweaver_compose_path", "archiveweaver_product_stack_sha256"),
-            "k3s": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig"),
-            "rke2": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig"),
-            "k0s": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig"),
-            "microk8s": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig"),
+            "k3s": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig", "archiveweaver_kubeconfig_sha256", "archiveweaver_kube_context"),
+            "rke2": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig", "archiveweaver_kubeconfig_sha256", "archiveweaver_kube_context"),
+            "k0s": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig", "archiveweaver_kubeconfig_sha256", "archiveweaver_kube_context"),
+            "microk8s": ("archiveweaver_kustomize_path", "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig", "archiveweaver_kubeconfig_sha256", "archiveweaver_kube_context"),
         }.items():
             runtime_match = re.search(
                 rf"(?ms)^      {re.escape(runtime)}:\n(?P<body>.*?)(?=^      [A-Za-z0-9_-]+:|\Z)",
@@ -749,6 +773,8 @@ class AnsibleEditionTests(unittest.TestCase):
             "archiveweaver_product_stack_sha256",
             "archiveweaver_kustomize_bundle_sha256",
             "archiveweaver_kubeconfig",
+            "archiveweaver_kubeconfig_sha256",
+            "archiveweaver_kube_context",
             "archiveweaver_health_url",
         ):
             self.assertIn(binding, workflow)
@@ -759,6 +785,8 @@ class AnsibleEditionTests(unittest.TestCase):
                 "archiveweaver_product_stack_sha256",
                 "archiveweaver_kustomize_bundle_sha256",
                 "archiveweaver_kubeconfig",
+                "archiveweaver_kubeconfig_sha256",
+                "archiveweaver_kube_context",
                 "archiveweaver_health_url",
             ):
                 self.assertIn(binding, workflow_section)
@@ -783,7 +811,9 @@ class AnsibleEditionTests(unittest.TestCase):
             "product-certification": "staging-preview",
             "failure-domain-drill": "product-certification",
             "backup-and-restore-gate": "failure-domain-drill",
-            "readiness": "backup-and-restore-gate",
+            "staging-repair-drill": "backup-and-restore-gate",
+            "staging-rollback-drill": "staging-repair-drill",
+            "readiness": "staging-rollback-drill",
             "production-approval": "readiness",
             "production-apply": "production-approval",
             "production-post-apply-verify": "production-apply",
@@ -842,6 +872,154 @@ class AnsibleEditionTests(unittest.TestCase):
         self.assertIn("archiveweaver_restore_change_id: DR-PLAN", (ANSIBLE_ROOT / "restore-drill.yml").read_text(encoding="utf-8"))
         self.assertIn("archiveweaver_failure_change_id: FD-PLAN", (ANSIBLE_ROOT / "failure-drill.yml").read_text(encoding="utf-8"))
         self.assertIn("bash scripts/validate-ansible.sh", (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+
+    def test_kubernetes_commands_bind_the_reviewed_context(self) -> None:
+        defaults = (ANSIBLE_ROOT / "group_vars/all/main.yml").read_text(encoding="utf-8")
+        self.assertIn('archiveweaver_kube_context: ""', defaults)
+        self.assertIn('archiveweaver_kubeconfig_sha256: ""', defaults)
+        allowlist = (ANSIBLE_ROOT / "controller/allowed-extra-vars.txt").read_text(encoding="utf-8")
+        self.assertIn("archiveweaver_kube_context\n", allowlist)
+        self.assertIn("archiveweaver_kubeconfig_sha256\n", allowlist)
+        expected_prefix = "['kubectl', '--kubeconfig', archiveweaver_kubeconfig, '--context', archiveweaver_kube_context, '--request-timeout=30s']"
+        for relative, prefix, command_count in (
+            ("roles/archiveweaver_provider/tasks/kubernetes.yml", "archiveweaver_provider_kubectl_argv", 16),
+            ("roles/archiveweaver_provider/tasks/verify-bundle.yml", "archiveweaver_provider_verify_kubectl_argv", 4),
+            ("roles/archiveweaver_repair/tasks/main.yml", "archiveweaver_repair_kubectl_argv", 3),
+        ):
+            tasks = (ANSIBLE_ROOT / relative).read_text(encoding="utf-8")
+            binding = re.search(
+                rf"(?m)^\s*{re.escape(prefix)}:\s*>-\s*\{{\{{(.*?)\}}\}}",
+                tasks,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(binding, relative)
+            assert binding is not None
+            self.assertEqual(re.sub(r"\s+", " ", binding.group(1)).strip(), expected_prefix)
+            self.assertEqual(tasks.count("['kubectl'"), 1, relative)
+            self.assertEqual(tasks.count(f"{prefix} + ["), command_count, relative)
+            self.assertNotRegex(tasks, r"(?m)^\s+argv:\s+\[kubectl\b")
+        kubernetes = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/kubernetes.yml").read_text(encoding="utf-8")
+        self.assertLess(kubernetes.index("Require the approved kubeconfig to be unchanged before Kubernetes apply"), kubernetes.index("Apply the reviewed product Kustomize bundle"))
+        self.assertIn("archiveweaver_provider_kubeconfig_recheck.stat.uid | default(-1) | int == 0", kubernetes)
+        self.assertIn("archiveweaver_provider_kubeconfig_recheck.stat.checksum | default('') == archiveweaver_kubeconfig_sha256", kubernetes)
+        self.assertIn("archiveweaver_provider_kubectl_argv + ['get', 'namespace', archiveweaver_namespace,", kubernetes)
+        self.assertIn("archiveweaver_provider_kubectl_argv + ['create', 'namespace', archiveweaver_namespace,", kubernetes)
+        self.assertLess(kubernetes.index("Recheck that the bootstrap namespace is still absent immediately before apply"), kubernetes.index("Apply the reviewed product Kustomize bundle"))
+        repair = (ANSIBLE_ROOT / "roles/archiveweaver_repair/tasks/main.yml").read_text(encoding="utf-8")
+        self.assertLess(repair.index("Require the approved kubeconfig to be unchanged before Kubernetes repair"), repair.index("Restart the named Kubernetes deployment"))
+        self.assertIn("archiveweaver_repair_kubeconfig_recheck.stat.uid | default(-1) | int == 0", repair)
+        self.assertIn("archiveweaver_repair_kubeconfig_recheck.stat.checksum | default('') == archiveweaver_kubeconfig_sha256", repair)
+        self.assertIn("'rollout', 'status', 'deployment/' + archiveweaver_solution_id, '--timeout=300s'", repair)
+        release = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/record-release.yml").read_text(encoding="utf-8")
+        conditional = "{% if archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s'] %}"
+        self.assertIn(conditional, release)
+        release_content = release.split("content: |", 1)[1].split("  no_log:", 1)[0]
+        kube_fields = release_content.split(conditional, 1)[1].split("{% endif %}", 1)[0]
+        self.assertEqual(set(re.findall(r"(?m)^      ([a-z0-9_]+):", kube_fields)), {"kube_context", "kubeconfig_sha256"})
+        non_kube_content = release_content.replace(conditional + kube_fields + "{% endif %}", "")
+        self.assertEqual(
+            set(re.findall(r"(?m)^      ([a-z0-9_]+):", non_kube_content)),
+            {"solution", "release", "catalog_os", "runtime", "orchestration_runtime",
+             "underlying_runtime", "change_id", "source_commit", "readiness_manifest_sha256",
+             "execution_environment_digest", "provider_bundle_sha256", "product_stack_sha256",
+             "kustomize_bundle_sha256"},
+        )
+        verify = (ANSIBLE_ROOT / "roles/archiveweaver_verify/tasks/main.yml").read_text(encoding="utf-8")
+        self.assertIn("['kube_context', 'kubeconfig_sha256'] if archiveweaver_runtime in", verify)
+        self.assertIn("archiveweaver_verify_release_record.kube_context == archiveweaver_kube_context", verify)
+        self.assertIn("archiveweaver_verify_release_record.kubeconfig_sha256 == archiveweaver_kubeconfig_sha256", verify)
+        self.assertLess(repair.index("Require every managed host to complete repair preflight before mutation"), repair.index("Restart the named Kubernetes deployment"))
+        record_gate = (ANSIBLE_ROOT / "roles/archiveweaver_repair/tasks/require-kubernetes-record.yml").read_text(encoding="utf-8")
+        self.assertIn("archiveweaver_repair_kube_release_record.kube_context | default('') == archiveweaver_kube_context", record_gate)
+        self.assertIn("archiveweaver_repair_kube_release_record.kubeconfig_sha256 | default('') == archiveweaver_kubeconfig_sha256", record_gate)
+        repair_play = (ANSIBLE_ROOT / "repair.yml").read_text(encoding="utf-8")
+        self.assertIn("order: inventory", repair_play)
+        self.assertIn("groups['archiveweaver_nodes'][0] == groups['archiveweaver_control'][0]", repair_play)
+        self.assertIn("groups['archiveweaver_nodes'][0] == groups['archiveweaver_app'][0]", repair_play)
+        self.assertLess(
+            repair.index("Require approved fencing controls before applied Pacemaker repair"),
+            repair.index("Clean up the named Pacemaker resource only after fencing approval"),
+        )
+
+    def test_paperless_live_resource_inventory_precedes_diff(self) -> None:
+        resource_parts = (
+            "deployments,statefulsets,daemonsets,jobs,cronjobs,pods,replicasets,",
+            "services,ingresses,networkpolicies,persistentvolumeclaims,secrets,configmaps,serviceaccounts,",
+            "resourcequotas,limitranges,poddisruptionbudgets,horizontalpodautoscalers,roles,rolebindings",
+        )
+        for relative, inventory, rejection, drift in (
+            (
+                "roles/archiveweaver_provider/tasks/kubernetes.yml",
+                "Inventory live namespaced Kubernetes resources after apply",
+                "Reject unreviewed live namespaced Kubernetes resources after apply",
+                "Require every applied Kubernetes resource to match the reviewed model",
+            ),
+            (
+                "roles/archiveweaver_provider/tasks/verify-bundle.yml",
+                "Inventory live namespaced Kubernetes resources during independent verification",
+                "Reject unreviewed live namespaced Kubernetes resources during independent verification",
+                "Require every live Kubernetes resource to match the verified model",
+            ),
+        ):
+            with self.subTest(relative=relative):
+                tasks = (ANSIBLE_ROOT / relative).read_text(encoding="utf-8")
+                self.assertLess(tasks.index(inventory), tasks.index(rejection))
+                self.assertLess(tasks.index(rejection), tasks.index(drift))
+                self.assertTrue(all(part in tasks for part in resource_parts))
+                self.assertEqual(sorted(tasks.index(part) for part in resource_parts),
+                                 [tasks.index(part) for part in resource_parts])
+                self.assertIn("verify-live-kubernetes-resources.py", tasks)
+                inventory_task = tasks.split(f"- name: {inventory}", 1)[1].split("- name:", 1)[0]
+                rejection_task = tasks.split(f"- name: {rejection}", 1)[1].split("- name:", 1)[0]
+                for task in (inventory_task, rejection_task):
+                    self.assertIn("archiveweaver_runtime == 'rke2'", task)
+                    self.assertIn("archiveweaver_solution_id == 'paperless-ngx'", task)
+                    self.assertIn("no_log: true", task)
+
+    def test_paperless_production_target_identity_is_rechecked_before_apply(self) -> None:
+        tasks = (ANSIBLE_ROOT / "roles/archiveweaver_provider/tasks/kubernetes.yml").read_text(encoding="utf-8")
+        recheck = "Recheck the approved production cluster identity immediately before apply"
+        require = "Require the approved production cluster identity at apply"
+        admission = "Require server admission of the exact rendered Kubernetes model before apply"
+        apply = "Apply the reviewed product Kustomize bundle"
+        self.assertLess(tasks.index(recheck), tasks.index(require))
+        self.assertLess(tasks.index(require), tasks.index(admission))
+        self.assertLess(tasks.index(admission), tasks.index(apply))
+        target_gate = tasks.split(f"- name: {require}", 1)[1].split("- name:", 1)[0]
+        self.assertIn("hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.deployment_target", target_gate)
+        self.assertIn("archiveweaver_provider_approved_target.kube_system_namespace_uid", target_gate)
+        self.assertIn("archiveweaver_provider_approved_target.application_namespace_uid", target_gate)
+        self.assertIn("archiveweaver_provider_approved_target.kube_context == archiveweaver_kube_context", target_gate)
+        self.assertIn("archiveweaver_provider_approved_target.kubeconfig_sha256 == archiveweaver_kubeconfig_sha256", target_gate)
+        self.assertIn("not archiveweaver_provider_first_use_active | bool", target_gate)
+
+    def test_kubernetes_repair_checks_all_hosts_before_serial_mutation(self) -> None:
+        playbook = (ANSIBLE_ROOT / "repair.yml").read_text(encoding="utf-8")
+        preflight_start = playbook.index("- name: Validate every managed host before guarded repair")
+        repair_start = playbook.index("- name: ArchiveWeaver guarded repair")
+        self.assertLess(preflight_start, repair_start)
+        preflight = playbook[preflight_start:repair_start]
+        serial_repair = playbook[repair_start:]
+        self.assertIn("hosts: archiveweaver_nodes", preflight)
+        self.assertIn("any_errors_fatal: true", preflight)
+        self.assertIn("- role: archiveweaver_preflight", preflight)
+        self.assertIn("file: roles/archiveweaver_repair/tasks/require-kubernetes-record.yml", preflight)
+        self.assertIn("archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']", preflight)
+        self.assertLess(preflight.index("Require the recorded Kubernetes target on every managed host"), preflight.index("Attest completed repair preflight for this managed host"))
+        self.assertNotIn("serial: 1", preflight)
+        self.assertIn("serial: 1", serial_repair)
+        self.assertIn("gather_facts: false", serial_repair)
+        self.assertNotIn("- role: archiveweaver_preflight", serial_repair)
+        record_gate = (ANSIBLE_ROOT / "roles/archiveweaver_repair/tasks/require-kubernetes-record.yml").read_text(encoding="utf-8")
+        self.assertNotIn("inventory_hostname == groups['archiveweaver_control'][0]", record_gate)
+        self.assertIn("Bind Kubernetes repair to the recorded cluster target before mutation", record_gate)
+        self.assertIn("archiveweaver_repair_kube_release_record.kube_context | default('')", record_gate)
+        self.assertIn("archiveweaver_repair_kube_release_record.kubeconfig_sha256 | default('')", record_gate)
+        repair = (ANSIBLE_ROOT / "roles/archiveweaver_repair/tasks/main.yml").read_text(encoding="utf-8")
+        barrier = repair.split("- name: Require every managed host to complete repair preflight before mutation", 1)[1].split("- name:", 1)[0]
+        self.assertIn("groups['archiveweaver_nodes']", barrier)
+        self.assertIn("map('extract', hostvars, 'archiveweaver_repair_preflight_change_id')", barrier)
+        self.assertLess(repair.index("Require every managed host to complete repair preflight before mutation"), repair.index("Restart the named Kubernetes deployment"))
 
     def test_evidence_is_sealed_only_after_all_managed_hosts_complete(self) -> None:
         for playbook in (

@@ -79,7 +79,7 @@ class RepairTests(unittest.TestCase):
                 )
 
                 def locate_file(self, path: object) -> Path:
-                    if str(path).startswith("invalid/"):
+                    if str(path).replace("\\", "/").startswith("invalid/"):
                         return temporary / "missing" / "ansible.cfg"
                     return installed_root / "ansible.cfg"
 
@@ -360,6 +360,14 @@ class RepairTests(unittest.TestCase):
         self.assertTrue(all("run-ansible-operational.sh" in action["command"][1] for action in plan["actions"]))
         self.assertTrue(all("--tags" not in action["command"] for action in plan["actions"]))
         self.assertNotIn("verify,evidence", plan["actions"][-1]["command"])
+        preview = plan["actions"][1]["command"]
+        mutation = plan["actions"][2]["command"]
+        self.assertIn("--check", preview)
+        self.assertIn("--diff", preview)
+        self.assertIn("archiveweaver_repair_apply=true", preview)
+        self.assertIn("archiveweaver_repair_apply=true", mutation)
+        self.assertEqual(plan["actions"][1]["timeout_seconds"], 1800)
+        self.assertEqual(plan["actions"][2]["timeout_seconds"], 1800)
 
         bound = build_repair_plan(
             self.catalog,
@@ -425,7 +433,7 @@ class RepairTests(unittest.TestCase):
             ("docker-swarm", {"compose_file": "stack.yml"}, "redeploy-stack"),
             (
                 "rke2",
-                {"namespace": "archive", "deployment": "paperless"},
+                {"namespace": "archive", "deployment": "paperless", "kubeconfig": str(Path(__file__).resolve()), "context": "reviewed-cluster"},
                 "rollout-restart",
             ),
         )
@@ -439,6 +447,109 @@ class RepairTests(unittest.TestCase):
                 )
                 self.assertEqual(plan["status"], "ready")
                 self.assertIn(expected_action, [item["name"] for item in plan["actions"]])
+
+    def test_kubernetes_repair_requires_and_binds_explicit_cluster_identity(self) -> None:
+        kubeconfig = str(Path(__file__).resolve())
+        with self.assertRaisesRegex(ValueError, "--context"):
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", kubeconfig=kubeconfig)
+        with self.assertRaisesRegex(ValueError, "--kubeconfig"):
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", context="reviewed-cluster")
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", kubeconfig="relative.yml", context="reviewed-cluster")
+        with self.assertRaisesRegex(ValueError, "Kubernetes repair mode"):
+            build_repair_plan(self.catalog, "paperless-ngx", "docker", kubeconfig=kubeconfig, context="reviewed-cluster")
+
+        plan = build_repair_plan(self.catalog, "paperless-ngx", "rke2", kubeconfig=kubeconfig, context="reviewed-cluster")
+        self.assertEqual(plan["context"], "reviewed-cluster")
+        self.assertRegex(plan["kubeconfig_digest"], r"^sha256:[0-9a-f]{64}$")
+        for action in plan["actions"]:
+            self.assertEqual(action["command"][:5], ["kubectl", "--kubeconfig", kubeconfig, "--context", "reviewed-cluster"])
+            self.assertIn("--request-timeout=30s", action["command"])
+        self.assertIn("--timeout=300s", plan["actions"][-1]["command"])
+
+        with (
+            patch("archiveweaver.repair.digest_file", return_value="sha256:" + "0" * 64),
+            patch("archiveweaver.repair.subprocess.run") as run,
+        ):
+            result = apply_repair(plan)
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("kubeconfig changed", result["results"][0]["error"])
+        run.assert_not_called()
+
+        completed = type("Completed", (), {"returncode": 0})()
+        with (
+            patch("archiveweaver.repair.digest_file", side_effect=[plan["kubeconfig_digest"], "sha256:" + "0" * 64]),
+            patch("archiveweaver.repair.subprocess.run", return_value=completed) as run,
+        ):
+            result = apply_repair(plan)
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result["results"][0]["name"], "verify-cluster")
+        self.assertEqual(result["results"][1]["name"], "rollout-restart")
+
+    def test_kubernetes_repair_rejects_unreadable_kubeconfig_during_planning(self) -> None:
+        kubeconfig = str(Path(__file__).resolve())
+        for failure in (OSError("read failed"), ValueError("unsafe file")):
+            with self.subTest(failure=type(failure).__name__):
+                with patch("archiveweaver.repair.digest_file", side_effect=failure):
+                    with self.assertRaisesRegex(ValueError, "could not be measured safely"):
+                        build_repair_plan(
+                            self.catalog,
+                            "paperless-ngx",
+                            "rke2",
+                            kubeconfig=kubeconfig,
+                            context="reviewed-cluster",
+                        )
+
+    def test_kubernetes_repair_stops_if_bound_kubeconfig_becomes_unreadable(self) -> None:
+        kubeconfig = str(Path(__file__).resolve())
+        plan = build_repair_plan(
+            self.catalog,
+            "paperless-ngx",
+            "rke2",
+            kubeconfig=kubeconfig,
+            context="reviewed-cluster",
+        )
+        for failure in (OSError("read failed"), ValueError("unsafe file")):
+            with self.subTest(failure=type(failure).__name__):
+                with (
+                    patch("archiveweaver.repair.digest_file", side_effect=failure),
+                    patch("archiveweaver.repair.subprocess.run") as run,
+                ):
+                    result = apply_repair(plan)
+                self.assertEqual(result["status"], "fail")
+                self.assertEqual(len(result["results"]), 1)
+                self.assertEqual(result["results"][0]["name"], "verify-cluster")
+                self.assertIn("kubeconfig changed or became unsafe", result["results"][0]["error"])
+                run.assert_not_called()
+
+    def test_kubernetes_repair_fails_closed_if_identity_validation_returns_none(self) -> None:
+        kubeconfig = str(Path(__file__).resolve())
+        with patch("archiveweaver.repair._require_kubeconfig", return_value=(None, "sha256:" + "0" * 64)):
+            with self.assertRaisesRegex(ValueError, "requires an explicit kubeconfig and context"):
+                build_repair_plan(
+                    self.catalog,
+                    "paperless-ngx",
+                    "rke2",
+                    kubeconfig=kubeconfig,
+                    context="reviewed-cluster",
+                )
+        with patch("archiveweaver.repair._require_kubernetes_context", return_value=None):
+            with self.assertRaisesRegex(ValueError, "requires an explicit kubeconfig and context"):
+                build_repair_plan(
+                    self.catalog,
+                    "paperless-ngx",
+                    "rke2",
+                    kubeconfig=kubeconfig,
+                    context="reviewed-cluster",
+                )
+
+    def test_repair_timeout_reports_uncertain_remote_outcome(self) -> None:
+        plan = build_repair_plan(self.catalog, "paperless-ngx", "ansible")
+        with patch("archiveweaver.repair.subprocess.run", side_effect=subprocess.TimeoutExpired(["ansible"], 120)):
+            result = apply_repair(plan)
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("may still be running", result["results"][0]["error"])
 
     def test_ansible_only_arguments_are_rejected_for_other_modes(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot be its own"):
@@ -523,6 +634,6 @@ class RepairTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_repair_plan(self.catalog, "nextcloud-server", "pacemaker", resource="resource;cleanup", allow_fencing_actions=True)
         with self.assertRaises(ValueError):
-            build_repair_plan(self.catalog, "paperless-ngx", "rke2", namespace="archive;weaver")
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", namespace="archive;weaver", kubeconfig=str(Path(__file__).resolve()), context="reviewed-cluster")
         with self.assertRaises(ValueError):
-            build_repair_plan(self.catalog, "paperless-ngx", "rke2", deployment="deployment/name")
+            build_repair_plan(self.catalog, "paperless-ngx", "rke2", deployment="deployment/name", kubeconfig=str(Path(__file__).resolve()), context="reviewed-cluster")

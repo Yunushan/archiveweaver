@@ -109,10 +109,11 @@
   no_log: true
   tags: [evidence]
 
-- name: Derive whether production evidence publication is active
+- name: Derive whether protected evidence publication is active
   ansible.builtin.set_fact:
     archiveweaver_evidence_publication_active: >-
-      {{ (archiveweaver_evidence_environment == 'production')
+      {{ ((archiveweaver_evidence_environment == 'production')
+         or (archiveweaver_staging_seed_apply | default(false) | bool))
          and not (ansible_check_mode | bool)
          and (
            (archiveweaver_apply | default(false) | bool)

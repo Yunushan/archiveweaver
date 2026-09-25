@@ -42,6 +42,15 @@ PYTHONPATH=src python3 -m archiveweaver repair \
 | Kubernetes | inspect nodes, rolling restart, observe rollout | delete PVCs, reset cluster, force-delete arbitrary pods |
 | Ansible | syntax-check, check-mode/diff, named provider repair, verification | no secret output, data deletion, product migration, or automatic Pacemaker resource creation |
 
+Direct Kubernetes repair requires both `--kubeconfig` (an absolute, regular,
+non-symlink file) and `--context`. Every generated `kubectl` command includes
+both values. The plan binds the kubeconfig SHA-256 and apply rechecks it before
+each command, so a changed credential or cluster mapping stops the repair.
+Review the selected context and cluster endpoint before using `--apply`.
+Each API request has a 30-second bound, and rollout observation stops after
+five minutes. A timeout reports failure; operators must check the cluster
+state because a remote change may still have taken effect.
+
 ## Pacemaker gate
 
 ```bash
@@ -75,6 +84,14 @@ restart or redeploy anything, it re-checks the staged provider bundle digest
 and, for containerized providers, requires immutable image digests; the
 subsequent verification and evidence-index steps make that record available to
 the recovery readiness criterion.
+The CLI's Ansible check-mode action sets the same repair-apply flag as the
+mutation action. It previews task selection and changes supported by Ansible
+check mode. Command-based provider actions are skipped in check mode, and
+immutable source and final readiness identity are checked in the operational
+preview and again during apply. Release and evidence controls run again during
+apply; command-based provider actions need a staging drill before approval.
+The plan's exact command list and a product-specific staging drill remain
+necessary review inputs; a green preview is not an apply authorization.
 Applied CLI repair results also redact subprocess stdout/stderr, because
 provider commands such as `docker compose config` can render environment values.
 Use the target system's protected logs and the redacted evidence record for
@@ -87,6 +104,11 @@ controller path. This keeps a repair run from silently resolving a different
 role tree or manifest because the CLI was launched from another working
 directory. Override it with `--readiness-manifest` only when the approved
 manifest is another regular file inside the reviewed Ansible bundle.
+The CLI locates the Ansible bundle beside its own source tree or in the
+installed distribution; it does not select a bundle from the current working
+directory. Multi-host Ansible actions have a 30-minute per-action timeout.
+A timeout reports failure and warns that remote work may still be running;
+inspect the protected controller job record before retrying.
 
 ## Incident sequence
 
@@ -98,4 +120,3 @@ manifest is another regular file inside the reviewed Ansible bundle.
 6. Apply with an approved operator identity.
 7. Run checks and product smoke tests.
 8. Record root cause, observed RTO/RPO, and follow-up changes.
-

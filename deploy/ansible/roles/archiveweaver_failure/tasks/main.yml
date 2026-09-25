@@ -171,6 +171,7 @@
       environment: "{{ archiveweaver_evidence_environment }}"
       execution_environment: "{{ archiveweaver_failure_environment }}"
       execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      deployment_target: "{{ hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}) }}"
       recorded_at: "{{ ansible_date_time.iso8601 }}"
       operator: "{{ archiveweaver_operator }}"
       fixture_set: "{{ archiveweaver_fixture_set }}"
@@ -244,6 +245,14 @@
       {{ {
         'name': item.item.name,
         'status': 'pass' if item.rc == 0 else 'fail',
+        'claim': 'resilience.failure_tests.' ~ item.item.name,
+        'source_revision': lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower,
+        'outcome': {
+          'status': 'pass' if item.rc == 0 else 'fail',
+          'method': 'automated',
+          'summary': 'Reviewed ' ~ item.item.name ~ ' failure-domain hook completed with exit status ' ~ (item.rc | string),
+          'source': 'urn:archiveweaver:ansible:failure-domain-drill'
+        },
         'evidence': (archiveweaver_failure_evidence_dir
           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', ''))
           ~ '/' ~ item.item.name ~ '-'
@@ -257,6 +266,7 @@
         'environment': archiveweaver_evidence_environment,
         'execution_environment': archiveweaver_failure_environment,
         'execution_environment_digest': archiveweaver_execution_environment_digest,
+        'deployment_target': hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}),
         'recorded_at': ansible_date_time.iso8601,
         'operator': archiveweaver_operator,
         'fixture_set': archiveweaver_fixture_set,

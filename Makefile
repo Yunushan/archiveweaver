@@ -20,7 +20,7 @@ generate:
 
 validate: generate
 	PYTHONPATH=src python3 -m archiveweaver validate-catalog --json
-	python3 -m compileall -q src scripts tests fuzz
+	python3 -m compileall -q src scripts tests fuzz deploy/ansible/filter_plugins
 
 test: validate controller-validate yaml-validate release-tools-check
 	bash -n scripts/*.sh tests/*.sh
@@ -29,11 +29,11 @@ test: validate controller-validate yaml-validate release-tools-check
 	PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 lint:
-	python3 -m compileall -q src scripts tests fuzz
+	python3 -m compileall -q src scripts tests fuzz deploy/ansible/filter_plugins
 
 quality:
-	python3 -m ruff check src tests scripts fuzz setup.py
-	PYTHONPATH=src python3 -m mypy --strict src/archiveweaver scripts
+	python3 -m ruff check src tests scripts fuzz setup.py deploy/ansible/filter_plugins
+	PYTHONPATH=src python3 -m mypy --strict src/archiveweaver scripts deploy/ansible/filter_plugins
 
 upstream-audit:
 	python3 scripts/validate-upstream-repositories.py

@@ -168,6 +168,7 @@ class ControlResult:
 @dataclass(frozen=True)
 class GitHubSnapshot:
     repository: dict[str, Any]
+    github_actions_app: dict[str, Any]
     actions_permissions: dict[str, Any]
     selected_actions: dict[str, Any]
     workflow_permissions: dict[str, Any]
@@ -264,9 +265,15 @@ def _items(payload: dict[str, Any] | None, key: str) -> list[dict[str, Any]]:
 
 def collect_snapshot(client: GitHubClient) -> GitHubSnapshot:
     repository = client.object(f"repos/{client.repository}")
+    github_actions_app = client.object("apps/github-actions")
     actions = client.object(f"repos/{client.repository}/actions/permissions")
     workflow = client.object(f"repos/{client.repository}/actions/permissions/workflow")
-    if repository is None or actions is None or workflow is None:
+    if (
+        repository is None
+        or github_actions_app is None
+        or actions is None
+        or workflow is None
+    ):
         raise GitHubAuditError("a required GitHub repository control response was absent")
     selected: dict[str, Any] = {}
     if actions.get("allowed_actions") == "selected":
@@ -330,6 +337,7 @@ def collect_snapshot(client: GitHubClient) -> GitHubSnapshot:
 
     return GitHubSnapshot(
         repository=repository,
+        github_actions_app=github_actions_app,
         actions_permissions=actions,
         selected_actions=selected,
         workflow_permissions=workflow,
@@ -415,7 +423,25 @@ def _rules(ruleset: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _branch_ruleset_passes(ruleset: dict[str, Any]) -> bool:
+def _github_actions_app_id(app: Any) -> int | None:
+    if not isinstance(app, dict):
+        return None
+    app_id = app.get("id")
+    owner = app.get("owner")
+    if (
+        isinstance(app_id, bool)
+        or not isinstance(app_id, int)
+        or app_id <= 0
+        or app.get("slug") != "github-actions"
+        or app.get("html_url") != "https://github.com/apps/github-actions"
+        or not isinstance(owner, dict)
+        or owner.get("login") != "github"
+    ):
+        return None
+    return app_id
+
+
+def _branch_ruleset_passes(ruleset: dict[str, Any], github_actions_app_id: int) -> bool:
     if not (
         _ref_ruleset(ruleset, "branch", "~DEFAULT_BRANCH")
         or _ref_ruleset(ruleset, "branch", "refs/heads/main")
@@ -444,9 +470,24 @@ def _branch_ruleset_passes(ruleset: dict[str, Any]) -> bool:
     checks = status.get("required_status_checks")
     if not isinstance(checks, list) or any(not isinstance(item, dict) for item in checks):
         return False
-    contexts = {
-        item.get("context") for item in checks if isinstance(item.get("context"), str)
-    }
+    contexts: set[str] = set()
+    for item in checks:
+        context = item.get("context")
+        integration_id = item.get("integration_id")
+        if (
+            not isinstance(context, str)
+            or not context.strip()
+            or context in contexts
+            or isinstance(integration_id, bool)
+            or not isinstance(integration_id, int)
+            or integration_id <= 0
+            or (
+                context in EXPECTED_STATUS_CHECKS
+                and integration_id != github_actions_app_id
+            )
+        ):
+            return False
+        contexts.add(context)
     return (
         status.get("strict_required_status_checks_policy") is True
         and status.get("do_not_enforce_on_create") is False
@@ -587,7 +628,11 @@ def evaluate_snapshot(snapshot: GitHubSnapshot) -> list[ControlResult]:
         and secrets_ok
     )
 
-    branch_ok = any(_branch_ruleset_passes(ruleset) for ruleset in snapshot.rulesets)
+    github_actions_app_id = _github_actions_app_id(snapshot.github_actions_app)
+    branch_ok = github_actions_app_id is not None and any(
+        _branch_ruleset_passes(ruleset, github_actions_app_id)
+        for ruleset in snapshot.rulesets
+    )
     tag_ok = any(_tag_ruleset_passes(ruleset) for ruleset in snapshot.rulesets)
     return [
         ControlResult("repository", repository_ok, "active repository with default branch main"),
@@ -627,7 +672,8 @@ def evaluate_snapshot(snapshot: GitHubSnapshot) -> list[ControlResult]:
         ControlResult(
             "main-ruleset",
             branch_ok,
-            "active no-bypass ruleset with reviews, signatures, history, and all checks",
+            "active no-bypass ruleset with reviews, signatures, history, "
+            "and app-bound checks",
         ),
         ControlResult(
             "release-tag-ruleset",

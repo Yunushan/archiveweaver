@@ -83,18 +83,12 @@ archiveweaver plan \
   --os ubuntu-24.04
 ```
 
-Render a provider envelope with an immutable image reference:
-
-```bash
-archiveweaver render \
-  --solution paperless-ngx \
-  --mode rke2 \
-  --nodes 3 \
-  --os rocky-9 \
-  --image registry.example.org/paperless-ngx@sha256:<digest> \
-  --namespace archive \
-  --output generated/paperless-rke2.yaml
-```
+Paperless-ngx on RKE2 needs a separate, release-specific Kustomize bundle with
+its database, broker, secrets, storage, ingress, and network policies.
+`archiveweaver render --solution paperless-ngx --mode rke2` therefore stops
+with those prerequisites instead of producing a deployable placeholder. See
+the [Kubernetes deployment boundary](docs/deployment/kubernetes.md) before
+staging a product bundle.
 
 Run read-only checks:
 
