@@ -201,6 +201,13 @@
   ansible.builtin.set_fact:
     archiveweaver_rollback_evidence:
       name: "rollback-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      claim: recovery.rollback_test
+      source_revision: "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower }}"
+      outcome:
+        status: "{{ 'pass' if archiveweaver_rollback_apply | bool else 'pending' }}"
+        method: automated
+        summary: "Approved rollback and post-rollback verification completed for {{ inventory_hostname }}"
+        source: urn:archiveweaver:ansible:rollback
       evidence: >-
         {{ archiveweaver_rollback_evidence_dir
            | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', '')
@@ -214,6 +221,7 @@
       environment: "{{ archiveweaver_evidence_environment }}"
       execution_environment: "{{ archiveweaver_rollback_environment }}"
       execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      deployment_target: "{{ hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}) }}"
       recorded_at: "{{ ansible_date_time.iso8601 }}"
       operator: "{{ archiveweaver_operator }}"
       fixture_set: "{{ archiveweaver_fixture_set }}"
@@ -223,8 +231,8 @@
       rollback_release: "{{ archiveweaver_rollback_release }}"
       artifact_digest: "{{ archiveweaver_rollback_artifact_digest }}"
       status: "{{ 'pass' if archiveweaver_rollback_apply | bool else 'planned' }}"
-      returncode: "{{ archiveweaver_rollback_result.rc | default('not-run') }}"
-      verification_returncode: "{{ archiveweaver_rollback_verify_result.rc | default('not-run') }}"
+      returncode: "{{ archiveweaver_rollback_result.rc | default(-1) | int }}"
+      verification_returncode: "{{ archiveweaver_rollback_verify_result.rc | default(-1) | int }}"
   no_log: true
   tags: [rollback]
 
@@ -276,7 +284,12 @@
 - name: Write redacted rollback evidence on the controller
   ansible.builtin.copy:
     dest: "{{ archiveweaver_rollback_evidence_dir }}/{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}.json"
-    content: "{{ archiveweaver_rollback_evidence | to_nice_json }}\n"
+    content: >-
+      {{ archiveweaver_rollback_evidence
+         | combine({
+             'returncode': archiveweaver_rollback_result.rc | default(-1) | int,
+             'verification_returncode': archiveweaver_rollback_verify_result.rc | default(-1) | int
+           }) | to_nice_json }}
     mode: '0600'
   delegate_to: localhost
   become: false

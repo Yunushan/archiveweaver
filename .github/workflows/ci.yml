@@ -76,7 +76,7 @@ jobs:
       - name: Execution-environment builder policy
         run: bash tests/test-execution-environment.sh
       - name: Compile Python validation tooling
-        run: python -m compileall -q src scripts tests fuzz
+        run: python -m compileall -q src scripts tests fuzz deploy/ansible/filter_plugins
 
   python-quality:
     name: Python lint and types

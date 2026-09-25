@@ -13,6 +13,19 @@
       tags: [repair]
   tags: [repair]
 
+- name: Require every managed host to complete repair preflight before mutation
+  ansible.builtin.assert:
+    that:
+      - groups['archiveweaver_nodes'] | length > 0
+      - >-
+        (groups['archiveweaver_nodes']
+         | map('extract', hostvars, 'archiveweaver_repair_preflight_change_id')
+         | select('equalto', archiveweaver_change_id)
+         | list | length) == groups['archiveweaver_nodes'] | length
+    fail_msg: "Every managed host must complete the read-only repair preflight before any mutation."
+  no_log: true
+  tags: [repair]
+
 - name: Verify the staged provider bundle before any repair mutation
   ansible.builtin.include_tasks:
     file: "{{ role_path | dirname }}/archiveweaver_provider/tasks/verify-bundle.yml"
@@ -167,7 +180,9 @@
 
 - name: Build a safe kubectl argv prefix for Kubernetes repair
   ansible.builtin.set_fact:
-    archiveweaver_repair_kubectl_argv: "{{ ['kubectl'] + (['--kubeconfig', archiveweaver_kubeconfig] if archiveweaver_kubeconfig | length > 0 else []) }}"
+    archiveweaver_repair_kubectl_argv: >-
+      {{ ['kubectl', '--kubeconfig', archiveweaver_kubeconfig,
+          '--context', archiveweaver_kube_context, '--request-timeout=30s'] }}
   when: archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
   tags: [repair]
 
@@ -182,6 +197,37 @@
   no_log: true
   tags: [repair, verify]
 
+- name: Recheck the approved kubeconfig immediately before Kubernetes repair
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_kubeconfig }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_repair_kubeconfig_recheck
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair]
+
+- name: Require the approved kubeconfig to be unchanged before Kubernetes repair
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_repair_kubeconfig_recheck.stat.exists
+      - archiveweaver_repair_kubeconfig_recheck.stat.isreg | default(false) | bool
+      - not (archiveweaver_repair_kubeconfig_recheck.stat.islnk | default(false) | bool)
+      - archiveweaver_repair_kubeconfig_recheck.stat.uid | default(-1) | int == 0
+      - archiveweaver_repair_kubeconfig_recheck.stat.mode in ['0600', '0640']
+      - archiveweaver_repair_kubeconfig_recheck.stat.checksum | default('') == archiveweaver_kubeconfig_sha256
+    fail_msg: "The approved kubeconfig changed before Kubernetes repair."
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
+  tags: [repair]
+
 - name: Restart the named Kubernetes deployment
   ansible.builtin.command:
     argv: "{{ archiveweaver_repair_kubectl_argv + ['-n', archiveweaver_namespace, 'rollout', 'restart', 'deployment/' + archiveweaver_solution_id] }}"
@@ -195,7 +241,9 @@
 
 - name: Verify the named Kubernetes deployment rollout
   ansible.builtin.command:
-    argv: "{{ archiveweaver_repair_kubectl_argv + ['-n', archiveweaver_namespace, 'rollout', 'status', 'deployment/' + archiveweaver_solution_id] }}"
+    argv: >-
+      {{ archiveweaver_repair_kubectl_argv + ['-n', archiveweaver_namespace,
+          'rollout', 'status', 'deployment/' + archiveweaver_solution_id, '--timeout=300s'] }}
   changed_when: false
   check_mode: false
   when:
@@ -213,6 +261,18 @@
   no_log: true
   tags: [repair, verify]
 
+- name: Require approved fencing controls before applied Pacemaker repair
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_allow_fencing_actions | bool
+      - archiveweaver_stonith_ready | bool
+    fail_msg: "Applied Pacemaker repair requires approved fencing actions and ready STONITH."
+  when:
+    - archiveweaver_repair_apply | bool
+    - archiveweaver_runtime == 'pacemaker'
+  no_log: true
+  tags: [repair]
+
 - name: Clean up the named Pacemaker resource only after fencing approval
   ansible.builtin.command:
     argv: [pcs, resource, cleanup, "{{ archiveweaver_resource_name }}"]
@@ -229,6 +289,13 @@
   ansible.builtin.set_fact:
     archiveweaver_repair_evidence:
       name: "repair-{{ inventory_hostname | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      claim: recovery.repair_test
+      source_revision: "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower }}"
+      outcome:
+        status: "{{ 'pass' if archiveweaver_repair_apply | bool else 'pending' }}"
+        method: automated
+        summary: "Approved repair and provider verification completed for {{ inventory_hostname }}"
+        source: urn:archiveweaver:ansible:repair
       evidence: >-
         {{ archiveweaver_evidence_dir
            | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', '')
@@ -242,6 +309,7 @@
       environment: "{{ archiveweaver_evidence_environment }}"
       execution_environment: "{{ archiveweaver_environment }}"
       execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      deployment_target: "{{ hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}) }}"
       recorded_at: "{{ ansible_date_time.iso8601 }}"
       operator: "{{ archiveweaver_operator }}"
       fixture_set: "{{ archiveweaver_fixture_set }}"

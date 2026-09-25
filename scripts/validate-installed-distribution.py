@@ -31,7 +31,11 @@ def main() -> int:
             required = (
                 ansible_root / "ansible.cfg",
                 ansible_root / "repair.yml",
+                ansible_root / "filter_plugins" / "archiveweaver_swarm.py",
                 ansible_root / "roles" / "archiveweaver_preflight" / "tasks" / "main.yml",
+                ansible_root / "roles" / "archiveweaver_provider" / "tasks" / "record-release.yml",
+                ansible_root / "roles" / "archiveweaver_provider" / "tasks" / "verify-kustomize-tree.yml",
+                ansible_root / "roles" / "archiveweaver_repair" / "tasks" / "require-kubernetes-record.yml",
                 ansible_root.parent.parent
                 / "scripts"
                 / "compile-ansible-lock.py",
@@ -41,12 +45,47 @@ def main() -> int:
                 ansible_root.parent.parent
                 / "scripts"
                 / "run-ansible-operational.sh",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-bootstrap-authorization.py",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-kustomize-bundle.py",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-live-kubernetes-workloads.py",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-live-kubernetes-resources.py",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-paperless-rke2-model.py",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-provider-image-coverage.py",
+                ansible_root.parent.parent
+                / "scripts"
+                / "verify-staging-seed-authorization.py",
+                ansible_root.parent.parent
+                / "deploy"
+                / "paperless-ngx"
+                / "rke2"
+                / "kustomization.yaml",
+                ansible_root.parent.parent
+                / "deploy"
+                / "paperless-ngx"
+                / "rke2"
+                / "README.md",
             )
             missing = [str(path) for path in required if not path.is_file()]
             if missing:
                 raise RuntimeError(
                     "installed operational bundle is incomplete: " + ", ".join(missing)
                 )
+            paperless_bundle = ansible_root.parent.parent / "deploy" / "paperless-ngx" / "rke2"
+            for secret_name in ("paperless.env", "postgres-ca.pem"):
+                if (paperless_bundle / secret_name).exists():
+                    raise RuntimeError("installed reference bundle contains a production secret input")
             plan = build_repair_plan(
                 Catalog(),
                 "paperless-ngx",

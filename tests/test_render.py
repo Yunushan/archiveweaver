@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from archiveweaver.catalog import Catalog
 from archiveweaver.render import render
@@ -42,9 +43,23 @@ class RenderTests(unittest.TestCase):
         self.assertIn("paperlessngx/paperless-ngx:2.14", content)
 
     def test_kubernetes_renderer_contains_anti_affinity(self) -> None:
-        _, content = render(self.catalog, "paperless-ngx", "rke2", "3", "ubuntu-24.04", image="registry.example/paperless@sha256:" + "a" * 64)
+        _, content = render(self.catalog, "dspace", "rke2", "3", "ubuntu-24.04", image="registry.example/dspace@sha256:" + "a" * 64)
         self.assertIn("podAntiAffinity", content)
         self.assertIn("ReadWriteMany", content)
+
+    def test_kubernetes_envelopes_deny_traffic_until_reviewed_rules_are_added(self) -> None:
+        _, content = render(self.catalog, "dspace", "rke2", "3", "ubuntu-24.04", image="registry.example/dspace@sha256:" + "a" * 64)
+        policy = content.split("kind: NetworkPolicy\n", 1)[1]
+        self.assertIn("automountServiceAccountToken: false", content)
+        self.assertIn("ingress: []", policy)
+        self.assertIn("egress: []", policy)
+        self.assertNotIn("- {}", policy)
+
+        root = Path(__file__).resolve().parents[1]
+        checked_in_policy = (root / "deploy/kubernetes/base/networkpolicy.yaml").read_text(encoding="utf-8")
+        self.assertIn("ingress: []", checked_in_policy)
+        self.assertIn("egress: []", checked_in_policy)
+        self.assertNotIn("- {}", checked_in_policy)
 
     def test_multi_node_swarm_renderer_requires_external_storage(self) -> None:
         with self.assertRaisesRegex(ValueError, "shared or replicated"):
@@ -71,6 +86,15 @@ class RenderTests(unittest.TestCase):
         self.assertIn("external: true", content)
         self.assertIn("ARCHIVEWEAVER_DATA_VOLUME", content)
         self.assertNotIn("driver: local", content)
+        self.assertNotIn("\n    ports:", content)
+        self.assertNotIn("published:", content)
+        self.assertNotIn("mode: ingress", content)
+
+        root = Path(__file__).resolve().parents[1]
+        checked_in_stack = (root / "deploy/docker-swarm/stack.yml").read_text(encoding="utf-8")
+        self.assertNotIn("\n    ports:", checked_in_stack)
+        self.assertNotIn("published:", checked_in_stack)
+        self.assertNotIn("mode: ingress", checked_in_stack)
 
     def test_renderer_rejects_short_image_digest(self) -> None:
         with self.assertRaises(ValueError):
@@ -168,16 +192,41 @@ class RenderTests(unittest.TestCase):
         self.assertIn("driver: local", content)
         self.assertNotIn("external: true", content)
 
-    def test_three_plus_node_kubernetes_uses_conservative_replica_default(self) -> None:
+    def test_kubernetes_node_count_does_not_scale_application_replicas(self) -> None:
         _, content = render(
             self.catalog,
-            "paperless-ngx",
+            "dspace",
             "rke2",
             "3+",
             "ubuntu-24.04",
-            image="registry.example/paperless@sha256:" + "a" * 64,
+            image="registry.example/dspace@sha256:" + "a" * 64,
         )
-        self.assertIn("replicas: 3", content)
+        self.assertIn("replicas: 1", content)
+        self.assertIn("type: Recreate", content)
+        self.assertNotIn("RollingUpdate", content)
+
+        root = Path(__file__).resolve().parents[1]
+        base = (root / "deploy/kubernetes/base/deployment.yaml").read_text(encoding="utf-8")
+        self.assertIn("type: Recreate", base)
+        self.assertNotIn("maxSurge", base)
+        for mode in ("rke2", "k3s", "k0s", "microk8s"):
+            with self.subTest(mode=mode):
+                patch = (root / f"deploy/kubernetes/overlays/{mode}/replicas-patch.yaml").read_text(encoding="utf-8")
+                self.assertIn("replicas: 1", patch)
+                self.assertNotIn("replicas: 3", patch)
+
+    def test_paperless_kubernetes_render_requires_product_stack(self) -> None:
+        for mode in ("rke2", "k3s", "k0s", "microk8s"):
+            with self.subTest(mode=mode):
+                with self.assertRaisesRegex(ValueError, "release-specific product stack.*PostgreSQL.*Redis-compatible"):
+                    render(
+                        self.catalog,
+                        "paperless-ngx",
+                        mode,
+                        "3",
+                        "ubuntu-24.04",
+                        image="registry.example/paperless@sha256:" + "a" * 64,
+                    )
 
     def test_pacemaker_requires_its_documented_resource_template(self) -> None:
         with self.assertRaisesRegex(ValueError, "documented Pacemaker resource template"):

@@ -96,6 +96,22 @@ class CLICommandTests(unittest.TestCase):
             )
         self.assertEqual(code, 2)
 
+    def test_kubernetes_repair_cli_binds_context_and_kubeconfig(self) -> None:
+        code, output, _ = self.invoke(
+            ["repair", "--solution", "paperless-ngx", "--mode", "rke2", "--json"]
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(output)["status"], "fail")
+
+        kubeconfig = str(Path(__file__).resolve())
+        code, output, _ = self.invoke(
+            ["repair", "--solution", "paperless-ngx", "--mode", "rke2", "--kubeconfig", kubeconfig, "--context", "reviewed-cluster", "--json"]
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(output)
+        self.assertEqual(payload["plan"]["context"], "reviewed-cluster")
+        self.assertEqual(payload["plan"]["actions"][1]["command"][:5], ["kubectl", "--kubeconfig", kubeconfig, "--context", "reviewed-cluster"])
+
     def test_catalog_and_readiness_commands_propagate_gate_results(self) -> None:
         with patch("archiveweaver.cli.validate_catalog", return_value=[]):
             code, output, _ = self.invoke(["validate-catalog", "--json"])

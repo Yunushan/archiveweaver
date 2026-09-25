@@ -93,6 +93,9 @@ class EvidenceTests(unittest.TestCase):
 
             evidence = root / "host.json"
             evidence.write_bytes(b"{}")
+            with patch("archiveweaver.evidence.os.fstat", return_value=root.stat()):
+                with self.assertRaisesRegex(OSError, "not a regular file"):
+                    _measure_regular_file(evidence)
             observed = evidence.stat()
             before = type(
                 "ObservedFile",

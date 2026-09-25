@@ -6,17 +6,182 @@
   vars:
     archiveweaver_controller_target_group: archiveweaver_nodes
   pre_tasks:
+    - name: Require uniform deployment intent across all managed hosts
+      ansible.builtin.assert:
+        that:
+          - groups['archiveweaver_nodes'] | default([]) | length > 0
+          - >-
+            (hostvars[item].archiveweaver_apply | default(false) | bool) ==
+            (archiveweaver_apply | default(false) | bool)
+          - >-
+            (hostvars[item].archiveweaver_run_verification | default(false) | bool) ==
+            (archiveweaver_run_verification | default(false) | bool)
+          - >-
+            (hostvars[item].archiveweaver_bootstrap_apply | default(false) | bool) ==
+            (archiveweaver_bootstrap_apply | default(false) | bool)
+          - >-
+            (hostvars[item].archiveweaver_staging_seed_apply | default(false) | bool) ==
+            (archiveweaver_staging_seed_apply | default(false) | bool)
+          - >-
+            not ((archiveweaver_bootstrap_apply | default(false) | bool)
+                 or (archiveweaver_staging_seed_apply | default(false) | bool))
+            or ((hostvars[item].archiveweaver_namespace | default('')) == archiveweaver_namespace
+                and (hostvars[item].archiveweaver_release_record | default('')) == archiveweaver_release_record
+                and (hostvars[item].archiveweaver_data_root | default('')) == archiveweaver_data_root
+                and (hostvars[item].archiveweaver_log_root | default('')) == archiveweaver_log_root
+                and (hostvars[item].archiveweaver_kubeconfig | default('')) == archiveweaver_kubeconfig
+                and (hostvars[item].archiveweaver_kubeconfig_sha256 | default('')) == archiveweaver_kubeconfig_sha256
+                and (hostvars[item].archiveweaver_kube_context | default('')) == archiveweaver_kube_context
+                and (hostvars[item].archiveweaver_kustomize_bundle_sha256 | default('')) == archiveweaver_kustomize_bundle_sha256)
+        fail_msg: "Every managed host must share the controller's deployment and verification intent."
+      loop: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+      no_log: true
+      tags: [always, controller]
+
+    - name: Require the orchestration apply host to be the first serial deployment batch
+      ansible.builtin.assert:
+        that:
+          - >-
+            archiveweaver_runtime != 'docker' or
+            groups['archiveweaver_app'] | default([]) | length > 0
+          - >-
+            archiveweaver_runtime != 'docker' or
+            groups['archiveweaver_nodes'][0] == groups['archiveweaver_app'][0]
+          - >-
+            archiveweaver_runtime == 'docker' or
+            groups['archiveweaver_control'] | default([]) | length > 0
+          - >-
+            archiveweaver_runtime == 'docker' or
+            groups['archiveweaver_nodes'][0] == groups['archiveweaver_control'][0]
+        fail_msg: "The Compose application host or cluster control host must be first in the managed inventory for serial apply."
+      when:
+        - archiveweaver_apply | default(false) | bool
+        - archiveweaver_runtime in ['docker', 'docker-swarm', 'k3s', 'rke2', 'k0s', 'microk8s']
+      tags: [always, controller]
+
     - name: Preserve the post-play evidence sealing decision
       ansible.builtin.set_fact:
-        archiveweaver_evidence_seal_enabled: "{{ archiveweaver_run_verification | default(false) | bool }}"
+        archiveweaver_evidence_seal_enabled: >-
+          {{ (archiveweaver_run_verification | default(false) | bool)
+             or ((archiveweaver_apply | default(false) | bool)
+                 and not (ansible_check_mode | bool)) }}
   roles:
     - role: archiveweaver_controller_preflight
       tags: [always, controller]
+
+- name: Prove the first-use target is empty before any managed mutation
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Inspect all first-use release and data anchors
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ archiveweaver_release_record }}"
+        - "{{ archiveweaver_data_root }}"
+        - "{{ archiveweaver_log_root }}"
+      register: archiveweaver_bootstrap_anchor_stats
+      when: >-
+        (archiveweaver_bootstrap_apply | default(false) | bool)
+        or (archiveweaver_staging_seed_apply | default(false) | bool)
+      no_log: true
+      tags: [always, bootstrap]
+
+    - name: Reject a populated or ambiguous first-use managed host
+      ansible.builtin.assert:
+        that:
+          - >-
+            (hostvars['localhost'].archiveweaver_controller_preflight_bootstrap_authorized | default(false) | bool)
+            or (hostvars['localhost'].archiveweaver_controller_preflight_staging_seed_authorized | default(false) | bool)
+          - archiveweaver_bootstrap_anchor_stats.results | selectattr('stat.exists', 'equalto', true) | list | length == 0
+        fail_msg: "First-apply bootstrap requires every managed host to have no existing release record, data root, or log root."
+      when: >-
+        (archiveweaver_bootstrap_apply | default(false) | bool)
+        or (archiveweaver_staging_seed_apply | default(false) | bool)
+      no_log: true
+      tags: [always, bootstrap]
+
+    - name: Inspect the approved kubeconfig before the first-use cluster probe
+      ansible.builtin.stat:
+        path: "{{ archiveweaver_kubeconfig }}"
+        follow: false
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: archiveweaver_bootstrap_kubeconfig_stat
+      when:
+        - >-
+          (archiveweaver_bootstrap_apply | default(false) | bool)
+          or (archiveweaver_staging_seed_apply | default(false) | bool)
+        - inventory_hostname == (groups['archiveweaver_control'] | default([]))[0]
+      no_log: true
+      tags: [always, bootstrap]
+
+    - name: Require the protected kubeconfig for the first-use cluster probe
+      ansible.builtin.assert:
+        that:
+          - archiveweaver_bootstrap_kubeconfig_stat.stat.exists | default(false) | bool
+          - archiveweaver_bootstrap_kubeconfig_stat.stat.isreg | default(false) | bool
+          - not (archiveweaver_bootstrap_kubeconfig_stat.stat.islnk | default(false) | bool)
+          - archiveweaver_bootstrap_kubeconfig_stat.stat.uid | default(-1) | int == 0
+          - archiveweaver_bootstrap_kubeconfig_stat.stat.mode in ['0600', '0640']
+          - archiveweaver_bootstrap_kubeconfig_stat.stat.checksum | default('') == archiveweaver_kubeconfig_sha256
+        fail_msg: "First-apply bootstrap requires the approved root-owned kubeconfig bytes."
+      when:
+        - >-
+          (archiveweaver_bootstrap_apply | default(false) | bool)
+          or (archiveweaver_staging_seed_apply | default(false) | bool)
+        - inventory_hostname == (groups['archiveweaver_control'] | default([]))[0]
+      no_log: true
+      tags: [always, bootstrap]
+
+    - name: Read the dedicated Kubernetes namespace before first use
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ archiveweaver_kubeconfig }}"
+          - --context
+          - "{{ archiveweaver_kube_context }}"
+          - --request-timeout=30s
+          - get
+          - namespace
+          - "{{ archiveweaver_namespace }}"
+          - --ignore-not-found
+          - -o
+          - name
+      register: archiveweaver_bootstrap_namespace_result
+      changed_when: false
+      check_mode: false
+      when:
+        - >-
+          (archiveweaver_bootstrap_apply | default(false) | bool)
+          or (archiveweaver_staging_seed_apply | default(false) | bool)
+        - inventory_hostname == (groups['archiveweaver_control'] | default([]))[0]
+      no_log: true
+      tags: [always, bootstrap]
+
+    - name: Require the dedicated namespace to be absent before any apply
+      ansible.builtin.assert:
+        that:
+          - archiveweaver_bootstrap_namespace_result.rc == 0
+          - archiveweaver_bootstrap_namespace_result.stdout | trim == ''
+        fail_msg: "First-apply bootstrap is limited to a dedicated namespace that does not yet exist."
+      when:
+        - >-
+          (archiveweaver_bootstrap_apply | default(false) | bool)
+          or (archiveweaver_staging_seed_apply | default(false) | bool)
+        - inventory_hostname == (groups['archiveweaver_control'] | default([]))[0]
+      no_log: true
+      tags: [always, bootstrap]
 
 - name: ArchiveWeaver enterprise deployment envelope
   hosts: archiveweaver_nodes
   become: true
   gather_facts: true
+  order: inventory
   serial: 1
   any_errors_fatal: true
   roles:
@@ -28,13 +193,30 @@
     - role: archiveweaver_provider
       when: archiveweaver_apply | bool
       tags: [provider, deploy]
-    - role: archiveweaver_observe
+  tasks:
+    - name: Apply pending provider handlers before post-apply verification
+      ansible.builtin.meta: flush_handlers
       when:
         - archiveweaver_apply | bool
-        - archiveweaver_observe_enabled | bool
-      tags: [observe]
-    - role: archiveweaver_verify
-      when: archiveweaver_run_verification | bool
+        - not ansible_check_mode | bool
+      tags: [always]
+
+    - name: Record the converged release after provider handlers complete
+      ansible.builtin.import_role:
+        name: archiveweaver_provider
+        tasks_from: record-release
+      when:
+        - archiveweaver_apply | bool
+        - not ansible_check_mode | bool
+      tags: [provider, release]
+
+    - name: Verify the applied release and collect service evidence
+      ansible.builtin.import_role:
+        name: archiveweaver_verify
+      when: >-
+        (archiveweaver_run_verification | default(false) | bool)
+        or ((archiveweaver_apply | default(false) | bool)
+            and not (ansible_check_mode | bool))
       tags: [verify]
 
 - name: Seal ArchiveWeaver evidence after all managed hosts complete
@@ -46,5 +228,21 @@
     archiveweaver_evidence_completion_hosts: "{{ groups['archiveweaver_nodes'] | default([]) }}"
   roles:
     - role: archiveweaver_evidence
-      when: archiveweaver_evidence_seal_enabled | default(false) | bool
+      when: >-
+        (archiveweaver_run_verification | default(false) | bool)
+        or ((archiveweaver_apply | default(false) | bool)
+            and not (ansible_check_mode | bool))
       tags: [evidence]
+
+- name: Install optional ArchiveWeaver observation after sealing release evidence
+  hosts: archiveweaver_nodes
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - role: archiveweaver_observe
+      when:
+        - archiveweaver_apply | bool
+        - archiveweaver_observe_enabled | bool
+      tags: [observe]

@@ -80,10 +80,11 @@
       - archiveweaver_verify_release_record is mapping
       - >-
         archiveweaver_verify_release_record.keys() | list | sort ==
-        ['catalog_os', 'change_id', 'execution_environment_digest',
-         'kustomize_bundle_sha256', 'orchestration_runtime',
-         'product_stack_sha256', 'provider_bundle_sha256', 'readiness_manifest_sha256',
-         'release', 'runtime', 'solution', 'source_commit', 'underlying_runtime']
+        (['catalog_os', 'change_id', 'execution_environment_digest',
+          'kustomize_bundle_sha256', 'orchestration_runtime',
+          'product_stack_sha256', 'provider_bundle_sha256', 'readiness_manifest_sha256',
+          'release', 'runtime', 'solution', 'source_commit', 'underlying_runtime']
+         + (['kube_context', 'kubeconfig_sha256'] if archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s'] else [])) | sort
       - archiveweaver_verify_release_record.solution == archiveweaver_solution_id
       - archiveweaver_verify_release_record.release == archiveweaver_release
       - archiveweaver_verify_release_record.catalog_os == archiveweaver_os_id
@@ -93,6 +94,10 @@
       - archiveweaver_verify_release_record.source_commit == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF')
       - archiveweaver_verify_release_record.readiness_manifest_sha256 == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256')
       - archiveweaver_verify_release_record.execution_environment_digest == archiveweaver_execution_environment_digest
+      - archiveweaver_runtime not in ['k3s', 'rke2', 'k0s', 'microk8s'] or archiveweaver_verify_release_record.kube_context == archiveweaver_kube_context
+      - >-
+        archiveweaver_runtime not in ['k3s', 'rke2', 'k0s', 'microk8s'] or
+        archiveweaver_verify_release_record.kubeconfig_sha256 == archiveweaver_kubeconfig_sha256
       - archiveweaver_verify_release_record.provider_bundle_sha256 == archiveweaver_provider_bundle_sha256
       - archiveweaver_verify_release_record.product_stack_sha256 == archiveweaver_product_stack_sha256
       - archiveweaver_verify_release_record.kustomize_bundle_sha256 == archiveweaver_kustomize_bundle_sha256
@@ -122,6 +127,19 @@
   no_log: true
   tags: [verify]
 
+- name: Require the control host to retain the claimed first-use namespace identity
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_bootstrap_namespace_uid | default('') is match('^[0-9a-f-]{36}$')
+    fail_msg: "The first-use apply has no recorded namespace claim."
+  when:
+    - >-
+      (archiveweaver_bootstrap_apply | default(false) | bool)
+      or (archiveweaver_staging_seed_apply | default(false) | bool)
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [verify]
+
 - name: Build a redacted per-host evidence record
   ansible.builtin.set_fact:
     archiveweaver_verify_evidence:
@@ -147,10 +165,21 @@
       os_id: "{{ archiveweaver_os_id }}"
       host: "{{ inventory_hostname }}"
       release: "{{ archiveweaver_release }}"
-      environment: "{{ archiveweaver_evidence_environment }}"
+      environment: >-
+        {{ archiveweaver_environment if (archiveweaver_recovery_drill | default(false) | bool)
+           else archiveweaver_evidence_environment }}
       execution_environment: "{{ archiveweaver_environment }}"
       execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      deployment_target: "{{ hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}) }}"
       release_record_sha256: "{{ archiveweaver_verify_release_record_stat.stat.checksum | default('not-checked') }}"
+      bootstrap_first_apply: "{{ archiveweaver_bootstrap_apply | default(false) | bool }}"
+      staging_seed_first_apply: "{{ archiveweaver_staging_seed_apply | default(false) | bool }}"
+      first_use_namespace:
+        name: >-
+          {{ archiveweaver_namespace if ((archiveweaver_bootstrap_apply | default(false) | bool
+             or archiveweaver_staging_seed_apply | default(false) | bool)
+             and inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]) else '' }}
+        uid: "{{ archiveweaver_provider_bootstrap_namespace_uid | default('') }}"
       recorded_at: "{{ ansible_date_time.iso8601 }}"
       operator: "{{ archiveweaver_operator }}"
       fixture_set: "{{ archiveweaver_fixture_set }}"

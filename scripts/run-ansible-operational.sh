@@ -90,6 +90,7 @@ validate_inventory() {
     printf 'operational runner rejects an inventory that escapes its approved physical directory\n' >&2
     exit 78
   fi
+  selected_inventory="${candidate}"
 }
 
 validate_extra_vars() {
@@ -105,6 +106,27 @@ validate_extra_vars() {
     reject_extra_vars
   fi
   key="${payload%%=*}"
+  if [[ "${key}" == archiveweaver_recovery_drill ]]; then
+    if [[ "${payload}" != archiveweaver_recovery_drill=true ]]; then
+      reject_extra_vars
+    fi
+    recovery_drill_requested=1
+  fi
+  if [[ "${key}" == archiveweaver_bootstrap_apply ]]; then
+    if [[ "${payload}" != archiveweaver_bootstrap_apply=true ]]; then
+      reject_extra_vars
+    fi
+    bootstrap_requested=1
+  fi
+  if [[ "${key}" == archiveweaver_staging_seed_apply ]]; then
+    if [[ "${payload}" != archiveweaver_staging_seed_apply=true ]]; then
+      reject_extra_vars
+    fi
+    staging_seed_requested=1
+  fi
+  if [[ "${payload}" == archiveweaver_apply=true ]]; then
+    apply_requested=1
+  fi
   if [[ ! "${key}" =~ ^archiveweaver_[A-Za-z0-9_]+$ ]]; then
     reject_extra_vars
   fi
@@ -121,10 +143,10 @@ validate_extra_vars() {
   if (( approved != 1 )); then
     reject_extra_vars
   fi
-  # Require one binding per -e option. Commas inside a quoted/list value are
-  # fine; a bare comma-separated assignment would otherwise smuggle an
+  # Require one binding per -e option. Reject another assignment-like token
+  # after a comma, including ambiguous quoted values, so it cannot smuggle an
   # unrelated Ansible variable past the prefix check.
-  if [[ ",${payload}" =~ ,[[:space:]]*[A-Za-z_][A-Za-z0-9_]*= ]]; then
+  if [[ "${payload}" =~ ,[[:space:]]*[A-Za-z_][A-Za-z0-9_]*= ]]; then
     reject_extra_vars
   fi
 
@@ -137,6 +159,12 @@ validate_extra_vars() {
 }
 
 inventory_count=0
+recovery_drill_requested=0
+bootstrap_requested=0
+staging_seed_requested=0
+apply_requested=0
+check_requested=0
+selected_inventory=""
 args=("$@")
 for ((index = 0; index < ${#args[@]}; index++)); do
   arg="${args[index]}"
@@ -179,6 +207,9 @@ for ((index = 0; index < ${#args[@]}; index++)); do
       validate_extra_vars "${arg#-e}"
       ;;
     --check|-C|--diff|-D|--syntax-check)
+      if [[ "${arg}" == --check || "${arg}" == -C ]]; then
+        check_requested=1
+      fi
       ;;
     *)
       reject_unapproved_argument
@@ -189,6 +220,47 @@ done
 if (( inventory_count != 1 )); then
   printf 'operational runner requires exactly one approved operator inventory (-i/--inventory)\n' >&2
   exit 64
+fi
+
+if (( recovery_drill_requested == 1 )); then
+  if [[ "${selected_inventory}" != "${ansible_root}/inventory/staging/hosts.yml" || ( "${playbook}" != repair.yml && "${playbook}" != rollback.yml ) ]]; then
+    printf 'operational runner permits recovery drills only with staging inventory and repair/rollback playbooks\n' >&2
+    exit 64
+  fi
+fi
+
+if (( bootstrap_requested == 1 )); then
+  if [[ "${selected_inventory}" != "${ansible_root}/inventory/production/hosts.yml" \
+    || "${playbook}" != site.yml || ${apply_requested} != 1 || ${check_requested} == 1 \
+    || ${recovery_drill_requested} == 1 || ${staging_seed_requested} == 1 ]]; then
+    printf 'operational runner permits first-apply bootstrap only for a non-check production site apply\n' >&2
+    exit 64
+  fi
+  if [[ ! "${ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'operational runner requires the controller-protected bootstrap authorization digest\n' >&2
+    exit 78
+  fi
+  if [[ ! "${ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'operational runner requires the protected production inventory digest\n' >&2
+    exit 78
+  fi
+fi
+
+if (( staging_seed_requested == 1 )); then
+  if [[ "${selected_inventory}" != "${ansible_root}/inventory/staging/hosts.yml" \
+    || "${playbook}" != site.yml || ${apply_requested} != 1 || ${check_requested} == 1 \
+    || ${recovery_drill_requested} == 1 || ${bootstrap_requested} == 1 ]]; then
+    printf 'operational runner permits first staging seed only for a non-check staging site apply\n' >&2
+    exit 64
+  fi
+  if [[ ! "${ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'operational runner requires the controller-protected staging seed authorization digest\n' >&2
+    exit 78
+  fi
+  if [[ ! "${ARCHIVEWEAVER_STAGING_INVENTORY_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'operational runner requires the protected staging inventory digest\n' >&2
+    exit 78
+  fi
 fi
 
 cd -- "${ansible_root}"
@@ -259,5 +331,8 @@ clear_ambient_overrides() {
 clear_ambient_overrides
 export ANSIBLE_CONFIG="${ansible_root}/ansible.cfg"
 export ANSIBLE_ROLES_PATH="${ansible_root}/roles"
+# Controller preflight imports repository Python modules before it rechecks
+# source identity. Keep those imports from creating ignored code artifacts.
+export PYTHONDONTWRITEBYTECODE=1
 
 exec ansible-playbook "$@" "${playbook}"
