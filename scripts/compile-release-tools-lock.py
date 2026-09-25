@@ -25,7 +25,11 @@ LINUX_X86_64_PLATFORMS = (
     "manylinux_2_17_x86_64",
     "manylinux2014_x86_64",
 )
-REQUIREMENT_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)(?:\s+\\)?$")
+REQUIREMENT_RE = re.compile(
+    r"^([A-Za-z0-9_.-]+)"
+    r"(?:\[[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*\])?"
+    r"==([^\s\\]+)(?:\s+\\)?$"
+)
 HASH_RE = re.compile(r"^\s+--hash=sha256:([0-9a-f]{64})(?:\s+\\)?$")
 
 
