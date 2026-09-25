@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -16,12 +17,14 @@ from archiveweaver.readiness import (
     GITHUB_AUDIT_API_VERSION,
     GITHUB_AUDIT_CONTROL_NAMES,
     _all_pass_with_evidence,
+    _approved_signer,
     _approval_window_errors,
     _artifact_core_proof_paths,
     _artifact_proof_paths,
     _attestation_subject_bindings,
     _attestation_subject_digests,
     _claim_evidence_ok,
+    _controller_pinned_file,
     _cyclonedx_sbom_valid,
     _digest_matches,
     _decoded_base64,
@@ -31,6 +34,7 @@ from archiveweaver.readiness import (
     _evidence_metadata_errors,
     _evidence_metadata_matches,
     _evidence_payload_matches,
+    _evidence_record_exists,
     _evidence_timestamp_is_fresh,
     _execution_environment_ok,
     _execution_environment_core_proof_paths,
@@ -38,12 +42,18 @@ from archiveweaver.readiness import (
     _freshness_window_label,
     _github_controls_errors,
     _github_controls_proof_paths,
+    _github_release_certificate_identity,
     _indexed_bytes,
+    _indexed_dsse_statement_ok,
     _indexed_measure,
+    _image_provenance_ok,
     _is_absolute_uri,
     _is_current_or_past_timestamp,
     _json_evidence_payload,
     _json_shape_errors,
+    _oci_descriptor_ok,
+    _oci_image_manifest_ok,
+    _oci_release_image_ref_ok,
     _parse_timestamp,
     _product_ok,
     _provenance_binds_digests,
@@ -52,14 +62,20 @@ from archiveweaver.readiness import (
     _provenance_payload,
     _relative_candidate,
     _release_ok,
+    _release_provenance_signature_ok,
     _release_proof_names,
     _release_proof_paths,
     _sbom_binds_name,
+    _sbom_binds_named_sha256,
     _sbom_payload,
     _sigstore_bundle_binds_content,
+    _sigstore_bundle_binds_digest,
+    _signing_policy,
     _signed_artifact_ok,
     _spdx_packages,
     _structured_json_payload,
+    _trusted_file_bytes,
+    _verify_sigstore_bundle,
     assess_readiness,
     validate_manifest,
 )
@@ -80,6 +96,132 @@ def _context(
 class ReadinessHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = Catalog()
+
+    def test_scored_evidence_requires_claim_source_and_passing_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = {
+                "name": "restore",
+                "status": "pass",
+                "evidence": "restore.json",
+                "solution": "paperless-ngx",
+                "runtime": "rke2",
+                "os_id": "ubuntu-24.04",
+                "release": "2026.09.1",
+                "environment": "production",
+                "execution_environment": "restore",
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "operator": "operations",
+                "fixture_set": "restore-drill-1",
+            }
+            revision = "a" * 40
+            manifest = {
+                "service": {
+                    "solution_id": "paperless-ngx",
+                    "runtime": "rke2",
+                    "os_id": "ubuntu-24.04",
+                    "environment": "production",
+                },
+                "release": {"version": "2026.09.1", "source_revision": revision},
+            }
+            payload = {
+                **record,
+                "claim": "data_protection.restore_test",
+                "source_revision": revision,
+                "outcome": {
+                    "status": "pass",
+                    "method": "automated",
+                    "summary": "Production restore completed and verified",
+                    "source": "urn:archiveweaver:ansible:restore",
+                },
+                "returncode": 0,
+            }
+
+            def accepted(proof: dict[str, object], claim: str = "data_protection.restore_test") -> bool:
+                (root / "restore.json").write_text(json.dumps(proof), encoding="utf-8")
+                return _evidence_record_exists(
+                    record,
+                    root,
+                    _context(root, {"restore.json"}, self.catalog),
+                    manifest,
+                    freshness_policy=claim,
+                )
+
+            self.assertTrue(accepted(payload))
+            without_execution_environment = dict(record)
+            without_execution_environment.pop("execution_environment")
+            self.assertFalse(
+                _evidence_record_exists(
+                    without_execution_environment,
+                    root,
+                    _context(root, {"restore.json"}, self.catalog),
+                    manifest,
+                    freshness_policy="data_protection.restore_test",
+                )
+            )
+            self.assertFalse(accepted(payload, "data_protection.fixity_test"))
+            for changes in (
+                {"claim": "data_protection.fixity_test"},
+                {"source_revision": "b" * 40},
+                {"source_revision": None},
+                {"outcome": None},
+                {"outcome": {**payload["outcome"], "status": "fail"}},
+                {"outcome": {**payload["outcome"], "method": []}},
+                {"outcome": {**payload["outcome"], "summary": ""}},
+                {"returncode": 1},
+                {"returncode": True},
+                {"restore_returncode": 1},
+                {"outcome": {**payload["outcome"], "returncode": 2}},
+                {"check": {"returncode": 1}},
+                {"outcome": {**payload["outcome"], "checks": [{"rc": 1}]}},
+            ):
+                with self.subTest(changes=changes):
+                    self.assertFalse(accepted({**payload, **changes}))
+            manual = {
+                **payload,
+                "outcome": {
+                    "status": "pass",
+                    "method": "manual",
+                    "summary": "Restore artifacts inspected against the source bundle",
+                    "source": "https://tickets.example.org/CHG-1234",
+                    "reviewed_by": "independent-reviewer@example.org",
+                },
+            }
+            self.assertTrue(accepted(manual))
+            self.assertFalse(
+                accepted({**manual, "outcome": {**manual["outcome"], "reviewed_by": ""}})
+            )
+            self.assertFalse(
+                accepted({**manual, "outcome": {**manual["outcome"], "reviewed_by": "operations"}})
+            )
+            self.assertFalse(
+                accepted({**manual, "outcome": {**manual["outcome"], "reviewed_by": " Operations "}})
+            )
+
+            named_record = {**record, "name": "smoke"}
+            named_payload = {
+                **payload,
+                "name": "smoke",
+                "claim": "product_certification.test_matrix.smoke",
+            }
+            (root / "restore.json").write_text(json.dumps(named_payload), encoding="utf-8")
+            named_context = _context(root, {"restore.json"}, self.catalog)
+            self.assertTrue(
+                _all_pass_with_evidence(
+                    [named_record], root, named_context, {"smoke"}, manifest,
+                    freshness_policy="product_certification.test_matrix",
+                )
+            )
+            named_payload["claim"] = "product_certification.test_matrix.migration"
+            (root / "restore.json").write_text(json.dumps(named_payload), encoding="utf-8")
+            self.assertFalse(
+                _all_pass_with_evidence(
+                    [named_record], root,
+                    _context(root, {"restore.json"}, self.catalog),
+                    {"smoke"}, manifest,
+                    freshness_policy="product_certification.test_matrix",
+                )
+            )
 
     def test_json_shape_uri_timestamp_and_freshness_guards(self) -> None:
         self.assertIn(
@@ -342,6 +484,645 @@ class ReadinessHelperTests(unittest.TestCase):
                 )
             )
 
+            self.assertFalse(
+                _sigstore_bundle_binds_digest(
+                    bundle_path.name,
+                    "sha256:malformed",
+                    root,
+                    _context(root, {bundle_path.name}, self.catalog),
+                )
+            )
+
+    def test_controller_trust_files_reject_relative_missing_and_raced_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            trusted_file = root / "approved-root.json"
+            trusted_bytes = b"controller-approved trusted root"
+            trusted_file.write_bytes(trusted_bytes)
+            path_variable = "ARCHIVEWEAVER_TEST_TRUST_PATH"
+            digest_variable = "ARCHIVEWEAVER_TEST_TRUST_SHA256"
+            digest = hashlib.sha256(trusted_bytes).hexdigest()
+            environment = {
+                path_variable: str(trusted_file),
+                digest_variable: digest,
+            }
+            with mock.patch.dict("os.environ", environment):
+                self.assertEqual(
+                    _controller_pinned_file(
+                        path_variable, digest_variable, 1024, "trusted root"
+                    ),
+                    trusted_file,
+                )
+                self.assertEqual(
+                    _trusted_file_bytes(
+                        path_variable, digest_variable, 1024, "trusted root"
+                    ),
+                    trusted_bytes,
+                )
+
+                with mock.patch.dict("os.environ", {path_variable: "approved-root.json"}):
+                    self.assertIsNone(
+                        _controller_pinned_file(
+                            path_variable, digest_variable, 1024, "trusted root"
+                        )
+                    )
+                with mock.patch.dict(
+                    "os.environ", {path_variable: str(root / "missing-root.json")}
+                ):
+                    self.assertIsNone(
+                        _controller_pinned_file(
+                            path_variable, digest_variable, 1024, "trusted root"
+                        )
+                    )
+                with mock.patch(
+                    "archiveweaver.readiness._read_stable_bytes",
+                    side_effect=OSError("trust file replaced during read"),
+                ):
+                    self.assertIsNone(
+                        _trusted_file_bytes(
+                            path_variable, digest_variable, 1024, "trusted root"
+                        )
+                    )
+
+    def test_signing_policy_rejects_ambiguous_and_unapproved_signers(self) -> None:
+        repository = "Yunushan/archiveweaver"
+        identity = (
+            "https://github.com/Yunushan/archiveweaver/.github/workflows/"
+            "release.yml@refs/tags/v1.0"
+        )
+        manifest = {"release": {"version": "1.0", "source_repository": repository}}
+        signer = {
+            "role": "release-artifact",
+            "name": "product",
+            "digest": "sha256:" + "a" * 64,
+            "identity": identity,
+            "issuer": "https://token.actions.githubusercontent.com",
+        }
+        policy = {
+            "schema_version": 1,
+            "release_version": "1.0",
+            "source_repository": repository,
+            "github_controls_identity": identity,
+            "signers": [signer],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "signing-policy.json"
+
+            def check(candidate: object) -> object:
+                content = json.dumps(candidate).encode("utf-8")
+                policy_file.write_bytes(content)
+                with mock.patch.dict(
+                    "os.environ",
+                    {
+                        "ARCHIVEWEAVER_SIGNING_POLICY_PATH": str(policy_file),
+                        "ARCHIVEWEAVER_SIGNING_POLICY_SHA256": hashlib.sha256(
+                            content
+                        ).hexdigest(),
+                    },
+                ):
+                    return _signing_policy(manifest)
+
+            self.assertEqual(check(policy), policy)
+            image_signer = {
+                **signer,
+                "image": "ghcr.io/example/product@" + signer["digest"],
+            }
+            image_policy = {**policy, "signers": [image_signer]}
+            self.assertEqual(check(image_policy), image_policy)
+            rollback_signer = {
+                **signer,
+                "role": "rollback-artifact",
+                "release_version": "0.9",
+            }
+            rollback_policy = {**policy, "signers": [rollback_signer]}
+            self.assertEqual(check(rollback_policy), rollback_policy)
+            rollback_content = json.dumps(rollback_policy).encode("utf-8")
+            policy_file.write_bytes(rollback_content)
+            with mock.patch.dict("os.environ", {
+                "ARCHIVEWEAVER_SIGNING_POLICY_PATH": str(policy_file),
+                "ARCHIVEWEAVER_SIGNING_POLICY_SHA256": hashlib.sha256(
+                    rollback_content
+                ).hexdigest(),
+            }):
+                self.assertEqual(
+                    _approved_signer(
+                        manifest, "rollback-artifact", "product", signer["digest"],
+                        release_version="0.9",
+                    ),
+                    (identity, signer["issuer"]),
+                )
+                self.assertIsNone(
+                    _approved_signer(
+                        manifest, "rollback-artifact", "product", signer["digest"],
+                        release_version="not-the-signed-release",
+                    )
+                )
+            missing_rollback_version = dict(rollback_signer)
+            missing_rollback_version.pop("release_version")
+            self.assertIsNone(check({**policy, "signers": [missing_rollback_version]}))
+            image_content = json.dumps(image_policy).encode("utf-8")
+            policy_file.write_bytes(image_content)
+            with mock.patch.dict("os.environ", {
+                "ARCHIVEWEAVER_SIGNING_POLICY_PATH": str(policy_file),
+                "ARCHIVEWEAVER_SIGNING_POLICY_SHA256": hashlib.sha256(
+                    image_content
+                ).hexdigest(),
+            }):
+                self.assertEqual(
+                    _approved_signer(
+                        manifest, "release-artifact", "product", signer["digest"],
+                        image=image_signer["image"],
+                    ),
+                    (identity, signer["issuer"]),
+                )
+                self.assertIsNone(_approved_signer(
+                    manifest, "release-artifact", "product", signer["digest"]
+                ))
+
+            for malformed_content in (
+                b"{\xff",
+                b'{"schema_version":1,"schema_version":1}',
+            ):
+                with self.subTest(malformed_content=malformed_content):
+                    policy_file.write_bytes(malformed_content)
+                    with mock.patch.dict(
+                        "os.environ",
+                        {
+                            "ARCHIVEWEAVER_SIGNING_POLICY_PATH": str(policy_file),
+                            "ARCHIVEWEAVER_SIGNING_POLICY_SHA256": hashlib.sha256(
+                                malformed_content
+                            ).hexdigest(),
+                        },
+                    ):
+                        self.assertIsNone(_signing_policy(manifest))
+
+            invalid_signer = copy.deepcopy(signer)
+            invalid_signer["identity"] = "https://github.com/owner/*"
+            bad_issuer = copy.deepcopy(signer)
+            bad_issuer["issuer"] = "https://[invalid"
+            insecure_issuer = copy.deepcopy(signer)
+            insecure_issuer["issuer"] = "http://issuer.example"
+            mismatched_image = {
+                **signer,
+                "role": "execution-environment",
+                "image": "ghcr.io/example/controller@sha256:" + "b" * 64,
+            }
+            mismatched_release_image = {
+                **image_signer,
+                "image": "ghcr.io/example/product@sha256:" + "b" * 64,
+            }
+            tagged_release_image = {
+                **image_signer,
+                "image": "ghcr.io/example/product:latest@" + signer["digest"],
+            }
+            for name, mutation in (
+                ("wrong release", {"release_version": "2.0"}),
+                ("non-object signer", {"signers": [None]}),
+                ("wildcard identity", {"signers": [invalid_signer]}),
+                ("malformed issuer URL", {"signers": [bad_issuer]}),
+                ("insecure issuer", {"signers": [insecure_issuer]}),
+                ("wrong execution image", {"signers": [mismatched_image]}),
+                ("wrong release image digest", {"signers": [mismatched_release_image]}),
+                ("tagged release image", {"signers": [tagged_release_image]}),
+                ("duplicate signer", {"signers": [signer, copy.deepcopy(signer)]}),
+            ):
+                with self.subTest(name=name):
+                    self.assertIsNone(check({**policy, **mutation}))
+
+    def test_oci_image_row_requires_raw_manifest_bytes(self) -> None:
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": "sha256:" + "1" * 64,
+                "size": 2,
+            },
+            "layers": [{
+                "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                "digest": "sha256:" + "2" * 64,
+                "size": 10,
+            }],
+        }
+        self.assertTrue(_oci_descriptor_ok(manifest["config"], config=True))
+        self.assertTrue(_oci_descriptor_ok(manifest["layers"][0], config=False))
+        self.assertFalse(_oci_descriptor_ok(None, config=True))
+        self.assertFalse(_oci_descriptor_ok({**manifest["config"], "size": True}, config=True))
+        self.assertFalse(_oci_descriptor_ok({**manifest["config"], "size": -1}, config=True))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "manifest.json"
+
+            def check(content: bytes, *, expected: bool = True) -> None:
+                path.write_bytes(content)
+                digest = "sha256:" + hashlib.sha256(content).hexdigest()
+                image = "ghcr.io/paperless-ngx/paperless-ngx@" + digest
+                context = _context(root, {path.name}, self.catalog)
+                self.assertEqual(
+                    _oci_image_manifest_ok(path.name, image, digest, root, context),
+                    expected,
+                )
+
+            valid = json.dumps(manifest).encode("utf-8")
+            check(valid)
+            path.write_bytes(valid)
+            context = _context(root, {path.name}, self.catalog)
+            valid_digest = "sha256:" + hashlib.sha256(valid).hexdigest()
+            self.assertFalse(_oci_image_manifest_ok(
+                path.name, "ghcr.io/paperless-ngx/paperless-ngx:latest@" + valid_digest,
+                valid_digest, root, context,
+            ))
+            self.assertFalse(_oci_image_manifest_ok(
+                path.name, "ghcr.io/paperless-ngx/paperless-ngx@" + valid_digest,
+                "sha256:" + "f" * 64, root, context,
+            ))
+            self.assertFalse(_oci_image_manifest_ok(
+                path.name, "ghcr.io/paperless-ngx/paperless-ngx@" + valid_digest,
+                valid_digest, root, None,
+            ))
+            malformed = [
+                b"not an OCI manifest tar",
+                b"{",
+                b"[]",
+                json.dumps({**manifest, "mediaType": "application/vnd.oci.image.index.v1+json"}).encode(),
+                json.dumps({**manifest, "schemaVersion": True}).encode(),
+                json.dumps({**manifest, "artifactType": "application/spdx+json"}).encode(),
+                json.dumps({**manifest, "subject": {"digest": valid_digest}}).encode(),
+                json.dumps({**manifest, "layers": []}).encode(),
+                json.dumps({**manifest, "config": {**manifest["config"], "mediaType": "application/octet-stream"}}).encode(),
+                json.dumps({**manifest, "layers": [{**manifest["layers"][0], "digest": "mutable"}]}).encode(),
+            ]
+            for content in malformed:
+                with self.subTest(content=content[:80]):
+                    check(content, expected=False)
+
+    def test_oci_image_ref_requires_explicit_registry_host(self) -> None:
+        digest = "sha256:" + "a" * 64
+        for repository in (
+            "ghcr.io/paperless-ngx/paperless-ngx",
+            "registry:5000/team/image",
+            "localhost/team/image",
+            "localhost:5000/team/image",
+        ):
+            self.assertTrue(_oci_release_image_ref_ok(repository + "@" + digest))
+        for repository in (
+            "paperless-ngx/paperless-ngx",
+            "registry:65536/team/image",
+            "registry:0/team/image",
+            "registry:0001/team/image",
+            "registry.example./team/image",
+            "registry..example/team/image",
+            "GHCR.io/team/image",
+            "ghcr.io/team/image:latest",
+            "ghcr.io/team//image",
+        ):
+            self.assertFalse(_oci_release_image_ref_ok(repository + "@" + digest))
+        self.assertFalse(_oci_release_image_ref_ok(None))
+
+    def test_image_provenance_needs_exact_signed_subject_and_dsse_bytes(self) -> None:
+        repository = "ghcr.io/paperless-ngx/paperless-ngx"
+        digest = "sha256:" + "a" * 64
+        image = repository + "@" + digest
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            statement_path = root / "image-provenance.json"
+            statement_path.write_bytes(b'{"signed":"image provenance"}')
+            bundle_path = root / "image-provenance.sigstore.json"
+            bundle = {
+                "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                "verificationMaterial": {
+                    "certificate": {"rawBytes": base64.b64encode(b"cert").decode()},
+                    "tlogEntries": [{
+                        "canonicalizedBody": base64.b64encode(b"entry").decode()
+                    }],
+                },
+                "dsseEnvelope": {
+                    "payloadType": "application/vnd.in-toto+json",
+                    "payload": base64.b64encode(statement_path.read_bytes()).decode(),
+                    "signatures": [{"sig": base64.b64encode(b"sig").decode()}],
+                },
+            }
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            context = _context(root, {statement_path.name, bundle_path.name}, self.catalog)
+            self.assertTrue(_indexed_dsse_statement_ok(
+                statement_path.name, bundle_path.name, root, context
+            ))
+            bundle_path.write_bytes(b"{\xff")
+            context = _context(root, {statement_path.name, bundle_path.name}, self.catalog)
+            self.assertFalse(_indexed_dsse_statement_ok(
+                statement_path.name, bundle_path.name, root, context
+            ))
+            bundle_path.write_text(json.dumps({"mediaType": "wrong"}), encoding="utf-8")
+            context = _context(root, {statement_path.name, bundle_path.name}, self.catalog)
+            self.assertFalse(_indexed_dsse_statement_ok(
+                statement_path.name, bundle_path.name, root, context
+            ))
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            context = _context(root, {statement_path.name, bundle_path.name}, self.catalog)
+            subject = {"subject": [{"name": repository, "digest": {"sha256": "a" * 64}}]}
+            artifact = root / "image-manifest.json"
+            artifact.write_bytes(b"signed OCI manifest")
+            row = {
+                "provenance": statement_path.name,
+                "provenance_bundle": bundle_path.name,
+            }
+            signer = ("https://example.org/approved-image-builder", "https://example.org/issuer")
+            with mock.patch(
+                "archiveweaver.readiness._provenance_payload", return_value=subject
+            ), mock.patch(
+                "archiveweaver.readiness._verify_sigstore_bundle", return_value=True
+            ) as verifier:
+                self.assertTrue(_image_provenance_ok(
+                    row, image, digest, signer, artifact, root, context
+                ))
+                verifier.assert_called_once_with(
+                    bundle_path.name, artifact, signer[0], signer[1], root, context,
+                    attestation=True,
+                )
+            with mock.patch(
+                "archiveweaver.readiness._provenance_payload",
+                return_value={"subject": [{"name": "wrong/image", "digest": {"sha256": "a" * 64}}]},
+            ), mock.patch(
+                "archiveweaver.readiness._verify_sigstore_bundle", return_value=True
+            ):
+                self.assertFalse(_image_provenance_ok(
+                    row, image, digest, signer, artifact, root, context
+                ))
+
+            bundle["dsseEnvelope"]["payload"] = base64.b64encode(b"different bytes").decode()
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            context = _context(root, {statement_path.name, bundle_path.name}, self.catalog)
+            self.assertFalse(_indexed_dsse_statement_ok(
+                statement_path.name, bundle_path.name, root, context
+            ))
+            with mock.patch(
+                "archiveweaver.readiness._provenance_payload", return_value=subject
+            ), mock.patch(
+                "archiveweaver.readiness._verify_sigstore_bundle", return_value=True
+            ):
+                self.assertFalse(_image_provenance_ok(
+                    row, image, digest, signer, artifact, root, context
+                ))
+            bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+                statement_path.read_bytes()
+            ).decode()
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            context = _context(root, {statement_path.name, bundle_path.name}, self.catalog)
+            with mock.patch(
+                "archiveweaver.readiness._provenance_payload", return_value=subject
+            ), mock.patch(
+                "archiveweaver.readiness._verify_sigstore_bundle", return_value=False
+            ):
+                self.assertFalse(_image_provenance_ok(
+                    row, image, digest, signer, artifact, root, context
+                ))
+
+    def test_image_fields_fail_closed_before_signer_lookup(self) -> None:
+        root = Path(".")
+        self.assertFalse(_signed_artifact_ok(
+            {"image": {}}, root, None, {},
+        ))
+        self.assertFalse(_signed_artifact_ok(
+            {"image": None}, root, None, {},
+        ))
+        self.assertFalse(_signed_artifact_ok(
+            {"image": "ghcr.io/example/product@sha256:" + "a" * 64},
+            root, None, {}, signing_role="rollback-artifact",
+        ))
+
+    def test_container_release_requires_an_image_artifact(self) -> None:
+        release = {
+            "version": "2026.09.1",
+            "provenance_verified": True,
+            "artifacts": [{"name": "package-only"}],
+        }
+        with (
+            mock.patch("archiveweaver.readiness._section_evidence_ok", return_value=True),
+            mock.patch("archiveweaver.readiness._provenance_payload", return_value={}),
+            mock.patch("archiveweaver.readiness._provenance_binds_source", return_value=True),
+            mock.patch("archiveweaver.readiness._release_provenance_signature_ok", return_value=True),
+            mock.patch("archiveweaver.readiness._github_controls_ok", return_value=True),
+            mock.patch("archiveweaver.readiness._signed_artifact_ok", return_value=True),
+        ):
+            for runtime, underlying in (
+                ("ansible", "rke2"),
+                ("ansible", "docker-swarm"),
+                ("docker", None),
+            ):
+                service = {"runtime": runtime}
+                if underlying is not None:
+                    service["underlying_runtime"] = underlying
+                with self.subTest(runtime=runtime, underlying=underlying):
+                    self.assertFalse(_release_ok(
+                        {"service": service, "release": release}, Path("."), None
+                    ))
+
+    def test_sigstore_verifier_requires_pinned_binary_and_exact_workflow_identity(self) -> None:
+        approved_identity = (
+            "https://github.com/Yunushan/archiveweaver/.github/workflows/"
+            "release.yml@refs/tags/v0.1.0"
+        )
+        identity = _github_release_certificate_identity(
+            "Yunushan/archiveweaver", approved_identity
+        )
+        self.assertEqual(identity, approved_identity)
+        self.assertIsNone(_github_release_certificate_identity("other", approved_identity))
+        self.assertIsNone(_github_release_certificate_identity("owner/repo", "../main"))
+        assert identity is not None
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "cosign"
+            binary.write_bytes(b"controller-approved verifier")
+            bundle = root / "controls.sigstore.json"
+            bundle.write_bytes(b"signed bundle bytes")
+            trusted_root = root / "trusted-root.json"
+            trusted_root.write_bytes(b"controller-approved trust root")
+            context = _context(root, {bundle.name}, self.catalog)
+            environment = {
+                "ARCHIVEWEAVER_COSIGN_PATH": str(binary),
+                "ARCHIVEWEAVER_COSIGN_SHA256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH": str(trusted_root),
+                "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256": hashlib.sha256(
+                    trusted_root.read_bytes()
+                ).hexdigest(),
+                "SIGSTORE_ROOT_FILE": str(root / "untrusted-root.json"),
+            }
+
+            def inspect_command(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                self.assertEqual(argv[:2], [str(binary), "verify-blob"])
+                self.assertEqual(Path(argv[2]).read_bytes(), b"hosted controls")
+                self.assertEqual(argv[3:5], ["--offline", "--bundle"])
+                self.assertEqual(Path(argv[5]).read_bytes(), bundle.read_bytes())
+                self.assertEqual(argv[6], "--trusted-root")
+                self.assertEqual(Path(argv[7]).read_bytes(), trusted_root.read_bytes())
+                self.assertEqual(argv[8:10], ["--certificate-identity", identity])
+                self.assertEqual(
+                    argv[10:12],
+                    ["--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"],
+                )
+                self.assertNotIn("SIGSTORE_ROOT_FILE", kwargs["env"])
+                return subprocess.CompletedProcess(argv, 0)
+
+            with mock.patch.dict("os.environ", environment):
+                with mock.patch(
+                    "archiveweaver.readiness.subprocess.run",
+                    side_effect=inspect_command,
+                ) as process:
+                    self.assertTrue(
+                        _verify_sigstore_bundle(
+                            bundle.name, b"hosted controls", identity,
+                            "https://token.actions.githubusercontent.com", root, context
+                        )
+                    )
+                    self.assertEqual(process.call_count, 1)
+
+                controls = root / "github-production-controls.json"
+                controls.write_bytes(b"hosted controls")
+                attestation_context = _context(
+                    root, {bundle.name, controls.name}, self.catalog
+                )
+
+                def inspect_attestation_command(
+                    argv: list[str], **kwargs: object
+                ) -> subprocess.CompletedProcess[str]:
+                    self.assertEqual(
+                        argv[:2], [str(binary), "verify-blob-attestation"]
+                    )
+                    self.assertEqual(Path(argv[2]), controls)
+                    self.assertEqual(argv[3:5], ["--offline", "--bundle"])
+                    self.assertEqual(Path(argv[5]).read_bytes(), bundle.read_bytes())
+                    self.assertEqual(argv[-1], "--new-bundle-format")
+                    self.assertNotIn("SIGSTORE_ROOT_FILE", kwargs["env"])
+                    return subprocess.CompletedProcess(argv, 0)
+
+                with mock.patch(
+                    "archiveweaver.readiness.subprocess.run",
+                    side_effect=inspect_attestation_command,
+                ):
+                    self.assertTrue(
+                        _verify_sigstore_bundle(
+                            bundle.name,
+                            controls,
+                            identity,
+                            "https://token.actions.githubusercontent.com",
+                            root,
+                            attestation_context,
+                            attestation=True,
+                        )
+                    )
+
+                unindexed_report = root / "unindexed-report.bin"
+                unindexed_report.write_bytes(b"hosted controls")
+                with mock.patch("archiveweaver.readiness.subprocess.run") as process:
+                    self.assertFalse(
+                        _verify_sigstore_bundle(
+                            bundle.name, unindexed_report, identity,
+                            "https://token.actions.githubusercontent.com", root, context
+                        )
+                    )
+                    process.assert_not_called()
+
+                with mock.patch.dict(
+                    "os.environ", {"ARCHIVEWEAVER_COSIGN_SHA256": "0" * 64}
+                ):
+                    with mock.patch("archiveweaver.readiness.subprocess.run") as process:
+                        self.assertFalse(
+                            _verify_sigstore_bundle(
+                                bundle.name, b"hosted controls", identity,
+                                "https://token.actions.githubusercontent.com", root, context
+                            )
+                        )
+                        process.assert_not_called()
+
+    def test_release_provenance_requires_exact_signed_dsse_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            statement = root / "release.provenance.json"
+            statement.write_bytes(b'{"statement":"approved"}')
+            controls = root / "github-production-controls.json"
+            controls.write_bytes(b'{"audit":"approved"}')
+            bundle_path = root / "release.provenance.sigstore.json"
+            bundle = {
+                "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                "verificationMaterial": {
+                    "certificate": {"rawBytes": base64.b64encode(b"certificate").decode()},
+                    "tlogEntries": [
+                        {"canonicalizedBody": base64.b64encode(b"entry").decode()}
+                    ],
+                },
+                "dsseEnvelope": {
+                    "payloadType": "application/vnd.in-toto+json",
+                    "payload": base64.b64encode(statement.read_bytes()).decode(),
+                    "signatures": [{"sig": base64.b64encode(b"signature").decode()}],
+                },
+            }
+            bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+            context = _context(
+                root,
+                {statement.name, controls.name, bundle_path.name},
+                self.catalog,
+            )
+            release = {
+                "source_repository": "Yunushan/archiveweaver",
+                "provenance": statement.name,
+                "provenance_bundle": bundle_path.name,
+                "github_controls": {
+                    "path": controls.name,
+                    "digest": "sha256:" + hashlib.sha256(controls.read_bytes()).hexdigest(),
+                },
+            }
+            manifest = {"release": release}
+            policy = {
+                "github_controls_identity": (
+                    "https://github.com/Yunushan/archiveweaver/.github/workflows/"
+                    "release.yml@refs/tags/v2026.09.1"
+                )
+            }
+            with (
+                mock.patch("archiveweaver.readiness._signing_policy", return_value=policy),
+                mock.patch(
+                    "archiveweaver.readiness._verify_sigstore_bundle",
+                    return_value=True,
+                ) as verifier,
+            ):
+                self.assertTrue(
+                    _release_provenance_signature_ok(release, manifest, root, context)
+                )
+                self.assertTrue(verifier.call_args.kwargs["attestation"])
+                self.assertEqual(verifier.call_args.args[1], controls)
+                wrong_controls_digest = copy.deepcopy(release)
+                wrong_controls_digest["github_controls"]["digest"] = "sha256:" + "f" * 64
+                verifier.reset_mock()
+                self.assertFalse(_release_provenance_signature_ok(
+                    wrong_controls_digest, manifest, root, context
+                ))
+                verifier.assert_not_called()
+                modified = copy.deepcopy(bundle)
+                modified["dsseEnvelope"]["payload"] = base64.b64encode(
+                    b'{"statement":"forged"}'
+                ).decode()
+                bundle_path.write_text(json.dumps(modified), encoding="utf-8")
+                modified_context = _context(
+                    root,
+                    {statement.name, controls.name, bundle_path.name},
+                    self.catalog,
+                )
+                verifier.reset_mock()
+                self.assertFalse(
+                    _release_provenance_signature_ok(
+                        release, manifest, root, modified_context
+                    )
+                )
+                verifier.assert_not_called()
+                self.assertFalse(
+                    _release_provenance_signature_ok(
+                        {**release, "provenance_bundle": statement.name},
+                        manifest,
+                        root,
+                        context,
+                    )
+                )
+
     def test_hosted_control_audit_reports_each_fail_closed_boundary(self) -> None:
         now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
         repository = "Yunushan/archiveweaver"
@@ -391,6 +1172,19 @@ class ReadinessHelperTests(unittest.TestCase):
                         return_value=True,
                     ),
                     mock.patch(
+                        "archiveweaver.readiness._verify_sigstore_bundle",
+                        return_value=True,
+                    ),
+                    mock.patch(
+                        "archiveweaver.readiness._signing_policy",
+                        return_value={
+                            "github_controls_identity": (
+                                "https://github.com/Yunushan/archiveweaver/"
+                                ".github/workflows/release.yml@refs/tags/v0.1.0"
+                            )
+                        },
+                    ),
+                    mock.patch(
                         "archiveweaver.readiness._evidence_record_exists",
                         return_value=verification_ok,
                     ),
@@ -411,7 +1205,7 @@ class ReadinessHelperTests(unittest.TestCase):
                         repository,
                         repository_id,
                         source_revision,
-                        {},
+                        {"release": {"version": "2026.09.1"}},
                         root,
                         _context(root, {report_path.name}, self.catalog),
                         now=now,
@@ -622,7 +1416,7 @@ class ReadinessHelperTests(unittest.TestCase):
             ):
                 self.assertIsNone(_relative_candidate("proof.txt", root))
 
-            self.assertTrue(
+            self.assertFalse(
                 _evidence_payload_matches(
                     {"evidence": "proof.txt"}, root, context, {}
                 )
@@ -675,6 +1469,7 @@ class ReadinessHelperTests(unittest.TestCase):
                             "type": "application",
                             "name": "product-artifact",
                             "version": "2026.09.1",
+                            "hashes": [{"alg": "SHA-256", "content": "a" * 64}],
                         },
                     },
                     "components": [
@@ -704,6 +1499,18 @@ class ReadinessHelperTests(unittest.TestCase):
                     "cyclonedx.json", "product-artifact", root, context
                 )
             )
+            self.assertTrue(_sbom_binds_named_sha256(
+                "cyclonedx.json", "product-artifact", "sha256:" + "a" * 64,
+                root, context,
+            ))
+            self.assertFalse(_sbom_binds_named_sha256(
+                "cyclonedx.json", "product-artifact", "sha256:" + "b" * 64,
+                root, context,
+            ))
+            self.assertFalse(_sbom_binds_named_sha256(
+                "cyclonedx.json", "dependency", "sha256:" + "a" * 64,
+                root, context,
+            ))
             self.assertEqual(
                 _structured_json_payload(
                     "groups.json",
@@ -776,6 +1583,7 @@ class ReadinessHelperTests(unittest.TestCase):
                         "downloadLocation": "NOASSERTION",
                         "filesAnalyzed": False,
                         "name": "subject",
+                        "checksums": [{"algorithm": "SHA256", "checksumValue": "a" * 64}],
                     },
                     {
                         "SPDXID": "SPDXRef-Package-decoy",
@@ -823,10 +1631,38 @@ class ReadinessHelperTests(unittest.TestCase):
             self.assertTrue(
                 _sbom_binds_name("valid.spdx.json", "subject", root, context)
             )
+            self.assertTrue(_sbom_binds_named_sha256(
+                "valid.spdx.json", "subject", "sha256:" + "a" * 64,
+                root, context,
+            ))
+            self.assertFalse(_sbom_binds_named_sha256(
+                "valid.spdx.json", "subject", "sha256:" + "b" * 64,
+                root, context,
+            ))
+            self.assertFalse(_sbom_binds_named_sha256(
+                "valid.spdx.json", "decoy", "sha256:" + "a" * 64,
+                root, context,
+            ))
+            self.assertFalse(_sbom_binds_named_sha256(
+                "valid.spdx.json", "subject", "mutable",
+                root, context,
+            ))
             self.assertFalse(
                 _sbom_binds_name("valid.spdx.json", "decoy", root, context)
             )
             self.assertIsNone(_sbom_payload("minimal.spdx.json", root, context))
+            self.assertFalse(_sbom_binds_named_sha256(
+                "minimal.spdx.json", "subject", "sha256:" + "a" * 64,
+                root, context,
+            ))
+            with mock.patch(
+                "archiveweaver.readiness._sbom_payload",
+                return_value={"spdxVersion": "SPDX-2.3"},
+            ):
+                self.assertFalse(_sbom_binds_named_sha256(
+                    "valid.spdx.json", "subject", "sha256:" + "a" * 64,
+                    root, context,
+                ))
             self.assertEqual(
                 _provenance_payload("valid-provenance.json", root, context),
                 provenance,
@@ -930,6 +1766,27 @@ class ReadinessHelperTests(unittest.TestCase):
                     {},
                 )
             )
+            image = "registry.example/controller@sha256:" + "a" * 64
+            controller = {
+                "name": "controller",
+                "image": image,
+                "digest": "sha256:" + "a" * 64,
+                "provenance_verified": True,
+                "signature_verified": True,
+                "signature_verification": {"status": "pass"},
+            }
+            with (
+                mock.patch("archiveweaver.readiness._approved_signer", return_value=("approved", "issuer")),
+                mock.patch("archiveweaver.readiness._provenance_payload", return_value={}),
+                mock.patch("archiveweaver.readiness._provenance_binds_digests", return_value=True),
+                mock.patch("archiveweaver.readiness._provenance_binds_subjects", return_value=True),
+                mock.patch("archiveweaver.readiness._provenance_binds_source", return_value=True),
+                mock.patch("archiveweaver.readiness._sbom_binds_name", return_value=True),
+                mock.patch("archiveweaver.readiness._evidence_exists", return_value=False),
+            ):
+                self.assertFalse(_execution_environment_ok(
+                    controller, root, context, {"release": {}}
+                ))
             self.assertFalse(
                 _execution_environment_ok(
                     {
@@ -967,6 +1824,7 @@ class ReadinessHelperTests(unittest.TestCase):
                 "status": "pass",
                 "version": "1.0",
                 "provenance": "provenance.json",
+                "provenance_bundle": "provenance.sigstore.json",
                 "provenance_verified": True,
                 "github_controls": {
                     "path": "github-controls.json",
@@ -1018,6 +1876,10 @@ class ReadinessHelperTests(unittest.TestCase):
                     return_value=True,
                 ),
                 mock.patch(
+                    "archiveweaver.readiness._release_provenance_signature_ok",
+                    return_value=True,
+                ),
+                mock.patch(
                     "archiveweaver.readiness._github_controls_ok",
                     return_value=True,
                 ),
@@ -1030,6 +1892,7 @@ class ReadinessHelperTests(unittest.TestCase):
                 patches[4],
                 patches[5],
                 patches[6],
+                patches[7],
             ):
                 self.assertTrue(
                     _release_ok(
@@ -1136,6 +1999,7 @@ class ReadinessHelperTests(unittest.TestCase):
             "source_repository": "Yunushan/archiveweaver",
             "source_revision": "a" * 40,
             "provenance": "provenance.json",
+            "provenance_bundle": "provenance.sigstore.json",
             "provenance_verified": True,
             "github_controls": github_controls,
             "artifacts": [artifact],
@@ -1148,6 +2012,7 @@ class ReadinessHelperTests(unittest.TestCase):
             mock.patch("archiveweaver.readiness._provenance_binds_digests", return_value=True),
             mock.patch("archiveweaver.readiness._provenance_binds_subjects", return_value=True),
             mock.patch("archiveweaver.readiness._provenance_binds_source", return_value=True),
+            mock.patch("archiveweaver.readiness._release_provenance_signature_ok", return_value=True),
             mock.patch("archiveweaver.readiness._github_controls_ok", return_value=True),
         )
         with (
@@ -1158,6 +2023,7 @@ class ReadinessHelperTests(unittest.TestCase):
             patches[4],
             patches[5],
             patches[6],
+            patches[7],
         ):
             empty = copy.deepcopy(release)
             empty["artifacts"] = []

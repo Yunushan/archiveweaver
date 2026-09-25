@@ -142,6 +142,16 @@
     - inventory_hostname == groups['archiveweaver_app'][0]
   tags: [verify]
 
+- name: Require signed image coverage during Compose verification
+  ansible.builtin.include_tasks: require-signed-image-coverage.yml
+  vars:
+    archiveweaver_provider_image_coverage_runtime: docker
+    archiveweaver_provider_image_coverage_model: "{{ archiveweaver_provider_verify_compose_config.stdout }}"
+  when:
+    - archiveweaver_runtime == 'docker'
+    - inventory_hostname == groups['archiveweaver_app'][0]
+  tags: [verify]
+
 - name: Inspect the staged Swarm bundle during verification
   ansible.builtin.stat:
     path: "{{ archiveweaver_compose_path }}"
@@ -194,11 +204,21 @@
     - inventory_hostname == groups['archiveweaver_control'][0]
   tags: [verify]
 
+- name: Require signed image coverage during Swarm verification
+  ansible.builtin.include_tasks: require-signed-image-coverage.yml
+  vars:
+    archiveweaver_provider_image_coverage_runtime: docker-swarm
+    archiveweaver_provider_image_coverage_model: "{{ archiveweaver_provider_verify_swarm_config.stdout }}"
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
 - name: Build a safe kubectl argv prefix for provider verification
   ansible.builtin.set_fact:
     archiveweaver_provider_verify_kubectl_argv: >-
-      {{ ['kubectl'] + (['--kubeconfig', archiveweaver_kubeconfig]
-         if archiveweaver_kubeconfig | length > 0 else []) }}
+      {{ ['kubectl', '--kubeconfig', archiveweaver_kubeconfig,
+          '--context', archiveweaver_kube_context, '--request-timeout=30s'] }}
   when: archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
   tags: [verify]
 
@@ -258,6 +278,7 @@
     recurse: true
     file_type: file
     hidden: true
+    get_checksum: true
     checksum_algorithm: sha256
   register: archiveweaver_provider_verify_kustomize_files
   no_log: true
@@ -310,6 +331,13 @@
   no_log: true
   tags: [verify]
 
+- name: Require a protected local-only Kustomize closure during verification
+  ansible.builtin.include_tasks: verify-kustomize-tree.yml
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
 - name: Re-render the verified Kustomize bundle read-only
   ansible.builtin.command:
     argv: "{{ archiveweaver_provider_verify_kubectl_argv + ['kustomize', archiveweaver_kustomize_path] }}"
@@ -322,6 +350,36 @@
   no_log: true
   tags: [verify]
 
+- name: Rehash the protected Kustomize closure after verification render
+  ansible.builtin.include_tasks: verify-kustomize-tree.yml
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
+- name: Validate the independently rendered Paperless RKE2 product model
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-paperless-rke2-model.py"
+      - "{{ archiveweaver_namespace }}"
+    stdin: "{{ archiveweaver_provider_verify_kustomize_render.stdout }}"
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_verify_paperless_model_validation
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - archiveweaver_runtime == 'rke2'
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  tags: [verify]
+
 - name: Require immutable images in the verified Kustomize model
   ansible.builtin.include_tasks: require-immutable-images.yml
   vars:
@@ -329,4 +387,125 @@
   when:
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
     - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [verify]
+
+- name: Require signed image coverage during Kubernetes verification
+  ansible.builtin.include_tasks: require-signed-image-coverage.yml
+  vars:
+    archiveweaver_provider_image_coverage_runtime: kubernetes
+    archiveweaver_provider_image_coverage_model: "{{ archiveweaver_provider_verify_kustomize_render.stdout }}"
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [verify]
+
+- name: Read all live Kubernetes workloads during independent verification
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_verify_kubectl_argv + ['-n', archiveweaver_namespace,
+          'get', 'deployments,statefulsets,jobs,cronjobs', '-o', 'json'] }}
+  register: archiveweaver_provider_verify_live_workloads
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [verify]
+
+- name: Compare independent live Kubernetes workloads with the reviewed bundle
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-live-kubernetes-workloads.py"
+      - "{{ archiveweaver_namespace }}"
+    stdin: >-
+      {{ {'rendered_yaml': archiveweaver_provider_verify_kustomize_render.stdout,
+          'live_json': (archiveweaver_provider_verify_live_workloads.stdout | from_json)} | to_json }}
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_verify_live_workload_result
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [verify]
+
+- name: Require independent live workload images to match the reviewed release
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_verify_live_workload_result.rc == 0
+    fail_msg: "Independent verification found a missing, extra, or changed Kubernetes workload image."
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [verify]
+
+- name: Inventory live namespaced Kubernetes resources during independent verification
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_verify_kubectl_argv + ['-n', archiveweaver_namespace,
+          'get', ('deployments,statefulsets,daemonsets,jobs,cronjobs,pods,replicasets,'
+                  ~ 'services,ingresses,networkpolicies,persistentvolumeclaims,secrets,configmaps,serviceaccounts,'
+                  ~ 'resourcequotas,limitranges,poddisruptionbudgets,horizontalpodautoscalers,roles,rolebindings'),
+          '-o', 'json'] }}
+  register: archiveweaver_provider_verify_live_resources
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [verify]
+
+- name: Reject unreviewed live namespaced Kubernetes resources during independent verification
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-live-kubernetes-resources.py"
+      - "{{ archiveweaver_namespace }}"
+    stdin: >-
+      {{ {'rendered_yaml': archiveweaver_provider_verify_kustomize_render.stdout,
+          'live_json': (archiveweaver_provider_verify_live_resources.stdout | from_json)} | to_json }}
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_verify_resource_inventory
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [verify]
+
+- name: Require every live Kubernetes resource to match the verified model
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_verify_kubectl_argv + ['-n', archiveweaver_namespace,
+          'diff', '--show-secrets', '-f', '-'] }}
+    stdin: "{{ archiveweaver_provider_verify_kustomize_render.stdout }}"
+    stdin_add_newline: false
+  environment:
+    KUBECTL_EXTERNAL_DIFF: /usr/bin/diff
+  register: archiveweaver_provider_verify_resource_diff
+  changed_when: false
+  failed_when: archiveweaver_provider_verify_resource_diff.rc != 0
+  check_mode: false
+  when:
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+    - inventory_hostname == groups['archiveweaver_control'][0]
+  no_log: true
   tags: [verify]

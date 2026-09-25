@@ -8,7 +8,7 @@ ArchiveWeaver adapter facts for planning, checking and repair. Product behavior 
 - **Canonical source repository:** https://github.com/paperless-ngx/paperless-ngx
 - **Official documentation:** https://docs.paperless-ngx.com/setup/
 - **Homepage:** https://docs.paperless-ngx.com/
-- **Default HTTP port:** 80
+- **Default HTTP port:** 8000
 - **Container image hint:** `paperlessngx/paperless-ngx`
 
 ## Architecture components
@@ -75,4 +75,4 @@ The format list is an operational catalog, not a promise that every product prev
 
 ## Product-specific notes
 
-- No product-specific caveat recorded yet.
+- The official container listens on port 8000; ingress may expose 80 or 443. Validate database, broker, and persistent media storage for the selected release.

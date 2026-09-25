@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import runpy
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -334,6 +336,39 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("reusing the existing tag because it contains the exact validated image", release)
         self.assertIn("subject-digest: ${{ steps.publish-ee.outputs.digest }}", release)
         step_names = [step.get("name", "") for step in package_job["steps"]]
+        package_attestation = next(
+            step for step in package_job["steps"]
+            if step.get("name") == "Attest package provenance"
+        )
+        self.assertEqual(package_attestation["id"], "attest-package")
+        export_package = next(
+            step for step in package_job["steps"]
+            if step.get("name") == "Export the signed package provenance statement"
+        )
+        self.assertEqual(
+            export_package["env"]["PACKAGE_ATTESTATION_BUNDLE"],
+            "${{ steps.attest-package.outputs.bundle-path }}",
+        )
+        self.assertIn("archiveweaver-release.provenance.json", export_package["run"])
+        self.assertIn("archiveweaver-release.provenance.sigstore.json", export_package["run"])
+        upload_release = next(
+            step for step in package_job["steps"]
+            if step.get("name") == "Upload the complete release evidence set"
+        )
+        for filename in (
+            "archiveweaver-release.provenance.json",
+            "archiveweaver-release.provenance.sigstore.json",
+        ):
+            self.assertIn(filename, upload_release["with"]["path"])
+            self.assertIn(filename, release.split("Publish the immutable tagged release", 1)[1])
+        self.assertLess(
+            step_names.index("Attest package provenance"),
+            step_names.index("Export the signed package provenance statement"),
+        )
+        self.assertLess(
+            step_names.index("Export the signed package provenance statement"),
+            step_names.index("Upload the complete release evidence set"),
+        )
         hosted_audit_name = (
             "Require all hosted production controls immediately before publication"
         )
@@ -416,6 +451,13 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("--syntax-check", workflow)
         self.assertIn("archiveweaver_serial", workflow)
         self.assertLess(workflow.index("- id: source-integrity"), workflow.index("- id: catalog-and-tests"))
+        for workflow_id, next_id in (
+            ("catalog-and-tests", "ansible-quality"),
+            ("ansible-quality", "staging-preview"),
+            ("readiness", "production-approval"),
+        ):
+            workflow_section = workflow.split(f"  - id: {workflow_id}\n", 1)[1].split(f"  - id: {next_id}\n", 1)[0]
+            self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', workflow_section)
         self.assertIn("verify-source-identity.sh", controller_readme)
         self.assertIn("git ls-files --others --exclude-standard -z", verifier.read_text(encoding="utf-8"))
         self.assertIn("GIT_OPTIONAL_LOCKS=0", verifier.read_text(encoding="utf-8"))
@@ -478,6 +520,43 @@ class CIWorkflowTests(unittest.TestCase):
         errors = validator["validate"](tampered)
         self.assertTrue(any("must not invoke raw ansible-playbook" in error for error in errors))
 
+    def test_controller_contract_keeps_first_apply_separately_authorized(self) -> None:
+        validator = runpy.run_path(str(ROOT / "scripts/validate-controller-contract.py"))
+        contract = yaml.safe_load((ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8"))
+        self.assertEqual(validator["validate"](contract), [])
+
+        for mutation in ("authorization", "inventory", "intent", "approval"):
+            tampered = copy.deepcopy(contract)
+            bootstrap = next(item for item in tampered["workflow"] if item["id"] == "production-bootstrap-apply")
+            if mutation == "authorization":
+                bootstrap["required_environment"].remove("ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256")
+            elif mutation == "inventory":
+                bootstrap["required_environment"].remove("ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256")
+            elif mutation == "intent":
+                bootstrap["command"] = bootstrap["command"].replace("archiveweaver_bootstrap_apply=true", "archiveweaver_bootstrap_apply=false")
+            else:
+                bootstrap["approval_node"] = "production-approval"
+            self.assertTrue(validator["validate"](tampered), mutation)
+
+    def test_controller_contract_keeps_staging_seed_distinct_and_inventory_bound(self) -> None:
+        validator = runpy.run_path(str(ROOT / "scripts/validate-controller-contract.py"))
+        contract = yaml.safe_load((ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8"))
+        self.assertEqual(validator["validate"](contract), [])
+        for mutation in ("authorization", "inventory", "intent", "approval", "environment"):
+            tampered = copy.deepcopy(contract)
+            seed = next(item for item in tampered["workflow"] if item["id"] == "staging-seed-apply")
+            if mutation == "authorization":
+                seed["required_environment"].remove("ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256")
+            elif mutation == "inventory":
+                seed["required_environment"].remove("ARCHIVEWEAVER_STAGING_INVENTORY_SHA256")
+            elif mutation == "intent":
+                seed["command"] = seed["command"].replace("archiveweaver_staging_seed_apply=true", "archiveweaver_staging_seed_apply=false")
+            elif mutation == "approval":
+                seed["approval_node"] = "production-approval"
+            else:
+                seed["command"] = seed["command"].replace("archiveweaver_evidence_environment=staging", "archiveweaver_evidence_environment=production")
+            self.assertTrue(validator["validate"](tampered), mutation)
+
     def test_controller_contract_rejects_unbound_inventory(self) -> None:
         validator = runpy.run_path(str(ROOT / "scripts/validate-controller-contract.py"))
         contract = yaml.safe_load((ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8"))
@@ -488,6 +567,46 @@ class CIWorkflowTests(unittest.TestCase):
                 break
         errors = validator["validate"](tampered)
         self.assertTrue(any("approved inventory" in error for error in errors))
+
+    def test_controller_contract_requires_kubernetes_context_binding(self) -> None:
+        validator = runpy.run_path(str(ROOT / "scripts/validate-controller-contract.py"))
+        contract = yaml.safe_load((ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8"))
+
+        tampered = copy.deepcopy(contract)
+        for item in tampered["workflow"]:
+            if item["id"] == "staging-preview":
+                item["required_extra_vars_by_runtime"]["rke2"].remove("archiveweaver_kube_context")
+                break
+        errors = validator["validate"](tampered)
+        self.assertTrue(any("archiveweaver_kube_context" in error for error in errors))
+
+        tampered = copy.deepcopy(contract)
+        for item in tampered["workflow"]:
+            if item["id"] == "staging-preview":
+                item["required_extra_vars_by_runtime"]["rke2"].remove("archiveweaver_kubeconfig_sha256")
+                break
+        errors = validator["validate"](tampered)
+        self.assertTrue(any("archiveweaver_kubeconfig_sha256" in error for error in errors))
+
+        tampered = copy.deepcopy(contract)
+        for item in tampered["workflow"]:
+            if item["id"] == "production-repair":
+                item["required_extra_vars"].remove("archiveweaver_kube_context")
+                break
+        errors = validator["validate"](tampered)
+        self.assertTrue(any("archiveweaver_kube_context" in error for error in errors))
+
+    def test_controller_contract_requires_no_bytecode_in_python_gates(self) -> None:
+        validator = runpy.run_path(str(ROOT / "scripts/validate-controller-contract.py"))
+        contract = yaml.safe_load((ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8"))
+        for workflow_id in ("catalog-and-tests", "ansible-quality", "readiness"):
+            tampered = copy.deepcopy(contract)
+            for item in tampered["workflow"]:
+                if item["id"] == workflow_id:
+                    del item["environment"]["PYTHONDONTWRITEBYTECODE"]
+                    break
+            errors = validator["validate"](tampered)
+            self.assertTrue(any(f"workflow.{workflow_id} must disable Python bytecode writes" in error for error in errors))
 
     def test_controller_contract_rejects_unreviewed_extra_var(self) -> None:
         validator = runpy.run_path(
@@ -538,26 +657,61 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertTrue(any("unapproved operational argument" in error for error in errors))
 
     def test_readiness_manifest_binding_verifier_accepts_only_exact_bytes(self) -> None:
-        manifest = ROOT / "deploy/ansible/release-manifest.example.json"
+        example = ROOT / "deploy/ansible/release-manifest.example.json"
         verifier = ROOT / "scripts/verify-readiness-manifest.py"
-        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
-        accepted = subprocess.run(
-            [sys.executable, str(verifier), str(manifest), digest],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+        source_commit = "a" * 40
+        payload = json.loads(example.read_text(encoding="utf-8"))
+        payload["release"]["source_revision"] = source_commit
+        with tempfile.NamedTemporaryFile(
+            dir=example.parent,
+            prefix=".readiness-binding-",
+            suffix=".json",
+            delete=False,
+        ) as temporary:
+            manifest = Path(temporary.name)
+        try:
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+            def verify(bound_digest: str, bound_commit: str | None) -> subprocess.CompletedProcess[str]:
+                argv = [sys.executable, str(verifier), str(manifest), bound_digest]
+                if bound_commit is not None:
+                    argv.append(bound_commit)
+                return subprocess.run(
+                    argv,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            accepted = verify(digest, source_commit)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            rejected_digest = verify("0" * 64, source_commit)
+            self.assertEqual(rejected_digest.returncode, 1)
+            self.assertIn("does not match", rejected_digest.stderr)
+            rejected_source = verify(digest, "b" * 40)
+            self.assertEqual(rejected_source.returncode, 1)
+            self.assertIn("source revision does not match", rejected_source.stderr)
+            missing_source = verify(digest, None)
+            self.assertEqual(missing_source.returncode, 2)
+        finally:
+            manifest.unlink(missing_ok=True)
+
+    def test_controller_contract_requires_readiness_source_binding(self) -> None:
+        validator = runpy.run_path(str(ROOT / "scripts/validate-controller-contract.py"))
+        contract = yaml.safe_load(
+            (ROOT / "deploy/ansible/controller/workflow.yml").read_text(encoding="utf-8")
         )
-        self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        rejected = subprocess.run(
-            [sys.executable, str(verifier), str(manifest), "0" * 64],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(rejected.returncode, 1)
-        self.assertIn("does not match", rejected.stderr)
+        tampered = copy.deepcopy(contract)
+        for item in tampered["workflow"]:
+            if item["id"] == "readiness":
+                item["commands"][0] = item["commands"][0].replace(
+                    '"$ARCHIVEWEAVER_IMMUTABLE_REF"', ""
+                )
+                break
+        errors = validator["validate"](tampered)
+        self.assertTrue(any("manifest digest and source commit" in error for error in errors))
 
     def test_ci_rejects_generated_catalog_drift(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

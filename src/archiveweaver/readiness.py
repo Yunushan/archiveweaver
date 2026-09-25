@@ -5,6 +5,8 @@ import binascii
 import hashlib
 import os
 import re
+import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -53,6 +55,16 @@ CYCLONEDX_COMPONENT_TYPES = frozenset(
     }
 )
 OCI_IMAGE_DIGEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]*@sha256:[0-9a-f]{64}$")
+OCI_REPOSITORY_SEGMENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+OCI_RELEASE_IMAGE_RE = re.compile(
+    rf"^[a-z0-9][a-z0-9.-]*(?::[1-9][0-9]*)?"
+    rf"(?:/{OCI_REPOSITORY_SEGMENT})+@sha256:[0-9a-f]{{64}}$"
+)
+OCI_IMAGE_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
+OCI_IMAGE_CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
+OCI_PROOF_RUNTIME_IDS = frozenset(
+    {"docker", "docker-swarm", "k3s", "rke2", "k0s", "microk8s"}
+)
 STATUS_VALUES = {"pass", "pending", "fail"}
 ENVIRONMENT_VALUES = {"production", "staging", "restore", "dr"}
 APPROVAL_CLOCK_SKEW = timedelta(minutes=5)
@@ -85,8 +97,34 @@ MAX_MANIFEST_JSON_NODES = 100_000
 MAX_EVIDENCE_JSON_NODES = 1_000_000
 GITHUB_AUDIT_API_VERSION = "2026-03-10"
 SIGSTORE_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json"
+SIGSTORE_GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+MAX_COSIGN_BINARY_BYTES = 256 * 1024 * 1024
+MAX_SIGNING_POLICY_BYTES = 1024 * 1024
+MAX_SIGSTORE_TRUSTED_ROOT_BYTES = 16 * 1024 * 1024
+SIGNING_ROLES = frozenset(
+    {
+        "release-artifact",
+        "provider-bundle",
+        "rollback-artifact",
+        "execution-environment",
+        "operational-evidence",
+    }
+)
 GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GITHUB_SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+KUBERNETES_NAMESPACE_UID_RE = re.compile(
+    r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
+)
+DEPLOYMENT_TARGET_FIELDS = frozenset(
+    {
+        "kube_context",
+        "kubeconfig_sha256",
+        "inventory_sha256",
+        "namespace",
+        "kube_system_namespace_uid",
+        "application_namespace_uid",
+    }
+)
 GITHUB_AUDIT_CONTROL_NAMES = frozenset(
     {
         "repository",
@@ -233,6 +271,92 @@ def _has_structured_release_execution_environment(value: Any) -> bool:
 
 def _is_real_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not PLACEHOLDER_RE.search(value)
+
+
+def _paperless_rke2_production(manifest: dict[str, Any]) -> bool:
+    service = manifest.get("service")
+    return bool(
+        isinstance(service, dict)
+        and service.get("solution_id") == "paperless-ngx"
+        and service.get("runtime") == "ansible"
+        and service.get("underlying_runtime") == "rke2"
+        and service.get("environment") == "production"
+    )
+
+
+def _namespace_uid_ok(value: Any) -> bool:
+    return bool(
+        _is_real_text(value)
+        and KUBERNETES_NAMESPACE_UID_RE.fullmatch(value)
+        and value != "00000000-0000-0000-0000-000000000000"
+    )
+
+
+def _deployment_target_errors(manifest: dict[str, Any]) -> list[str]:
+    """Bind a production score to one protected Kubernetes cluster and namespace."""
+    if not _paperless_rke2_production(manifest):
+        return []
+    target = manifest.get("deployment_target")
+    observability = manifest.get("observability")
+    observability_pass = (
+        isinstance(observability, dict) and observability.get("status") == "pass"
+    )
+    if target is None:
+        return (["deployment_target is required for production 100-point certification"]
+                if observability_pass else [])
+    if not isinstance(target, dict):
+        return ["deployment_target must be an object"]
+    errors: list[str] = []
+    if set(target) != DEPLOYMENT_TARGET_FIELDS:
+        errors.append("deployment_target must contain exactly the six approved target fields")
+    context = target.get("kube_context")
+    if not (
+        isinstance(context, str)
+        and _is_real_text(context)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:-]{0,252}", context)
+    ):
+        errors.append("deployment_target.kube_context must identify a non-placeholder context")
+    for field in ("kubeconfig_sha256", "inventory_sha256"):
+        value = target.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            errors.append(f"deployment_target.{field} must be a lowercase SHA-256 digest")
+    namespace = target.get("namespace")
+    if not (
+        isinstance(namespace, str)
+        and _is_real_text(namespace)
+        and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", namespace)
+    ):
+        errors.append("deployment_target.namespace must identify a non-placeholder namespace")
+    system_uid = target.get("kube_system_namespace_uid")
+    if not _namespace_uid_ok(system_uid):
+        errors.append("deployment_target.kube_system_namespace_uid must be a non-placeholder Kubernetes UID")
+    app_uid = target.get("application_namespace_uid")
+    prebootstrap = (
+        not observability_pass
+        and isinstance(manifest.get("bootstrap_authorization"), dict)
+        and app_uid is None
+    )
+    if not prebootstrap and not _namespace_uid_ok(app_uid):
+        errors.append("deployment_target.application_namespace_uid must be a non-placeholder Kubernetes UID")
+    if _namespace_uid_ok(system_uid) and _namespace_uid_ok(app_uid) and system_uid == app_uid:
+        errors.append("deployment_target Namespace UIDs must be distinct")
+    authorization = manifest.get("bootstrap_authorization")
+    if isinstance(authorization, dict):
+        for field in ("kube_context", "kubeconfig_sha256", "inventory_sha256", "namespace"):
+            if target.get(field) != authorization.get(field):
+                errors.append(f"deployment_target.{field} must match bootstrap_authorization.{field}")
+    return errors
+
+
+def _deployment_target_complete(manifest: dict[str, Any]) -> bool:
+    if not _paperless_rke2_production(manifest):
+        return True
+    target = manifest.get("deployment_target")
+    return bool(
+        isinstance(target, dict)
+        and _namespace_uid_ok(target.get("application_namespace_uid"))
+        and not _deployment_target_errors(manifest)
+    )
 
 
 def _is_secret_bearing_key(value: str) -> bool:
@@ -496,16 +620,23 @@ def _evidence_metadata_matches(
         and value.get("release") == release_version
         and value.get("environment") == environment
         and (
+            freshness_policy == "release"
+            or not _deployment_target_complete(manifest)
+            or value.get("deployment_target") == manifest.get("deployment_target")
+        )
+        and (
             runtime != "ansible"
             or value.get("execution_environment_digest") == execution_environment_digest
         )
         and (
-            "execution_environment" not in value
-            or (
+            (
                 isinstance(value.get("execution_environment"), str)
                 and value.get("execution_environment") in ENVIRONMENT_VALUES
             )
-            or _has_structured_release_execution_environment(value)
+            or (
+                freshness_policy == "release"
+                and _has_structured_release_execution_environment(value)
+            )
         )
         and (
             _is_current_or_past_timestamp(value.get("recorded_at"))
@@ -529,10 +660,11 @@ def _evidence_payload_matches(
 ) -> bool:
     payload = _json_evidence_payload(value, root, context)
     if payload is None:
-        candidate = _relative_candidate(value.get("evidence"), root) if isinstance(value, dict) else None
-        return candidate is not None and candidate.suffix.lower() != ".json" and _indexed(candidate, context)
+        return False
     return bool(
         payload.get("status") == "pass"
+        and freshness_policy is not None
+        and _evidence_outcome_matches(payload, manifest, freshness_policy)
         and isinstance(value, dict)
         and _json_contains(payload, value)
         and payload.get("name") == value.get("name")
@@ -543,6 +675,57 @@ def _evidence_payload_matches(
             freshness_policy=freshness_policy,
         )
     )
+
+
+def _evidence_outcome_matches(
+    payload: dict[str, Any], manifest: dict[str, Any], claim: str
+) -> bool:
+    """Require an indexed record to describe the particular passing claim."""
+    release = manifest.get("release")
+    source_revision = release.get("source_revision") if isinstance(release, dict) else None
+    outcome = payload.get("outcome")
+    if not (
+        payload.get("claim") == claim
+        and isinstance(source_revision, str)
+        and GITHUB_SOURCE_REVISION_RE.fullmatch(source_revision)
+        and payload.get("source_revision") == source_revision
+        and isinstance(outcome, dict)
+        and outcome.get("status") == "pass"
+        and isinstance(outcome.get("method"), str)
+        and outcome.get("method") in {"automated", "manual"}
+        and _is_real_text(outcome.get("summary"))
+        and _is_real_text(outcome.get("source"))
+        and _is_absolute_uri(outcome.get("source"))
+    ):
+        return False
+    if outcome.get("method") == "manual":
+        reviewer = outcome.get("reviewed_by")
+        if not (
+            _is_real_text(reviewer)
+            and isinstance(reviewer, str)
+            and reviewer.strip().casefold()
+            != str(payload.get("operator", "")).strip().casefold()
+        ):
+            return False
+    return _recorded_returncodes_pass(payload)
+
+
+def _recorded_returncodes_pass(payload: dict[str, Any]) -> bool:
+    """Reject failed command results even when embedded below a summary."""
+    pending: list[Any] = [payload]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                field = key.casefold()
+                if field == "rc" or field.endswith("returncode"):
+                    if type(item) is not int or item != 0:
+                        return False
+                else:
+                    pending.append(item)
+        elif isinstance(value, list):
+            pending.extend(value)
+    return True
 
 
 def _json_contains(actual: Any, expected: Any) -> bool:
@@ -597,7 +780,7 @@ def _evidence_record_exists(
     *,
     freshness_policy: str,
 ) -> bool:
-    return (
+    evidence_is_valid = (
         _evidence_exists(value, root, context)
         and _evidence_metadata_matches(
             value,
@@ -610,6 +793,175 @@ def _evidence_record_exists(
             context,
             manifest,
             freshness_policy=freshness_policy,
+        )
+    )
+    if not evidence_is_valid:
+        return False
+    if not _operational_run_receipt_required(manifest, freshness_policy):
+        return True
+    return _operational_run_receipt_ok(
+        value,
+        root,
+        context,
+        manifest,
+        freshness_policy=freshness_policy,
+    )
+
+
+def _operational_run_receipt_required(
+    manifest: dict[str, Any], claim: str
+) -> bool:
+    return bool(
+        _paperless_rke2_production(manifest)
+        and _deployment_target_complete(manifest)
+        and claim != "release"
+        and not claim.startswith("release.")
+    )
+
+
+def _operational_run_receipt_ok(
+    value: Any,
+    root: Path,
+    context: EvidenceContext | None,
+    manifest: dict[str, Any],
+    *,
+    freshness_policy: str,
+) -> bool:
+    """Require independent, signed execution evidence for a production claim."""
+    if not isinstance(value, dict):
+        return False
+    reference = value.get("run_receipt")
+    hook = value.get("run_hook")
+    if (
+        not isinstance(reference, dict)
+        or set(reference) != {"path", "signature", "signer"}
+        or not _is_real_text(reference.get("signer"))
+        or not isinstance(hook, dict)
+        or set(hook) != {"executable_sha256", "argv_sha256"}
+        or any(
+            not isinstance(hook.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", hook[field]) is None
+            for field in ("executable_sha256", "argv_sha256")
+        )
+    ):
+        return False
+    receipt_path = _relative_candidate(reference.get("path"), root)
+    signature_path = _relative_candidate(reference.get("signature"), root)
+    receipt_bytes = _indexed_bytes(receipt_path, context)
+    if receipt_bytes is None or signature_path is None:
+        return False
+    try:
+        receipt = load_json_document(receipt_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "schema_version",
+        "claim",
+        "status",
+        "service",
+        "release_version",
+        "source_revision",
+        "execution_environment_digest",
+        "deployment_target",
+        "run_id",
+        "started_at",
+        "completed_at",
+        "hook",
+        "returncode",
+        "evidence_sha256",
+        "runner",
+    }:
+        return False
+    release = manifest.get("release")
+    service = manifest.get("service")
+    deployment_target = manifest.get("deployment_target")
+    execution_environment = (
+        release.get("execution_environment") if isinstance(release, dict) else None
+    )
+    runner = receipt.get("runner")
+    expected_service_fields = {
+        "solution_id",
+        "runtime",
+        "underlying_runtime",
+        "os_id",
+        "environment",
+    }
+    service_identity = (
+        {key: service.get(key) for key in expected_service_fields}
+        if isinstance(service, dict)
+        else None
+    )
+    start = _parse_timestamp(receipt.get("started_at"))
+    finish = _parse_timestamp(receipt.get("completed_at"))
+    current = datetime.now(timezone.utc)
+    recorded_at = _parse_timestamp(value.get("recorded_at"))
+    hook_record = receipt.get("hook")
+    if (
+        type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 2
+        or receipt.get("claim") != freshness_policy
+        or receipt.get("status") != "pass"
+        or not isinstance(service, dict)
+        or not isinstance(receipt.get("service"), dict)
+        or set(receipt["service"]) != expected_service_fields
+        or receipt.get("service") != service_identity
+        or not isinstance(release, dict)
+        or receipt.get("release_version") != release.get("version")
+        or receipt.get("source_revision") != release.get("source_revision")
+        or not isinstance(execution_environment, dict)
+        or receipt.get("execution_environment_digest") != execution_environment.get("digest")
+        or not isinstance(deployment_target, dict)
+        or not _deployment_target_complete(manifest)
+        or receipt.get("deployment_target") != deployment_target
+        or not isinstance(receipt.get("run_id"), str)
+        or re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            receipt["run_id"],
+        )
+        is None
+        or start is None
+        or finish is None
+        or start > finish
+        or finish > current + APPROVAL_CLOCK_SKEW
+        or finish - start > timedelta(days=7)
+        or recorded_at is None
+        or finish > recorded_at + APPROVAL_CLOCK_SKEW
+        or recorded_at - finish > APPROVAL_CLOCK_SKEW
+        or not _evidence_timestamp_is_fresh(receipt.get("completed_at"), manifest, freshness_policy)
+        or hook_record != hook
+        or type(receipt.get("returncode")) is not int
+        or receipt.get("returncode") != 0
+        or not isinstance(value.get("evidence"), str)
+        or receipt.get("evidence_sha256")
+        != "sha256:" + hashlib.sha256(_indexed_bytes(_relative_candidate(value["evidence"], root), context) or b"").hexdigest()
+        or not isinstance(runner, dict)
+        or set(runner) != {"name", "image", "digest"}
+        or runner.get("name") != reference.get("signer")
+        or not isinstance(runner.get("image"), str)
+        or not isinstance(runner.get("digest"), str)
+        or not runner["image"].endswith("@" + runner["digest"])
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", runner["digest"]) is None
+    ):
+        return False
+    signer = _approved_signer(
+        manifest,
+        "operational-evidence",
+        runner.get("name"),
+        runner.get("digest"),
+        image=runner.get("image"),
+    )
+    if signer is None:
+        return False
+    identity, issuer = signer
+    return bool(
+        _sigstore_bundle_binds_content(reference.get("signature"), receipt_bytes, root, context)
+        and _verify_sigstore_bundle(
+            reference.get("signature"),
+            receipt_bytes,
+            identity,
+            issuer,
+            root,
+            context,
         )
     )
 
@@ -651,7 +1003,7 @@ def _artifact_proof_path_entries(value: Any) -> list[str]:
         return []
     paths = [
         _path_identity(value.get(field))
-        for field in ("path", "sbom", "signature")
+        for field in ("path", "sbom", "signature", "provenance", "provenance_bundle")
     ]
     for field in ("signature_verification", "verification"):
         verification = value.get(field)
@@ -714,7 +1066,7 @@ def _release_proof_path_entries(value: Any) -> list[str]:
     if not isinstance(value, dict):
         return []
     paths: list[str] = []
-    for field in ("evidence", "provenance"):
+    for field in ("evidence", "provenance", "provenance_bundle"):
         path = _path_identity(value.get(field))
         if path is not None:
             paths.append(path)
@@ -844,11 +1196,25 @@ def _github_controls_errors(
         or f"sha256:{hashlib.sha256(content).hexdigest()}" != digest
     ):
         errors.append("digest must match the indexed report bytes")
-    if not _sigstore_bundle_binds_content(
-        value.get("signature"), content, root, context
+    signing_policy = _signing_policy(manifest)
+    certificate_identity = _github_release_certificate_identity(
+        expected_repository,
+        signing_policy.get("github_controls_identity")
+        if isinstance(signing_policy, dict) else None,
+    )
+    if (
+        certificate_identity is None
+        or not _sigstore_bundle_binds_content(
+            value.get("signature"), content, root, context
+        )
+        or not _verify_sigstore_bundle(
+            value.get("signature"), content, certificate_identity,
+            SIGSTORE_GITHUB_OIDC_ISSUER, root, context
+        )
     ):
         errors.append(
-            "signature must be an indexed Sigstore v0.3 keyless bundle bound to the report"
+            "signature must be an indexed, cryptographically verified Sigstore v0.3 "
+            "keyless bundle bound to the report and release workflow identity"
         )
     if value.get("signature_verified") is not True:
         errors.append("signature_verified must be true")
@@ -967,13 +1333,316 @@ def _decoded_base64(value: Any) -> bytes | None:
     return decoded or None
 
 
+def _github_release_certificate_identity(repository: Any, identity: Any) -> str | None:
+    """Accept only a controller-approved tagged release workflow identity."""
+    if (
+        not isinstance(repository, str)
+        or GITHUB_REPOSITORY_RE.fullmatch(repository) is None
+        or not isinstance(identity, str)
+    ):
+        return None
+    prefix = (
+        f"https://github.com/{repository}/.github/workflows/release.yml"
+        "@refs/tags/v"
+    )
+    tag = identity[len(prefix):] if identity.startswith(prefix) else ""
+    return identity if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", tag) else None
+
+
+def _trusted_cosign_binary() -> Path | None:
+    """Require a controller-pinned executable, never a lookup through PATH."""
+    return _controller_pinned_file(
+        "ARCHIVEWEAVER_COSIGN_PATH",
+        "ARCHIVEWEAVER_COSIGN_SHA256",
+        MAX_COSIGN_BINARY_BYTES,
+        "Cosign verifier",
+    )
+
+
+def _controller_pinned_file(
+    path_variable: str,
+    digest_variable: str,
+    max_bytes: int,
+    label: str,
+) -> Path | None:
+    """Resolve one controller-owned file by absolute path and approved digest."""
+    binary_value = os.environ.get(path_variable)
+    digest_value = os.environ.get(digest_variable)
+    if (
+        not isinstance(binary_value, str)
+        or not binary_value
+        or not isinstance(digest_value, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest_value) is None
+    ):
+        return None
+    binary = Path(binary_value)
+    if not binary.is_absolute() or has_symlink_component(binary):
+        return None
+    try:
+        size, digest = _measure_regular_file(
+            binary,
+            max_bytes=max_bytes,
+            label=label,
+        )
+    except OSError:
+        return None
+    return binary if size > 0 and digest == digest_value else None
+
+
+def _trusted_file_bytes(
+    path_variable: str,
+    digest_variable: str,
+    max_bytes: int,
+    label: str,
+) -> bytes | None:
+    candidate = _controller_pinned_file(
+        path_variable, digest_variable, max_bytes, label
+    )
+    if candidate is None:
+        return None
+    try:
+        content, digest = _read_stable_bytes(candidate, max_bytes=max_bytes)
+    except OSError:
+        return None
+    return content if digest == os.environ.get(digest_variable) else None
+
+
+def _signer_text(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and not PLACEHOLDER_RE.search(value)
+        and not any(character.isspace() or ord(character) < 32 for character in value)
+        and "*" not in value
+    )
+
+
+def _oci_release_image_ref_ok(value: Any) -> bool:
+    """Accept only canonical digest refs with an explicit registry host."""
+    if not isinstance(value, str) or OCI_RELEASE_IMAGE_RE.fullmatch(value) is None:
+        return False
+    registry = value.split("/", 1)[0]
+    hostname, separator, port = registry.partition(":")
+    if separator and (not port or len(port) > 5 or int(port) > 65535):
+        return False
+    labels = hostname.split(".")
+    if not all(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+        for label in labels
+    ):
+        return False
+    return bool(hostname == "localhost" or len(labels) > 1 or separator)
+
+
+def _signing_policy(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Read a digest-pinned signer policy outside the manifest/evidence bundle."""
+    content = _trusted_file_bytes(
+        "ARCHIVEWEAVER_SIGNING_POLICY_PATH",
+        "ARCHIVEWEAVER_SIGNING_POLICY_SHA256",
+        MAX_SIGNING_POLICY_BYTES,
+        "signing policy",
+    )
+    if content is None:
+        return None
+    try:
+        policy = load_json_document(content.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    release = manifest.get("release")
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != {"schema_version", "release_version", "source_repository", "github_controls_identity", "signers"}
+        or type(policy.get("schema_version")) is not int
+        or policy.get("schema_version") != 1
+        or not isinstance(release, dict)
+        or policy.get("release_version") != release.get("version")
+        or policy.get("source_repository") != release.get("source_repository")
+        or _github_release_certificate_identity(
+            policy.get("source_repository"), policy.get("github_controls_identity")
+        ) is None
+        or not isinstance(policy.get("signers"), list)
+    ):
+        return None
+    seen: set[tuple[str, str]] = set()
+    for signer in policy["signers"]:
+        if not isinstance(signer, dict):
+            return None
+        role = signer.get("role")
+        expected_fields = {"role", "name", "digest", "identity", "issuer"}
+        has_image = role in {"execution-environment", "operational-evidence"} or (
+            role == "release-artifact" and "image" in signer
+        )
+        if has_image:
+            expected_fields.add("image")
+        if role == "rollback-artifact":
+            expected_fields.add("release_version")
+        if (
+            not isinstance(role, str)
+            or role not in SIGNING_ROLES
+            or set(signer) != expected_fields
+            or not _is_real_text(signer.get("name"))
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(signer.get("digest", ""))) is None
+            or not _signer_text(signer.get("identity"))
+            or not _signer_text(signer.get("issuer"))
+            or (role == "rollback-artifact" and not _is_real_text(signer.get("release_version")))
+        ):
+            return None
+        try:
+            issuer = urlparse(signer["issuer"])
+        except ValueError:
+            return None
+        if (
+            issuer.scheme != "https"
+            or not issuer.netloc
+            or issuer.username is not None
+            or issuer.password is not None
+            or issuer.query
+            or issuer.fragment
+        ):
+            return None
+        if has_image and (
+            not isinstance(signer.get("image"), str)
+            or (
+                OCI_IMAGE_DIGEST_RE.fullmatch(signer["image"]) is None
+                if role in {"execution-environment", "operational-evidence"}
+                else not _oci_release_image_ref_ok(signer["image"])
+            )
+            or not signer["image"].endswith("@" + signer["digest"])
+        ):
+            return None
+        key = (role, signer["name"])
+        if key in seen:
+            return None
+        seen.add(key)
+    return policy
+
+
+def _approved_signer(
+    manifest: dict[str, Any],
+    role: str,
+    name: Any,
+    digest: Any,
+    *,
+    image: Any = None,
+    release_version: Any = None,
+) -> tuple[str, str] | None:
+    policy = _signing_policy(manifest)
+    if policy is None:
+        return None
+    for signer in policy["signers"]:
+        if (
+            signer["role"] == role
+            and signer["name"] == name
+            and signer["digest"] == digest
+            and signer.get("image") == image
+            and (role != "rollback-artifact" or signer.get("release_version") == release_version)
+        ):
+            return signer["identity"], signer["issuer"]
+    return None
+
+
+def _verify_sigstore_bundle(
+    value: Any,
+    signed_content: bytes | Path,
+    certificate_identity: str,
+    certificate_issuer: str,
+    root: Path,
+    context: EvidenceContext | None,
+    *,
+    attestation: bool = False,
+) -> bool:
+    """Verify indexed bytes with the controller's digest-pinned Cosign client."""
+    candidate = _relative_candidate(value, root)
+    bundle_content = _indexed_bytes(candidate, context)
+    binary = _trusted_cosign_binary()
+    trusted_root = _trusted_file_bytes(
+        "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH",
+        "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256",
+        MAX_SIGSTORE_TRUSTED_ROOT_BYTES,
+        "Sigstore trusted root",
+    )
+    if bundle_content is None or binary is None or trusted_root is None:
+        return False
+    # Cosign reads private copies of the bundle and trusted root. Indexed
+    # artifact files are checked before and after verification.
+    try:
+        with tempfile.TemporaryDirectory(prefix="archiveweaver-sigstore-") as scratch:
+            report_path = Path(scratch) / "report.bin"
+            bundle_path = Path(scratch) / "report.sigstore.json"
+            trusted_root_path = Path(scratch) / "trusted-root.json"
+            if isinstance(signed_content, bytes):
+                report_path.write_bytes(signed_content)
+            else:
+                if _indexed_measure(signed_content, context) is None:
+                    return False
+                report_path = signed_content
+            bundle_path.write_bytes(bundle_content)
+            trusted_root_path.write_bytes(trusted_root)
+            environment = {
+                key: item
+                for key, item in os.environ.items()
+                if not key.startswith(("COSIGN_", "SIGSTORE_"))
+            }
+            command = [
+                str(binary),
+                "verify-blob-attestation" if attestation else "verify-blob",
+                str(report_path),
+                "--offline",
+                "--bundle",
+                str(bundle_path),
+                "--trusted-root",
+                str(trusted_root_path),
+                "--certificate-identity",
+                certificate_identity,
+                "--certificate-oidc-issuer",
+                certificate_issuer,
+            ]
+            if attestation:
+                command.append("--new-bundle-format")
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                check=False,
+                timeout=60,
+            )
+            return bool(
+                result.returncode == 0
+                and _trusted_cosign_binary() == binary
+                and _indexed_bytes(candidate, context) == bundle_content
+                and (
+                    not isinstance(signed_content, Path)
+                    or _indexed_measure(signed_content, context) is not None
+                )
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _sigstore_bundle_binds_content(
     value: Any,
     signed_content: bytes,
     root: Path,
     context: EvidenceContext | None,
 ) -> bool:
-    """Validate the canonical structure and embedded digest of a blob bundle."""
+    """Validate the canonical structure and embedded digest of a small blob."""
+    return _sigstore_bundle_binds_digest(
+        value, hashlib.sha256(signed_content).hexdigest(), root, context
+    )
+
+
+def _sigstore_bundle_binds_digest(
+    value: Any,
+    expected_sha256: str,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Validate bundle shape and digest before invoking the actual verifier."""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        return False
     candidate = _relative_candidate(value, root)
     if candidate is None or not candidate.name.endswith(".sigstore.json"):
         return False
@@ -1018,7 +1687,7 @@ def _sigstore_bundle_binds_content(
         not isinstance(message_digest, dict)
         or message_digest.get("algorithm") != "SHA2_256"
         or _decoded_base64(message_digest.get("digest"))
-        != hashlib.sha256(signed_content).digest()
+        != bytes.fromhex(expected_sha256)
         or _decoded_base64(message_signature.get("signature")) is None
     ):
         return False
@@ -1192,6 +1861,52 @@ def _sbom_binds_name(
     return bool(isinstance(subject, dict) and subject.get("name") == expected_name)
 
 
+def _sbom_binds_named_sha256(
+    value: Any,
+    expected_name: str,
+    digest: str,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Bind an OCI image to the described SBOM subject, not a dependency."""
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        return False
+    payload = _sbom_payload(value, root, context)
+    if payload is None:
+        return False
+    expected_hash = digest.removeprefix("sha256:")
+    if payload.get("spdxVersion") == SPDX_VERSION:
+        packages = _spdx_packages(payload)
+        described = payload.get("documentDescribes")
+        if packages is None or not isinstance(described, list):
+            return False
+        subjects = (packages[identifier] for identifier in described)
+        for subject in subjects:
+            checksums = subject.get("checksums")
+            if subject.get("name") == expected_name and isinstance(checksums, list) and any(
+                isinstance(checksum, dict)
+                and checksum.get("algorithm") == "SHA256"
+                and checksum.get("checksumValue") == expected_hash
+                for checksum in checksums
+            ):
+                return True
+        return False
+    metadata = payload.get("metadata")
+    metadata_subject = metadata.get("component") if isinstance(metadata, dict) else None
+    hashes = metadata_subject.get("hashes") if isinstance(metadata_subject, dict) else None
+    return bool(
+        isinstance(metadata_subject, dict)
+        and metadata_subject.get("name") == expected_name
+        and isinstance(hashes, list)
+        and any(
+            isinstance(item, dict)
+            and item.get("alg") == "SHA-256"
+            and item.get("content") == expected_hash
+            for item in hashes
+        )
+    )
+
+
 def _provenance_payload(
     value: Any,
     root: Path,
@@ -1238,6 +1953,108 @@ def _provenance_payload(
     ):
         return None
     return payload
+
+
+def _indexed_dsse_statement_ok(
+    statement_value: Any,
+    bundle_value: Any,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Require the exact indexed statement bytes inside a Sigstore DSSE bundle."""
+    statement_path = _relative_candidate(statement_value, root)
+    bundle_path = _relative_candidate(bundle_value, root)
+    statement_bytes = _indexed_bytes(statement_path, context)
+    bundle_bytes = _indexed_bytes(bundle_path, context)
+    if (
+        statement_path is None
+        or bundle_path is None
+        or not bundle_path.name.endswith(".sigstore.json")
+        or statement_path == bundle_path
+        or statement_bytes is None
+        or bundle_bytes is None
+    ):
+        return False
+    try:
+        bundle = load_json_document(bundle_bytes.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(bundle, dict) or set(bundle) != {
+        "mediaType",
+        "verificationMaterial",
+        "dsseEnvelope",
+    }:
+        return False
+    verification_material = bundle.get("verificationMaterial")
+    envelope = bundle.get("dsseEnvelope")
+    if (
+        bundle.get("mediaType") != SIGSTORE_BUNDLE_MEDIA_TYPE
+        or not isinstance(verification_material, dict)
+        or not isinstance(verification_material.get("certificate"), dict)
+        or _decoded_base64(
+            verification_material["certificate"].get("rawBytes")
+        ) is None
+        or not isinstance(verification_material.get("tlogEntries"), list)
+        or not verification_material["tlogEntries"]
+        or not all(
+            isinstance(item, dict)
+            and _decoded_base64(item.get("canonicalizedBody")) is not None
+            for item in verification_material["tlogEntries"]
+        )
+        or not isinstance(envelope, dict)
+        or envelope.get("payloadType") != "application/vnd.in-toto+json"
+        or _decoded_base64(envelope.get("payload")) != statement_bytes
+        or not isinstance(envelope.get("signatures"), list)
+        or not envelope["signatures"]
+        or not all(
+            isinstance(item, dict) and _decoded_base64(item.get("sig")) is not None
+            for item in envelope["signatures"]
+        )
+    ):
+        return False
+    return True
+
+
+def _release_provenance_signature_ok(
+    release: dict[str, Any],
+    manifest: dict[str, Any],
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Verify the package/control statement against its signed DSSE bundle."""
+    controls = release.get("github_controls")
+    controls_path = (
+        _relative_candidate(controls.get("path"), root)
+        if isinstance(controls, dict)
+        else None
+    )
+    controls_bytes = _indexed_bytes(controls_path, context)
+    policy = _signing_policy(manifest)
+    identity = _github_release_certificate_identity(
+        release.get("source_repository"),
+        policy.get("github_controls_identity") if isinstance(policy, dict) else None,
+    )
+    if (
+        not _indexed_dsse_statement_ok(
+            release.get("provenance"), release.get("provenance_bundle"), root, context
+        )
+        or controls_bytes is None
+        or controls_path is None
+        or identity is None
+    ):
+        return False
+    controls_digest = controls.get("digest") if isinstance(controls, dict) else None
+    if controls_digest != "sha256:" + hashlib.sha256(controls_bytes).hexdigest():
+        return False
+    return _verify_sigstore_bundle(
+        release["provenance_bundle"],
+        controls_path,
+        identity,
+        SIGSTORE_GITHUB_OIDC_ISSUER,
+        root,
+        context,
+        attestation=True,
+    )
 
 
 def _attestation_subject_digests(payload: dict[str, Any]) -> set[str]:
@@ -1357,6 +2174,86 @@ def _digest_matches(value: Any, digest: str, root: Path, context: EvidenceContex
     return measured is not None and measured[0] > 0 and f"sha256:{measured[1]}" == digest
 
 
+def _oci_descriptor_ok(value: Any, *, config: bool) -> bool:
+    if not isinstance(value, dict):
+        return False
+    media_type = value.get("mediaType")
+    return bool(
+        isinstance(media_type, str)
+        and (
+            media_type == OCI_IMAGE_CONFIG_MEDIA_TYPE
+            if config
+            else re.fullmatch(
+                r"application/vnd\.oci\.image\.layer\.(?:nondistributable\.)?v1\.tar(?:\+(?:gzip|zstd))?",
+                media_type,
+            )
+        )
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", str(value.get("digest", "")))
+        and type(value.get("size")) is int
+        and value["size"] > 0
+    )
+
+
+def _oci_image_manifest_ok(
+    value: Any,
+    image: str,
+    digest: str,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Match a pinned image to the exact raw OCI image-manifest bytes."""
+    if (
+        not _oci_release_image_ref_ok(image)
+        or digest != "sha256:" + image.rsplit("@sha256:", 1)[1]
+    ):
+        return False
+    candidate = _relative_candidate(value, root)
+    content = _indexed_bytes(candidate, context)
+    if content is None or "sha256:" + hashlib.sha256(content).hexdigest() != digest:
+        return False
+    try:
+        payload = load_json_document(content.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    layers = payload.get("layers")
+    return bool(
+        type(payload.get("schemaVersion")) is int
+        and payload["schemaVersion"] == 2
+        and payload.get("mediaType") == OCI_IMAGE_MANIFEST_MEDIA_TYPE
+        and "artifactType" not in payload
+        and "subject" not in payload
+        and _oci_descriptor_ok(payload.get("config"), config=True)
+        and isinstance(layers, list)
+        and bool(layers)
+        and all(_oci_descriptor_ok(layer, config=False) for layer in layers)
+    )
+
+
+def _image_provenance_ok(
+    value: dict[str, Any],
+    image: str,
+    digest: str,
+    signer: tuple[str, str],
+    artifact_path: Path,
+    root: Path,
+    context: EvidenceContext | None,
+) -> bool:
+    """Require a separately signed image attestation for this exact image."""
+    statement = value.get("provenance")
+    bundle = value.get("provenance_bundle")
+    payload = _provenance_payload(statement, root, context)
+    return bool(
+        _provenance_binds_subjects(payload, {(image.split("@", 1)[0], digest)})
+        and _indexed_dsse_statement_ok(statement, bundle, root, context)
+        and _verify_sigstore_bundle(
+            bundle, artifact_path, signer[0], signer[1], root, context,
+            attestation=True,
+        )
+    )
+
+
 def _signed_artifact_ok(
     value: Any,
     root: Path,
@@ -1364,23 +2261,60 @@ def _signed_artifact_ok(
     manifest: dict[str, Any],
     *,
     freshness_policy: str = "release",
+    signing_role: str = "release-artifact",
+    expected_release: str | None = None,
 ) -> bool:
     """Verify one release or rollback artifact and its detached proof."""
     if not isinstance(value, dict):
         return False
     digest = str(value.get("digest", ""))
+    image = value.get("image") if "image" in value else None
+    if image is not None and not isinstance(image, str):
+        return False
+    if "image" in value and (
+        not isinstance(image, str)
+        or signing_role != "release-artifact"
+        or not _oci_image_manifest_ok(value.get("path"), image, digest, root, context)
+        or not _sbom_binds_named_sha256(
+            value.get("sbom"), str(value.get("name", "")), digest, root, context
+        )
+    ):
+        return False
+    signer = _approved_signer(
+        manifest,
+        signing_role,
+        value.get("name"),
+        value.get("digest"),
+        image=image,
+        release_version=expected_release,
+    )
+    artifact_path = _relative_candidate(value.get("path"), root)
     referenced_paths = [
         _path_identity(value.get("path")),
         _path_identity(value.get("sbom")),
         _path_identity(value.get("signature")),
     ]
+    if image is not None:
+        referenced_paths.extend(
+            (_path_identity(value.get("provenance")), _path_identity(value.get("provenance_bundle")))
+        )
     if not (
         all(path is not None for path in referenced_paths)
         and len(set(referenced_paths)) == len(referenced_paths)
         and _is_real_text(value.get("name"))
         and _digest_matches(value.get("path"), digest, root, context)
         and _sbom_binds_name(value.get("sbom"), str(value.get("name", "")), root, context)
-        and _relative_file(value.get("signature"), root, context)
+        and signer is not None
+        and artifact_path is not None
+        and (
+            image is None
+            or _image_provenance_ok(
+                value, image, digest, signer, artifact_path, root, context
+            )
+        )
+        and _sigstore_bundle_binds_digest(
+            value.get("signature"), digest.removeprefix("sha256:"), root, context
+        )
         and value.get("signature_verified") is True
         and _evidence_record_exists(
             value.get("signature_verification"),
@@ -1396,6 +2330,11 @@ def _signed_artifact_ok(
         isinstance(signature_payload, dict)
         and signature_payload.get("artifact_digest") == digest
         and _is_real_text(signature_payload.get("verifier"))
+        and signer is not None
+        and artifact_path is not None
+        and _verify_sigstore_bundle(
+            value.get("signature"), artifact_path, signer[0], signer[1], root, context
+        )
     )
 
 
@@ -1413,30 +2352,79 @@ def _execution_environment_ok(
         return False
     if digest != "sha256:" + image.rsplit("@sha256:", 1)[1]:
         return False
+    signer = _approved_signer(
+        manifest,
+        "execution-environment",
+        value.get("name"),
+        value.get("digest"),
+        image=image,
+    )
+    release = manifest.get("release")
     provenance_payload = _provenance_payload(value.get("provenance"), root, context)
     if (
         not _is_real_text(value.get("name"))
         or value.get("provenance_verified") is not True
         or provenance_payload is None
         or not _provenance_binds_digests(provenance_payload, {digest})
-        or not _provenance_binds_subjects(provenance_payload, {(str(value.get("name", "")), digest)})
+        or not _provenance_binds_subjects(provenance_payload, {(image.split("@", 1)[0], digest)})
+        or not _provenance_binds_source(
+            provenance_payload,
+            release.get("source_repository") if isinstance(release, dict) else None,
+            release.get("source_revision") if isinstance(release, dict) else None,
+        )
         or not _sbom_binds_name(value.get("sbom"), str(value.get("name", "")), root, context)
-        or not _relative_file(value.get("signature"), root, context)
+        or signer is None
         or value.get("signature_verified") is not True
-        or not _evidence_record_exists(
-            value.get("signature_verification"),
-            root,
-            context,
-            manifest,
-            freshness_policy="release",
+    ):
+        return False
+    verification = value.get("signature_verification")
+    if not (
+        _evidence_exists(verification, root, context)
+        and _evidence_metadata_matches(
+            verification, manifest, freshness_policy="release"
         )
     ):
         return False
-    verification_payload = _json_evidence_payload(value.get("signature_verification"), root, context)
+    verification_payload = _json_evidence_payload(verification, root, context)
+    verification_path = _relative_candidate(
+        verification.get("evidence") if isinstance(verification, dict) else None,
+        root,
+    )
+    verification_bytes = _indexed_bytes(verification_path, context)
+    provenance_bytes = _indexed_bytes(_relative_candidate(value.get("provenance"), root), context)
+    sbom_measure = _indexed_measure(_relative_candidate(value.get("sbom"), root), context)
     return bool(
         isinstance(verification_payload, dict)
+        and verification_payload.get("schema_version") == 2
         and verification_payload.get("artifact_digest") == digest
-        and _is_real_text(verification_payload.get("verifier"))
+        and verification_payload.get("image") == image
+        and verification_payload.get("registry_digest") == digest
+        and verification_payload.get("immutable_reference") == image
+        and verification_payload.get("verifier") == "cosign"
+        and verification_payload.get("source_revision") == (
+            release.get("source_revision") if isinstance(release, dict) else None
+        )
+        and provenance_bytes is not None
+        and verification_payload.get("provenance_sha256") == (
+            "sha256:" + hashlib.sha256(provenance_bytes).hexdigest()
+            if provenance_bytes is not None else None
+        )
+        and sbom_measure is not None
+        and verification_payload.get("sbom_sha256") == (
+            "sha256:" + sbom_measure[1] if sbom_measure is not None else None
+        )
+        and isinstance(verification, dict)
+        and verification.get("artifact_digest") == digest
+        and verification.get("image") == image
+        and verification.get("verifier") == "cosign"
+        and verification_bytes is not None
+        and _sigstore_bundle_binds_content(
+            value.get("signature"), verification_bytes, root, context
+        )
+        and signer is not None
+        and _verify_sigstore_bundle(
+            value.get("signature"), verification_bytes, signer[0], signer[1], root, context
+        )
     )
 
 
@@ -1521,7 +2509,7 @@ def _all_pass_with_evidence(
                 root,
                 context,
                 manifest,
-                freshness_policy=freshness_policy,
+                freshness_policy=f"{freshness_policy}.{item.get('name')}",
             )
             for item in values
         )
@@ -1701,12 +2689,26 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
             section.get("source_repository"),
             section.get("source_revision"),
         )
+        or not _release_provenance_signature_ok(section, manifest, root, context)
         or not _github_controls_ok(section, manifest, root, context)
     ):
         return False
     artifacts = section.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or not all(
         _signed_artifact_ok(item, root, context, manifest) for item in artifacts
+    ):
+        return False
+    service = manifest.get("service")
+    selected_runtime = (
+        service.get("underlying_runtime")
+        if isinstance(service, dict) and service.get("runtime") == "ansible"
+        else service.get("runtime") if isinstance(service, dict) else None
+    )
+    image_artifacts = [item for item in artifacts if isinstance(item, dict) and "image" in item]
+    image_refs = [item["image"] for item in image_artifacts]
+    if (
+        len(image_refs) != len(set(image_refs))
+        or selected_runtime in OCI_PROOF_RUNTIME_IDS and not image_artifacts
     ):
         return False
     release_proof_path_entries = _release_proof_path_entries(section)
@@ -1724,14 +2726,15 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
         ):
             return False
         release_artifact_proof_paths.update(artifact_paths)
-    service = manifest.get("service")
     expected_release_digests = {
-        str(item.get("digest", "")) for item in artifacts if isinstance(item, dict)
+        str(item.get("digest", ""))
+        for item in artifacts
+        if isinstance(item, dict) and "image" not in item
     }
     expected_release_subjects = {
         (str(item.get("name", "")), str(item.get("digest", "")))
         for item in artifacts
-        if isinstance(item, dict)
+        if isinstance(item, dict) and "image" not in item
     }
     github_controls = section.get("github_controls")
     if not isinstance(github_controls, dict):
@@ -1788,7 +2791,9 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     return bool(
         isinstance(provider_bundle, dict)
         and _is_real_text(provider_bundle.get("name"))
-        and _signed_artifact_ok(provider_bundle, root, context, manifest)
+        and _signed_artifact_ok(
+            provider_bundle, root, context, manifest, signing_role="provider-bundle"
+        )
         and _digest_matches(provider_bundle.get("path"), str(provider_bundle.get("digest", "")), root, context)
         and re.fullmatch(r"sha256:[0-9a-f]{64}", str(provider_bundle.get("remote_digest", "")))
         and _evidence_record_exists(
@@ -1959,7 +2964,7 @@ def _security_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
 
 def _observability_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext | None) -> bool:
     section = manifest.get("observability")
-    if not isinstance(section, dict) or not _section_evidence_ok(
+    if not _deployment_target_complete(manifest) or not isinstance(section, dict) or not _section_evidence_ok(
         section,
         root,
         context,
@@ -1993,11 +2998,12 @@ def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
         return False
     release = manifest.get("release")
     current_release = release.get("version") if isinstance(release, dict) else None
+    rollback_release = section.get("rollback_release")
     rollback_artifact = section.get("rollback_artifact")
     rollback_digest = str(section.get("rollback_artifact_digest", ""))
     return bool(
-        _is_real_text(section.get("rollback_release"))
-        and section.get("rollback_release") != current_release
+        _is_real_text(rollback_release)
+        and rollback_release != current_release
         and re.fullmatch(r"sha256:[0-9a-f]{64}", rollback_digest)
         and isinstance(rollback_artifact, dict)
         and rollback_artifact.get("digest") == rollback_digest
@@ -2007,6 +3013,8 @@ def _recovery_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext 
             context,
             manifest,
             freshness_policy="recovery.rollback_artifact",
+            signing_role="rollback-artifact",
+            expected_release=rollback_release if isinstance(rollback_release, str) else None,
         )
         and _evidence_record_exists(
             section.get("rollback_test"),
@@ -2123,6 +3131,7 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     errors.extend(f"missing top-level field '{field}'" for field in sorted(REQUIRED_TOP_LEVEL - set(manifest)))
     if manifest.get("schema_version") != 1:
         errors.append("schema_version must be 1")
+    errors.extend(_deployment_target_errors(manifest))
     service = manifest.get("service", {})
     solution: dict[str, Any] | None = None
     if not isinstance(service, dict):
@@ -2171,6 +3180,12 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
     if isinstance(release, dict) and not _is_real_text(release.get("version")):
         errors.append("release.version must be a non-placeholder pinned release")
     if isinstance(release, dict) and release.get("status") == "pass":
+        if not _is_real_text(release.get("provenance_bundle")) or not str(
+            release.get("provenance_bundle", "")
+        ).endswith(".sigstore.json"):
+            errors.append(
+                "release.provenance_bundle must identify the indexed Sigstore DSSE attestation"
+            )
         source_repository = release.get("source_repository")
         source_parts = (
             source_repository.split("/", maxsplit=1)
@@ -2314,6 +3329,38 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
                 errors.append("release.artifacts must not contain duplicate artifact names")
             if len(artifact_paths) != len(set(artifact_paths)):
                 errors.append("release.artifacts must not contain duplicate artifact paths")
+            image_refs: list[str] = []
+            for index, item in enumerate(artifacts):
+                if not isinstance(item, dict) or "image" not in item:
+                    continue
+                artifact_image = item.get("image")
+                if not isinstance(artifact_image, str) or not _oci_release_image_ref_ok(artifact_image):
+                    errors.append(
+                        f"release.artifacts[{index}].image must be an exact repository@sha256 OCI reference"
+                    )
+                    continue
+                image_refs.append(artifact_image)
+                if item.get("digest") != "sha256:" + artifact_image.rsplit("@sha256:", 1)[1]:
+                    errors.append(
+                        f"release.artifacts[{index}].digest must match the image digest"
+                    )
+                for field in ("provenance", "provenance_bundle"):
+                    if not _is_real_text(item.get(field)):
+                        errors.append(
+                            f"release.artifacts[{index}].{field} must identify indexed image provenance"
+                        )
+            if len(image_refs) != len(set(image_refs)):
+                errors.append("release.artifacts image references must be unique")
+            if (
+                isinstance(service, dict)
+                and (
+                    service.get("underlying_runtime")
+                    if service.get("runtime") == "ansible"
+                    else service.get("runtime")
+                ) in OCI_PROOF_RUNTIME_IDS
+                and not image_refs
+            ):
+                errors.append("release.artifacts must include an OCI image for container runtimes")
             if isinstance(service, dict) and service.get("runtime") == "ansible":
                 provider_bundle = release.get("provider_bundle")
                 if isinstance(provider_bundle, dict) and str(provider_bundle.get("name", "")).casefold() in artifact_names:
@@ -2403,6 +3450,7 @@ def validate_manifest(manifest: Any, catalog: Catalog) -> list[str]:
             "sbom",
             "signature",
             "provenance",
+            "provenance_bundle",
             "evidence",
             "evidence_index",
             "github_controls",
@@ -2483,6 +3531,34 @@ def _evidence_metadata_errors(
                     normalized_evidence = _path_identity(evidence)
                     if normalized_evidence is not None:
                         evidence_references.setdefault(normalized_evidence, []).append(path or "<root>")
+                if _operational_run_receipt_required(manifest, path):
+                    receipt = value.get("run_receipt")
+                    hook = value.get("run_hook")
+                    if (
+                        not isinstance(receipt, dict)
+                        or set(receipt) != {"path", "signature", "signer"}
+                        or not _is_real_text(receipt.get("signer"))
+                    ):
+                        errors.append(f"{path}.run_receipt must identify an indexed signed operational receipt")
+                    else:
+                        for field in ("path", "signature"):
+                            normalized = _path_identity(receipt.get(field))
+                            if normalized is None:
+                                errors.append(f"{path}.run_receipt.{field} must be a relative indexed path")
+                            else:
+                                evidence_references.setdefault(normalized, []).append(
+                                    f"{path}.run_receipt.{field}"
+                                )
+                    if (
+                        not isinstance(hook, dict)
+                        or set(hook) != {"executable_sha256", "argv_sha256"}
+                        or any(
+                            not isinstance(hook.get(field), str)
+                            or re.fullmatch(r"[0-9a-f]{64}", hook[field]) is None
+                            for field in ("executable_sha256", "argv_sha256")
+                        )
+                    ):
+                        errors.append(f"{path}.run_hook must pin executable and argument digests")
                 if not _is_real_text(value.get("name")):
                     errors.append(f"{path}.name must identify the evidence record")
                 if value.get("solution") != solution_id:
@@ -2497,19 +3573,25 @@ def _evidence_metadata_errors(
                     errors.append(f"{path}.release must match release.version")
                 if value.get("environment") != environment:
                     errors.append(f"{path}.environment must match service.environment")
+                if (
+                    not (path == "release" or path.startswith("release."))
+                    and _deployment_target_complete(manifest)
+                    and value.get("deployment_target") != manifest.get("deployment_target")
+                ):
+                    errors.append(f"{path}.deployment_target must match the approved production target")
                 if runtime == "ansible" and value.get("execution_environment_digest") != execution_environment_digest:
                     errors.append(f"{path}.execution_environment_digest must match release.execution_environment.digest")
-                if (
-                    "execution_environment" in value
-                    and (
-                        not (
-                            isinstance(value.get("execution_environment"), str)
-                            and value.get("execution_environment") in ENVIRONMENT_VALUES
-                        )
-                        and not _has_structured_release_execution_environment(value)
+                if not (
+                    (
+                        isinstance(value.get("execution_environment"), str)
+                        and value.get("execution_environment") in ENVIRONMENT_VALUES
+                    )
+                    or (
+                        path == "release"
+                        and _has_structured_release_execution_environment(value)
                     )
                 ):
-                    errors.append(f"{path}.execution_environment must identify a supported execution environment")
+                    errors.append(f"{path}.execution_environment must explicitly identify a supported execution environment")
                 recorded_at = _parse_timestamp(value.get("recorded_at"))
                 if recorded_at is None:
                     errors.append(f"{path}.recorded_at must be a timezone-qualified RFC 3339 timestamp")
@@ -2591,6 +3673,25 @@ def assess_readiness(manifest_path: Path, catalog: Catalog) -> dict[str, Any]:
             message = f"release.github_controls {error}"
             if message not in errors:
                 errors.append(message)
+    recovery_for_signatures = manifest_data.get("recovery")
+    if (
+        isinstance(release_for_controls, dict)
+        and release_for_controls.get("status") == "pass"
+    ) or (
+        isinstance(recovery_for_signatures, dict)
+        and recovery_for_signatures.get("status") == "pass"
+    ):
+        if _trusted_cosign_binary() is None:
+            errors.append("signature verification requires a controller-pinned Cosign executable")
+        if _trusted_file_bytes(
+            "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH",
+            "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256",
+            MAX_SIGSTORE_TRUSTED_ROOT_BYTES,
+            "Sigstore trusted root",
+        ) is None:
+            errors.append("signature verification requires a controller-pinned Sigstore trusted root")
+        if _signing_policy(manifest_data) is None:
+            errors.append("signature verification requires a controller-pinned signing policy")
     criteria: list[dict[str, Any]] = []
     score = 0
     for code, label, points, check in CRITERIA:

@@ -71,12 +71,25 @@ For every image or package in `release.artifacts`:
   against its matching official JSON schema) before sealing the evidence;
 - attach an SBOM and detached signature to the reviewed Ansible provider
   bundle as well as to each product artifact;
-- ensure the in-toto provenance subject digest matches the bytes of each
-  referenced product artifact and, for Ansible, the reviewed provider bundle
-  artifact (and the immutable image digest for the controller execution
-  environment's separate attestation);
+- ensure the signed release provenance subject binds each package artifact
+  and, for Ansible, the reviewed provider bundle (the execution environment
+  has its own image attestation);
 - verify the signature using the approved cosign, GPG, or registry policy;
 - attach the verification output as `signature_verification.evidence`.
+
+For each OCI image row, set `image` to the exact approved
+`repository@sha256:<digest>` reference and store the unmodified raw OCI image
+manifest JSON bytes at `path`. The manifest bytes must hash to both the row's
+`digest` and the image reference suffix. An OCI index or saved image tar is a
+different object and fails this check. The described SBOM subject must include
+the row's `name` and this SHA-256. Add the image-specific in-toto statement at
+`provenance` and its original Sigstore DSSE bundle at `provenance_bundle`;
+the subject must bind the image repository name and digest. Approve the exact
+image reference and attestation signer in the controller signing policy, and
+pin a compatible Cosign v2.6.0 or later executable and trusted root by digest.
+The offline verifier checks the image attestation against the raw manifest
+bytes. The ArchiveWeaver package release statement supplies no proof for a
+third-party Paperless-ngx image.
 
 Compute provider bindings with the repository CLI so the controller and
 release tooling use the same canonical form:
@@ -207,14 +220,32 @@ checkout's existing GitHub-verified full commit SHA, API version, and UTC audit
 time. The source commit must be reachable from protected `main`, preventing a
 release tag from selecting an unreviewed side-branch commit. The credential
 therefore needs read-only Administration, Contents,
-Environments, and Metadata access. Reference that file
+Environments, and Metadata access. Configure every mandatory `main` ruleset status
+check with **GitHub Actions** as its expected source. The audit resolves that
+App's ID from GitHub's `GET /apps/github-actions` response and requires each
+mandatory status check to carry the matching positive integer
+`integration_id`. Missing, unbound, duplicate, or mismatched checks fail the
+ruleset control, including checks whose names happen to match the expected
+contexts. Additional required checks must also be bound to a GitHub App.
+Reference that file
 from `release.github_controls.path`, copy its repository identity and commit
 into the corresponding release fields, and bind its exact SHA-256 digest,
-non-empty Sigstore bundle, and passing identity-verification record in the rest
+indexed Sigstore bundle, and passing identity-verification record in the rest
 of the `release.github_controls` object. The report, signature bundle, and
 verification record must be distinct indexed files. The canonical Sigstore
 v0.3 keyless bundle's embedded blob digest and the release-provenance subject
-must both bind the report bytes. Run readiness within 24 hours. Reports with
+must both bind the report bytes. The readiness gate additionally verifies the
+bundle signature and exact tagged release-workflow identity using the
+controller's digest-pinned Cosign executable. It runs offline against a
+separately pinned local Sigstore trusted root. Set `ARCHIVEWEAVER_COSIGN_PATH`
+and `ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH` to their approved absolute paths,
+with matching `ARCHIVEWEAVER_COSIGN_SHA256` and
+`ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256` digests. The other release and
+rollback signatures use the same offline verifier with exact signer identities
+from the independently pinned `ARCHIVEWEAVER_SIGNING_POLICY_PATH` and
+`ARCHIVEWEAVER_SIGNING_POLICY_SHA256`.
+Neither a claimed verification flag nor a well-formed bundle is proof by
+itself. Run readiness within 24 hours. Reports with
 unknown fields, duplicate/missing controls, stale
 timestamps, mismatched source identity, unsigned or mismatched bytes, or any
 non-passing control are rejected.
@@ -266,8 +297,17 @@ and verifies Sigstore signatures for package files, checksum and evidence
 manifests, SBOMs, scan output, and the final image publication record; signs and
 verifies the GHCR digest; attaches and verifies the image's SPDX attestation;
 and creates GitHub build-provenance attestations for package, publication, and
-image subjects. These checks improve the repository's supply-chain
-baseline but do not replace the operator-owned manifest, detached signatures,
+image subjects. The package and image attestations' in-toto statements and
+original Sigstore bundles are release assets. Offline readiness checks the
+package statement's DSSE signature against the approved release workflow
+identity before accepting it as provenance. The Cosign-signed image publication
+record includes the statement's exact SHA-256 digest, which offline readiness
+checks against the indexed provenance file and approved signer identity.
+The four image provenance and publication assets generated after the initial
+`SHA256SUMS` are listed in a separate, Cosign-signed
+`archiveweaver-ee.SHA256SUMS` release asset. These checks improve the
+repository's supply-chain baseline but do not replace the operator-owned
+manifest, detached signatures,
 provider-bundle proof, execution-environment proof, or immutable evidence
 retention required by the readiness gate.
 

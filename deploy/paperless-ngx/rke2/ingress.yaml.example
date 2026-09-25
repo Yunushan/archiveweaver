@@ -1,0 +1,27 @@
+# Review the ingress class, certificate delivery, source CIDR, and controller
+# annotations before adding this file to kustomization.yaml.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: paperless-ngx
+  namespace: archiveweaver
+  annotations:
+    # Only use this annotation after confirming the selected class is ingress-nginx.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: REPLACE_WITH_APPROVED_INGRESS_CLASS
+  tls:
+    - hosts:
+        - REPLACE_WITH_PUBLIC_HOST
+      secretName: REPLACE_WITH_PROVISIONED_TLS_SECRET
+  rules:
+    - host: REPLACE_WITH_PUBLIC_HOST
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: paperless-ngx
+                port:
+                  number: 8000

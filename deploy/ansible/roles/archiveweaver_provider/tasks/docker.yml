@@ -45,6 +45,37 @@
     archiveweaver_provider_rendered_content: "{{ archiveweaver_provider_compose_config.stdout }}"
   tags: [provider, deploy]
 
+- name: Require signed image coverage before Compose apply
+  ansible.builtin.include_tasks: require-signed-image-coverage.yml
+  vars:
+    archiveweaver_provider_image_coverage_runtime: docker
+    archiveweaver_provider_image_coverage_model: "{{ archiveweaver_provider_compose_config.stdout }}"
+  when: not archiveweaver_preflight_is_staging_preview | default(false) | bool
+  tags: [provider, deploy]
+
+- name: Rehash the reviewed Compose file immediately before mutation
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_provider_compose_recheck
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Refuse a changed Compose file after image coverage verification
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_compose_recheck.stat.isreg | default(false) | bool
+      - not (archiveweaver_provider_compose_recheck.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_compose_recheck.stat.uid | default(-1) | int == 0
+      - archiveweaver_provider_compose_recheck.stat.gid | default(-1) | int == 0
+      - archiveweaver_provider_compose_recheck.stat.mode is match('^0[0-7][0-5][0-5]$')
+      - archiveweaver_provider_compose_recheck.stat.checksum | default('') == archiveweaver_product_stack_sha256
+    fail_msg: "The Compose file changed after its reviewed image set was verified."
+  no_log: true
+  tags: [provider, deploy]
+
 - name: Reconcile the declared Compose workload
   ansible.builtin.command:
     argv: [docker, compose, -f, "{{ archiveweaver_compose_path }}", up, -d]

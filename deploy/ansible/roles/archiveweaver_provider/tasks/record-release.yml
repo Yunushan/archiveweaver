@@ -1,0 +1,27 @@
+---
+- name: Record the release identity after provider convergence
+  ansible.builtin.copy:
+    dest: "{{ archiveweaver_release_record }}"
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      solution: {{ archiveweaver_solution_id | to_json }}
+      release: {{ archiveweaver_release | to_json }}
+      catalog_os: {{ archiveweaver_os_id | to_json }}
+      runtime: {{ archiveweaver_runtime | to_json }}
+      orchestration_runtime: ansible
+      underlying_runtime: {{ archiveweaver_runtime | to_json }}
+      change_id: {{ archiveweaver_change_id | to_json }}
+      source_commit: {{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | to_json }}
+      readiness_manifest_sha256: {{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') | to_json }}
+      execution_environment_digest: {{ archiveweaver_execution_environment_digest | to_json }}
+      {% if archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s'] %}
+      kube_context: {{ archiveweaver_kube_context | to_json }}
+      kubeconfig_sha256: {{ archiveweaver_kubeconfig_sha256 | to_json }}
+      {% endif %}
+      provider_bundle_sha256: {{ archiveweaver_provider_bundle_sha256 | to_json }}
+      product_stack_sha256: {{ archiveweaver_product_stack_sha256 | to_json }}
+      kustomize_bundle_sha256: {{ archiveweaver_kustomize_bundle_sha256 | to_json }}
+  no_log: true
+  tags: [provider, release]

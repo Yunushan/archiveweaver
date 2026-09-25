@@ -26,9 +26,15 @@ REQUIRED_WORKFLOW_ORDER = [
     "catalog-and-tests",
     "ansible-quality",
     "staging-preview",
+    "staging-seed-approval",
+    "staging-seed-apply",
     "product-certification",
     "failure-domain-drill",
     "backup-and-restore-gate",
+    "staging-repair-drill",
+    "staging-rollback-drill",
+    "production-bootstrap-approval",
+    "production-bootstrap-apply",
     "readiness",
     "production-approval",
     "production-apply",
@@ -44,10 +50,16 @@ REQUIRED_WORKFLOW_DEPENDENCIES = {
     "catalog-and-tests": ["source-integrity"],
     "ansible-quality": ["catalog-and-tests"],
     "staging-preview": ["ansible-quality"],
+    "staging-seed-approval": ["staging-preview"],
+    "staging-seed-apply": ["staging-seed-approval"],
     "product-certification": ["staging-preview"],
     "failure-domain-drill": ["product-certification"],
     "backup-and-restore-gate": ["failure-domain-drill"],
-    "readiness": ["backup-and-restore-gate"],
+    "staging-repair-drill": ["backup-and-restore-gate"],
+    "staging-rollback-drill": ["staging-repair-drill"],
+    "production-bootstrap-approval": ["staging-rollback-drill"],
+    "production-bootstrap-apply": ["production-bootstrap-approval"],
+    "readiness": ["staging-rollback-drill"],
     "production-approval": ["readiness"],
     "production-apply": ["production-approval"],
     "production-post-apply-verify": ["production-apply"],
@@ -58,6 +70,7 @@ REQUIRED_WORKFLOW_DEPENDENCIES = {
     "production-rollback": ["production-rollback-approval"],
 }
 PRODUCTION_WORKFLOWS = {
+    "production-bootstrap-apply",
     "production-apply",
     "production-post-apply-verify",
     "production-verify",
@@ -66,9 +79,12 @@ PRODUCTION_WORKFLOWS = {
 }
 OPERATIONAL_RUNNER_WORKFLOWS = {
     "staging-preview",
+    "staging-seed-apply",
     "product-certification",
     "failure-domain-drill",
     "backup-and-restore-gate",
+    "staging-repair-drill",
+    "staging-rollback-drill",
     *PRODUCTION_WORKFLOWS,
 }
 OPERATIONAL_RUNNER_PATH = "scripts/run-ansible-operational.sh"
@@ -137,9 +153,13 @@ OPERATIONAL_RUNNER_ENVIRONMENT_POLICY = {
 }
 OPERATIONAL_RUNNER_INVENTORIES_BY_WORKFLOW = {
     "staging-preview": {"inventory/staging/hosts.yml"},
+    "staging-seed-apply": {"inventory/staging/hosts.yml"},
     "product-certification": {"inventory/staging/hosts.yml"},
     "failure-domain-drill": {"inventory/staging/hosts.yml"},
     "backup-and-restore-gate": {"inventory/restore/hosts.yml"},
+    "staging-repair-drill": {"inventory/staging/hosts.yml"},
+    "staging-rollback-drill": {"inventory/staging/hosts.yml"},
+    "production-bootstrap-apply": {"inventory/production/hosts.yml"},
     "production-apply": {"inventory/production/hosts.yml"},
     "production-post-apply-verify": {"inventory/production/hosts.yml"},
     "production-verify": {"inventory/production/hosts.yml"},
@@ -182,9 +202,13 @@ OPERATIONAL_RUNNER_PROTECTED_EXTRA_VARS = [
 ]
 OPERATIONAL_RUNNER_PLAYBOOKS_BY_WORKFLOW = {
     "staging-preview": {"site.yml"},
+    "staging-seed-apply": {"site.yml"},
     "product-certification": {"product-certification.yml"},
     "failure-domain-drill": {"failure-drill.yml"},
     "backup-and-restore-gate": {"restore-drill.yml"},
+    "staging-repair-drill": {"repair.yml"},
+    "staging-rollback-drill": {"rollback.yml"},
+    "production-bootstrap-apply": {"site.yml"},
     "production-apply": {"site.yml"},
     "production-post-apply-verify": {"verify.yml"},
     "production-verify": {"verify.yml"},
@@ -192,9 +216,12 @@ OPERATIONAL_RUNNER_PLAYBOOKS_BY_WORKFLOW = {
     "production-rollback": {"rollback.yml"},
 }
 SOURCE_GATED_WORKFLOWS = PRODUCTION_WORKFLOWS | {
+    "staging-seed-apply",
     "product-certification",
     "failure-domain-drill",
     "backup-and-restore-gate",
+    "staging-repair-drill",
+    "staging-rollback-drill",
     "readiness",
 }
 SOURCE_ENVIRONMENT = [
@@ -203,6 +230,7 @@ SOURCE_ENVIRONMENT = [
 ]
 OPERATIONAL_ENVIRONMENT = SOURCE_ENVIRONMENT + ["ARCHIVEWEAVER_READINESS_MANIFEST_SHA256"]
 WORKFLOW_BINDING_KEYS = {
+    "production-bootstrap-apply": "production_bootstrap_apply",
     "production-apply": "production_apply",
     "production-post-apply-verify": "production_verification",
     "production-verify": "production_verification",
@@ -217,6 +245,37 @@ REQUIRED_RBAC_KEYS = {
     "evidence_readers",
 }
 REQUIRED_RUNTIME_BINDINGS = {
+    "production_bootstrap_apply": {
+        "archiveweaver_apply",
+        "archiveweaver_bootstrap_apply",
+        "archiveweaver_release",
+        "archiveweaver_change_id",
+        "archiveweaver_approval_ticket",
+        "archiveweaver_backup_verified",
+        "archiveweaver_release_manifest_verified",
+        "archiveweaver_product_stack_ready",
+        "archiveweaver_operator",
+        "archiveweaver_fixture_set",
+        "archiveweaver_evidence_environment",
+        "archiveweaver_evidence_publish_enabled",
+        "archiveweaver_evidence_publish_command",
+        "archiveweaver_evidence_verify_command",
+        "archiveweaver_evidence_publish_command_sha256",
+        "archiveweaver_evidence_publish_command_argv_sha256",
+        "archiveweaver_evidence_verify_command_sha256",
+        "archiveweaver_evidence_verify_command_argv_sha256",
+        "archiveweaver_evidence_retention_days",
+        "archiveweaver_evidence_immutable",
+        "archiveweaver_evidence_access_logged",
+        "archiveweaver_topology_design_approved",
+        "archiveweaver_provider_bundle_sha256",
+        "archiveweaver_kustomize_bundle_sha256",
+        "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
+        "archiveweaver_health_url",
+        "archiveweaver_execution_environment_digest",
+    },
     "production_verification": {
         "archiveweaver_release",
         "archiveweaver_change_id",
@@ -237,6 +296,8 @@ REQUIRED_RUNTIME_BINDINGS = {
         "archiveweaver_product_stack_sha256",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
         "archiveweaver_health_url",
         "archiveweaver_execution_environment_digest",
     },
@@ -253,6 +314,8 @@ REQUIRED_RUNTIME_BINDINGS = {
         "archiveweaver_product_stack_sha256",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
         "archiveweaver_health_url",
         "archiveweaver_observe_enabled",
         "archiveweaver_check_command",
@@ -283,6 +346,8 @@ REQUIRED_RUNTIME_BINDINGS = {
         "archiveweaver_product_stack_sha256",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
         "archiveweaver_health_url",
         "archiveweaver_execution_environment_digest",
     },
@@ -318,6 +383,8 @@ REQUIRED_RUNTIME_BINDINGS = {
         "archiveweaver_product_stack_sha256",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
         "archiveweaver_health_url",
         "archiveweaver_execution_environment_digest",
     },
@@ -328,6 +395,47 @@ REQUIRED_RUNTIME_BINDINGS = {
     },
 }
 REQUIRED_NONPRODUCTION_EXTRA_VARS = {
+    "staging-seed-apply": {
+        "archiveweaver_apply", "archiveweaver_staging_seed_apply",
+        "archiveweaver_evidence_environment", "archiveweaver_release",
+        "archiveweaver_change_id", "archiveweaver_approval_ticket",
+        "archiveweaver_backup_verified", "archiveweaver_release_manifest_verified",
+        "archiveweaver_product_stack_ready", "archiveweaver_operator",
+        "archiveweaver_fixture_set", "archiveweaver_provider_bundle_sha256",
+        "archiveweaver_kustomize_bundle_sha256", "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256", "archiveweaver_kube_context",
+        "archiveweaver_execution_environment_digest",
+    },
+    "staging-repair-drill": {
+        "archiveweaver_recovery_drill",
+        "archiveweaver_repair_apply",
+        "archiveweaver_evidence_environment",
+        "archiveweaver_release",
+        "archiveweaver_change_id",
+        "archiveweaver_approval_ticket",
+        "archiveweaver_backup_verified",
+        "archiveweaver_release_manifest_verified",
+        "archiveweaver_product_stack_ready",
+        "archiveweaver_operator",
+        "archiveweaver_fixture_set",
+        "archiveweaver_execution_environment_digest",
+    },
+    "staging-rollback-drill": {
+        "archiveweaver_recovery_drill",
+        "archiveweaver_rollback_apply",
+        "archiveweaver_rollback_environment",
+        "archiveweaver_evidence_environment",
+        "archiveweaver_release",
+        "archiveweaver_rollback_release",
+        "archiveweaver_rollback_artifact_digest",
+        "archiveweaver_rollback_command",
+        "archiveweaver_rollback_verify_command",
+        "archiveweaver_rollback_command_sha256",
+        "archiveweaver_rollback_command_argv_sha256",
+        "archiveweaver_rollback_verify_command_sha256",
+        "archiveweaver_rollback_verify_command_argv_sha256",
+        "archiveweaver_execution_environment_digest",
+    },
     "product-certification": {
         "archiveweaver_release",
         "archiveweaver_certification_change_id",
@@ -393,6 +501,8 @@ REQUIRED_STAGING_PREVIEW_EXTRA_VARS = {
     "archiveweaver_kustomize_path",
     "archiveweaver_kustomize_bundle_sha256",
     "archiveweaver_kubeconfig",
+    "archiveweaver_kubeconfig_sha256",
+    "archiveweaver_kube_context",
     "archiveweaver_health_url",
     "archiveweaver_execution_environment_digest",
 }
@@ -417,21 +527,29 @@ REQUIRED_STAGING_PREVIEW_EXTRA_VARS_BY_RUNTIME = {
         "archiveweaver_kustomize_path",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
     },
     "rke2": {
         "archiveweaver_kustomize_path",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
     },
     "k0s": {
         "archiveweaver_kustomize_path",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
     },
     "microk8s": {
         "archiveweaver_kustomize_path",
         "archiveweaver_kustomize_bundle_sha256",
         "archiveweaver_kubeconfig",
+        "archiveweaver_kubeconfig_sha256",
+        "archiveweaver_kube_context",
     },
 }
 UNSUPPORTED_STAGING_PREVIEW_RUNTIMES = {"pacemaker"}
@@ -932,15 +1050,21 @@ def validate(contract: Any) -> list[str]:
     for workflow_id in ("catalog-and-tests", "ansible-quality", "readiness"):
         if workflows.get(workflow_id, {}).get("on_failure") != "stop":
             errors.append(f"workflow.{workflow_id}.on_failure must be stop")
+        environment = workflows.get(workflow_id, {}).get("environment")
+        if not isinstance(environment, dict) or environment.get("PYTHONDONTWRITEBYTECODE") != "1":
+            errors.append(f"workflow.{workflow_id} must disable Python bytecode writes")
     if "validate-ansible.sh" not in str(workflows.get("ansible-quality", {}).get("commands", "")):
         errors.append("ansible-quality must run validate-ansible.sh")
     readiness = workflows.get("readiness", {})
     readiness_commands = readiness.get("commands")
     if not isinstance(readiness_commands, list) or not any(
-        isinstance(command, str) and "verify-readiness-manifest.py" in command
+        isinstance(command, str)
+        and "verify-readiness-manifest.py" in command
+        and '"$ARCHIVEWEAVER_READINESS_MANIFEST_SHA256"' in command
+        and '"$ARCHIVEWEAVER_IMMUTABLE_REF"' in command
         for command in readiness_commands
     ):
-        errors.append("readiness must verify the protected readiness manifest digest")
+        errors.append("readiness must verify the protected manifest digest and source commit")
     if not isinstance(readiness_commands, list) or not any(
         isinstance(command, str) and "archiveweaver readiness" in command
         for command in readiness_commands
@@ -957,27 +1081,57 @@ def validate(contract: Any) -> list[str]:
             errors.append(f"workflow.{workflow_id}.any_errors_fatal must be true")
         if item.get("on_failure") != "stop":
             errors.append(f"workflow.{workflow_id}.on_failure must be stop")
-    for workflow_id in ("production-apply", "production-repair", "production-rollback"):
+    for workflow_id in ("production-bootstrap-apply", "production-apply", "production-repair", "production-rollback"):
         if workflows.get(workflow_id, {}).get("credential_binding") != "production-change-account":
             errors.append(f"workflow.{workflow_id}.credential_binding must be production-change-account")
     for workflow_id in ("production-post-apply-verify", "production-verify"):
         if workflows.get(workflow_id, {}).get("credential_binding") != "production-read-only":
             errors.append(f"workflow.{workflow_id}.credential_binding must be production-read-only")
-    for workflow_id in ("production-apply", "production-repair", "production-rollback"):
+    for workflow_id in ("production-bootstrap-apply", "production-apply", "production-repair", "production-rollback"):
         if workflows.get(workflow_id, {}).get("requires_approval") is not True:
             errors.append(f"workflow.{workflow_id}.requires_approval must be true")
     for workflow_id, credential in (
         ("staging-preview", "staging-read-only"),
+        ("staging-seed-apply", "staging-change-account"),
         ("product-certification", "staging-certification-account"),
         ("failure-domain-drill", "staging-change-account"),
         ("backup-and-restore-gate", "preservation-restore-account"),
+        ("staging-repair-drill", "staging-change-account"),
+        ("staging-rollback-drill", "staging-change-account"),
     ):
         if workflows.get(workflow_id, {}).get("credential_binding") != credential:
             errors.append(f"workflow.{workflow_id}.credential_binding must be {credential}")
     for workflow_id in REQUIRED_NONPRODUCTION_EXTRA_VARS:
         if workflows.get(workflow_id, {}).get("requires_approval") is not True:
             errors.append(f"workflow.{workflow_id}.requires_approval must be true")
+    for workflow_id, action_binding in (
+        ("staging-repair-drill", "archiveweaver_repair_apply=true"),
+        ("staging-rollback-drill", "archiveweaver_rollback_apply=true"),
+    ):
+        item = workflows.get(workflow_id, {})
+        command = item.get("command", "")
+        if not isinstance(command, str) or not all(
+            token in command
+            for token in (
+                "archiveweaver_recovery_drill=true",
+                action_binding,
+                "archiveweaver_evidence_environment=production",
+            )
+        ):
+            errors.append(f"workflow.{workflow_id} must pin staging recovery action and production evidence target")
+        if workflow_id == "staging-rollback-drill" and "archiveweaver_rollback_environment=staging" not in command:
+            errors.append("workflow.staging-rollback-drill must pin staging execution environment")
+        _require_list_contains(
+            item.get("required_environment"),
+            {"ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST"},
+            f"workflow.{workflow_id}.required_environment",
+            errors,
+        )
+        if item.get("serial") != 1 or item.get("any_errors_fatal") is not True:
+            errors.append(f"workflow.{workflow_id} must serialize and fail on every host error")
     for workflow_id, approval_node in (
+        ("staging-seed-apply", "staging-seed-approval"),
+        ("production-bootstrap-apply", "production-bootstrap-approval"),
         ("production-apply", "production-approval"),
         ("production-repair", "production-repair-approval"),
         ("production-rollback", "production-rollback-approval"),
@@ -989,6 +1143,51 @@ def validate(contract: Any) -> list[str]:
             errors.append(f"workflow.{approval_node} must be a manual-approval node")
         if approval.get("required_group") != "archive-platform-approvers":
             errors.append(f"workflow.{approval_node}.required_group must be archive-platform-approvers")
+
+    bootstrap = workflows.get("production-bootstrap-apply", {})
+    bootstrap_command = bootstrap.get("command", "")
+    if bootstrap.get("trigger") != "on-demand" or workflows.get("production-bootstrap-approval", {}).get("trigger") != "on-demand":
+        errors.append("first-apply bootstrap must be an on-demand, separately approved workflow")
+    if not isinstance(bootstrap_command, str) or not all(
+        binding in bootstrap_command
+        for binding in (
+            "run-ansible-operational.sh site.yml",
+            "inventory/production/hosts.yml",
+            "archiveweaver_apply=true",
+            "archiveweaver_bootstrap_apply=true",
+        )
+    ):
+        errors.append("production-bootstrap-apply must pin the production site apply and explicit bootstrap intent")
+    _require_list_contains(
+        bootstrap.get("required_environment"),
+        {"ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256", "ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256", "ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST"},
+        "workflow.production-bootstrap-apply.required_environment",
+        errors,
+    )
+
+    staging_seed = workflows.get("staging-seed-apply", {})
+    staging_seed_command = staging_seed.get("command", "")
+    if staging_seed.get("trigger") != "on-demand" or workflows.get("staging-seed-approval", {}).get("trigger") != "on-demand":
+        errors.append("first staging seed must be an on-demand, separately approved workflow")
+    if not isinstance(staging_seed_command, str) or not all(
+        binding in staging_seed_command
+        for binding in (
+            "run-ansible-operational.sh site.yml",
+            "inventory/staging/hosts.yml",
+            "archiveweaver_apply=true",
+            "archiveweaver_staging_seed_apply=true",
+            "archiveweaver_evidence_environment=staging",
+        )
+    ):
+        errors.append("staging-seed-apply must pin a staging-only site apply and explicit seed intent")
+    if staging_seed.get("resource_lock") != "archiveweaver-staging-seed" or staging_seed.get("serial") != 1 or staging_seed.get("any_errors_fatal") is not True:
+        errors.append("staging-seed-apply must use the first staging seed lock, serial execution, and fail on any host error")
+    _require_list_contains(
+        staging_seed.get("required_environment"),
+        {"ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256", "ARCHIVEWEAVER_STAGING_INVENTORY_SHA256", "ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST"},
+        "workflow.staging-seed-apply.required_environment",
+        errors,
+    )
 
     runtime_bindings = contract.get("required_runtime_bindings")
     runtime_bindings = runtime_bindings if isinstance(runtime_bindings, dict) else {}

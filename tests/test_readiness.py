@@ -19,15 +19,19 @@ from archiveweaver.readiness import (
     GITHUB_AUDIT_API_VERSION,
     GITHUB_AUDIT_CONTROL_NAMES,
     _approval_window_errors,
+    _evidence_context,
+    _evidence_record_exists,
+    _operational_run_receipt_ok,
+    _release_ok,
     assess_readiness,
 )
 
 
-def _spdx_document(subject_name: str) -> dict[str, object]:
+def _spdx_document(subject_name: str, digest: str | None = None) -> dict[str, object]:
     package_id = "SPDXRef-Package-" + hashlib.sha256(
         subject_name.encode("utf-8")
     ).hexdigest()[:16]
-    return {
+    document = {
         "SPDXID": "SPDXRef-DOCUMENT",
         "creationInfo": {
             "created": "2026-09-11T12:00:00Z",
@@ -51,6 +55,11 @@ def _spdx_document(subject_name: str) -> dict[str, object]:
         ],
         "spdxVersion": "SPDX-2.3",
     }
+    if digest is not None:
+        document["packages"][0]["checksums"] = [
+            {"algorithm": "SHA256", "checksumValue": digest.removeprefix("sha256:")}
+        ]
+    return document
 
 
 def _slsa_provenance(subjects: list[dict[str, object]]) -> dict[str, object]:
@@ -81,6 +90,28 @@ def _slsa_provenance(subjects: list[dict[str, object]]) -> dict[str, object]:
 class ReadinessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.catalog = Catalog()
+
+    def test_release_rejects_reused_evidence_and_provenance_path(self) -> None:
+        manifest = {
+            "release": {
+                "status": "pass",
+                "evidence": "shared.json",
+                "provenance": "shared.json",
+                "provenance_verified": True,
+                "version": "2026.09.1",
+                "artifacts": [{"name": "artifact"}],
+            }
+        }
+        with (
+            patch("archiveweaver.readiness._section_evidence_ok", return_value=True),
+            patch("archiveweaver.readiness._provenance_payload", return_value={}),
+            patch("archiveweaver.readiness._provenance_binds_source", return_value=True),
+            patch("archiveweaver.readiness._release_provenance_signature_ok", return_value=True),
+            patch("archiveweaver.readiness._github_controls_ok", return_value=True),
+            patch("archiveweaver.readiness._signed_artifact_ok", return_value=True) as signed,
+        ):
+            self.assertFalse(_release_ok(manifest, Path("."), None))
+            signed.assert_called_once()
 
     def test_missing_manifest_is_not_ready(self) -> None:
         report = assess_readiness(Path("does-not-exist.json"), self.catalog)
@@ -429,7 +460,7 @@ class ReadinessTests(unittest.TestCase):
             source_revision = "a" * 40
             source_repository_id = 123456
             for name in (
-                "control.json", "release.json", "provenance.json", "release.spdx.json", "release.sig", "signature-verification.json", "execution-environment-provenance.json", "execution-environment.spdx.json", "execution-environment.sig", "execution-environment-signature-verification.json", "artifact.tar", "provider-bundle.tar", "provider-bundle.spdx.json", "provider-bundle.sig", "provider-bundle-signature-verification.json", "provider-bundle-verification.json", "rollback-artifact.tar", "rollback.spdx.json", "rollback.sig", "rollback-signature-verification.json", "product.json", "resilience.json",
+                "control.json", "release.json", "provenance.json", "provenance.sigstore.json", "release.spdx.json", "release.sigstore.json", "signature-verification.json", "paperless.manifest.json", "paperless.spdx.json", "paperless.sigstore.json", "paperless-provenance.json", "paperless-provenance.sigstore.json", "paperless-signature-verification.json", "execution-environment-provenance.json", "execution-environment.spdx.json", "execution-environment.sigstore.json", "execution-environment-signature-verification.json", "artifact.tar", "provider-bundle.tar", "provider-bundle.spdx.json", "provider-bundle.sigstore.json", "provider-bundle-signature-verification.json", "provider-bundle-verification.json", "rollback-artifact.tar", "rollback.spdx.json", "rollback.sigstore.json", "rollback-signature-verification.json", "product.json", "resilience.json",
                 "product-dependencies.json", "product-smoke.json", "product-migration.json",
                 "product-formats.json", "product-api.json", "failure.json", "failure-service.json",
                 "failure-dependency.json", "failure-storage.json", "data.json",
@@ -495,6 +526,14 @@ class ReadinessTests(unittest.TestCase):
             (root / "github-production-controls.json.sigstore.json").write_text(
                 json.dumps(github_controls_bundle), encoding="utf-8"
             )
+
+            def write_fixture_bundle(name: str, signed_content: bytes) -> None:
+                fixture = copy.deepcopy(github_controls_bundle)
+                fixture["messageSignature"]["messageDigest"]["digest"] = (
+                    base64.b64encode(hashlib.sha256(signed_content).digest()).decode()
+                )
+                (root / name).write_text(json.dumps(fixture), encoding="utf-8")
+
             (root / "provenance.json").write_text(
                 json.dumps(_slsa_provenance([{"name": "product-artifact"}])),
                 encoding="utf-8",
@@ -504,15 +543,27 @@ class ReadinessTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "execution-environment-provenance.json").write_text(
-                json.dumps(_slsa_provenance([{"name": "archiveweaver-ee"}])),
+                json.dumps(_slsa_provenance([{"name": "registry.example/archiveweaver-ee"}])),
                 encoding="utf-8",
             )
             (root / "execution-environment.spdx.json").write_text(
                 json.dumps(_spdx_document("archiveweaver-ee")),
                 encoding="utf-8",
             )
-            (root / "execution-environment.sig").write_bytes(b"execution-environment-signature\n")
-            def evidence(name, status="pass", label="evidence"):
+            deployment_target = {
+                "kube_context": "approved-rke2-context",
+                "kubeconfig_sha256": "a" * 64,
+                "inventory_sha256": "b" * 64,
+                "namespace": "archiveweaver",
+                "kube_system_namespace_uid": "d3fabefa-c024-4588-88b1-c38095fd7740",
+                "application_namespace_uid": "1e7d7261-239a-447e-9461-a8c3f4115196",
+            }
+            operational_runner_digest = "sha256:" + "d" * 64
+            operational_runner_image = (
+                "registry.example/operations-runner@" + operational_runner_digest
+            )
+            def evidence(name, status="pass", label="evidence", execution_environment="production"):
+                receipt_stem = Path(name).stem
                 return {
                     "name": label,
                     "status": status,
@@ -523,25 +574,84 @@ class ReadinessTests(unittest.TestCase):
                     "os_id": "ubuntu-24.04",
                     "release": "2026.09.1",
                     "environment": "production",
+                    "execution_environment": execution_environment,
                     "execution_environment_digest": execution_environment_digest,
+                    "deployment_target": deployment_target,
                     "recorded_at": recorded_at,
                     "operator": "ci",
                     "fixture_set": "archiveweaver-fixtures-v1",
+                    "run_hook": {
+                        "executable_sha256": "e" * 64,
+                        "argv_sha256": "f" * 64,
+                    },
+                    "run_receipt": {
+                        "path": f"evidence/receipts/{receipt_stem}.run.json",
+                        "signature": f"evidence/receipts/{receipt_stem}.run.sigstore.json",
+                        "signer": "trusted-operations-runner",
+                    },
                 }
             artifact = root / "artifact.tar"
             artifact.write_bytes(b"approved release artifact\n")
+            write_fixture_bundle("release.sigstore.json", artifact.read_bytes())
             digest = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+            image_manifest_path = root / "paperless.manifest.json"
+            image_manifest_path.write_text(
+                json.dumps({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "config": {
+                        "mediaType": "application/vnd.oci.image.config.v1+json",
+                        "digest": "sha256:" + "1" * 64,
+                        "size": 2,
+                    },
+                    "layers": [{
+                        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                        "digest": "sha256:" + "2" * 64,
+                        "size": 42,
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            image_digest = "sha256:" + hashlib.sha256(image_manifest_path.read_bytes()).hexdigest()
+            image_repository = "ghcr.io/paperless-ngx/paperless-ngx"
+            image_ref = image_repository + "@" + image_digest
+            write_fixture_bundle("paperless.sigstore.json", image_manifest_path.read_bytes())
+            (root / "paperless.spdx.json").write_text(
+                json.dumps(_spdx_document("paperless-image", image_digest)),
+                encoding="utf-8",
+            )
+            (root / "paperless-provenance.json").write_text(
+                json.dumps(_slsa_provenance([{
+                    "name": image_repository,
+                    "digest": {"sha256": image_digest.removeprefix("sha256:")},
+                }])),
+                encoding="utf-8",
+            )
+            (root / "paperless-provenance.sigstore.json").write_text(
+                json.dumps({
+                    "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                    "verificationMaterial": github_controls_bundle["verificationMaterial"],
+                    "dsseEnvelope": {
+                        "payloadType": "application/vnd.in-toto+json",
+                        "payload": base64.b64encode(
+                            (root / "paperless-provenance.json").read_bytes()
+                        ).decode(),
+                        "signatures": [{"sig": base64.b64encode(b"image attestation signature").decode()}],
+                    },
+                }),
+                encoding="utf-8",
+            )
             release_provenance = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
             release_provenance["subject"][0]["digest"] = {"sha256": digest.split(":", 1)[1]}
             (root / "provenance.json").write_text(json.dumps(release_provenance), encoding="utf-8")
             provider_bundle = root / "provider-bundle.tar"
             provider_bundle.write_bytes(b"reviewed provider bundle\n")
+            write_fixture_bundle("provider-bundle.sigstore.json", provider_bundle.read_bytes())
             provider_bundle_digest = "sha256:" + hashlib.sha256(provider_bundle.read_bytes()).hexdigest()
             (root / "provider-bundle.spdx.json").write_text(
                 json.dumps(_spdx_document("provider-bundle")),
                 encoding="utf-8",
             )
-            (root / "provider-bundle.sig").write_bytes(b"provider-bundle-signature\n")
             release_provenance["subject"].append(
                 {"name": "provider-bundle", "digest": {"sha256": provider_bundle_digest.split(":", 1)[1]}}
             )
@@ -552,14 +662,30 @@ class ReadinessTests(unittest.TestCase):
                 }
             )
             (root / "provenance.json").write_text(json.dumps(release_provenance), encoding="utf-8")
+            provenance_bundle = {
+                "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                "verificationMaterial": github_controls_bundle["verificationMaterial"],
+                "dsseEnvelope": {
+                    "payloadType": "application/vnd.in-toto+json",
+                    "payload": base64.b64encode(
+                        (root / "provenance.json").read_bytes()
+                    ).decode(),
+                    "signatures": [
+                        {"sig": base64.b64encode(b"test DSSE signature").decode()}
+                    ],
+                },
+            }
+            (root / "provenance.sigstore.json").write_text(
+                json.dumps(provenance_bundle), encoding="utf-8"
+            )
             rollback_artifact = root / "rollback-artifact.tar"
             rollback_artifact.write_bytes(b"approved previous release artifact\n")
+            write_fixture_bundle("rollback.sigstore.json", rollback_artifact.read_bytes())
             rollback_digest = "sha256:" + hashlib.sha256(rollback_artifact.read_bytes()).hexdigest()
             (root / "rollback.spdx.json").write_text(
                 json.dumps(_spdx_document("previous-product-artifact")),
                 encoding="utf-8",
             )
-            (root / "rollback.sig").write_bytes(b"rollback-signature\n")
             execution_environment_digest = "sha256:" + "c" * 64
             execution_environment_provenance = json.loads(
                 (root / "execution-environment-provenance.json").read_text(encoding="utf-8")
@@ -574,24 +700,39 @@ class ReadinessTests(unittest.TestCase):
                 "schema_version": 1,
                 "service": {"solution_id": "paperless-ngx", "runtime": "ansible", "underlying_runtime": "rke2", "os_id": "ubuntu-24.04", "environment": "production"},
                 "evidence_index": "evidence/evidence-index.json",
+                "deployment_target": deployment_target,
                 "control": {"status": "pass", "evidence": "control.json", "catalog_validated": True, "ci_green": True, "change_ticket": "CHG-1234"},
-                "release": {"status": "pass", "evidence": "release.json", "version": "2026.09.1", "source_repository": "Yunushan/archiveweaver", "source_repository_id": source_repository_id, "source_revision": source_revision, "github_controls": {"path": "evidence/github-production-controls.json", "digest": github_audit_digest, "signature": "evidence/github-production-controls.json.sigstore.json", "signature_verified": True, "signature_verification": evidence("github-production-controls-signature-verification.json", label="GitHub production controls signature")}, "provenance": "evidence/provenance.json", "provenance_verified": True, "artifacts": [{"name": "product-artifact", "path": "evidence/artifact.tar", "digest": digest, "sbom": "evidence/release.spdx.json", "signature": "evidence/release.sig", "signature_verified": True, "signature_verification": evidence("signature-verification.json", label="signature")}], "provider_bundle": {"name": "provider-bundle", "path": "evidence/provider-bundle.tar", "digest": provider_bundle_digest, "remote_digest": provider_bundle_digest, "sbom": "evidence/provider-bundle.spdx.json", "signature": "evidence/provider-bundle.sig", "signature_verified": True, "signature_verification": evidence("provider-bundle-signature-verification.json", label="provider bundle signature"), "verification": evidence("provider-bundle-verification.json", label="provider-bundle")}},
+                "release": {"status": "pass", "evidence": "release.json", "version": "2026.09.1", "source_repository": "Yunushan/archiveweaver", "source_repository_id": source_repository_id, "source_revision": source_revision, "github_controls": {"path": "evidence/github-production-controls.json", "digest": github_audit_digest, "signature": "evidence/github-production-controls.json.sigstore.json", "signature_verified": True, "signature_verification": evidence("github-production-controls-signature-verification.json", label="GitHub production controls signature")}, "provenance": "evidence/provenance.json", "provenance_bundle": "evidence/provenance.sigstore.json", "provenance_verified": True, "artifacts": [{"name": "product-artifact", "path": "evidence/artifact.tar", "digest": digest, "sbom": "evidence/release.spdx.json", "signature": "evidence/release.sigstore.json", "signature_verified": True, "signature_verification": evidence("signature-verification.json", label="signature")}], "provider_bundle": {"name": "provider-bundle", "path": "evidence/provider-bundle.tar", "digest": provider_bundle_digest, "remote_digest": provider_bundle_digest, "sbom": "evidence/provider-bundle.spdx.json", "signature": "evidence/provider-bundle.sigstore.json", "signature_verified": True, "signature_verification": evidence("provider-bundle-signature-verification.json", label="provider bundle signature"), "verification": evidence("provider-bundle-verification.json", label="provider-bundle")}},
                 "product_certification": {
                     "status": "pass",
                     "evidence": "product.json",
                     "dependency_coverage": ["Python", "PostgreSQL", "Redis", "Tesseract", "OCRmyPDF", "Ghostscript", "Gotenberg", "Tika"],
                     "format_coverage": ["documents", "images", "email", "archives", "structured"],
                     "component_coverage": ["Django web", "Celery workers", "PostgreSQL", "Redis", "Tika/Gotenberg", "OCRmyPDF/Tesseract", "media storage"],
-                    "test_matrix": [evidence(name, label=label) for name, label in [("product-dependencies.json", "dependencies"), ("product-smoke.json", "smoke"), ("product-migration.json", "migration"), ("product-formats.json", "formats"), ("product-api.json", "api")]],
+                    "test_matrix": [evidence(name, label=label, execution_environment="staging") for name, label in [("product-dependencies.json", "dependencies"), ("product-smoke.json", "smoke"), ("product-migration.json", "migration"), ("product-formats.json", "formats"), ("product-api.json", "api")]],
                 },
-                "resilience": {"status": "pass", "evidence": "resilience.json", "quorum_verified": True, "fencing_verified": True, "failure_tests": [evidence(name, label=label) for name, label in [("failure.json", "node"), ("failure-service.json", "service"), ("failure-dependency.json", "dependency"), ("failure-storage.json", "storage")]]},
-                "data_protection": {"status": "pass", "evidence": "data.json", "rpo_minutes": 60, "rto_minutes": 240, "backup": {"status": "pass", "evidence": "backup.json", "immutable_copies": 2}, "restore_test": evidence("restore.json"), "fixity_test": evidence("fixity.json")},
+                "resilience": {"status": "pass", "evidence": "resilience.json", "quorum_verified": True, "fencing_verified": True, "failure_tests": [evidence(name, label=label, execution_environment="staging") for name, label in [("failure.json", "node"), ("failure-service.json", "service"), ("failure-dependency.json", "dependency"), ("failure-storage.json", "storage")]]},
+                "data_protection": {"status": "pass", "evidence": "data.json", "rpo_minutes": 60, "rto_minutes": 240, "backup": {"status": "pass", "evidence": "backup.json", "immutable_copies": 2}, "restore_test": evidence("restore.json", execution_environment="restore"), "fixity_test": evidence("fixity.json", execution_environment="restore")},
                 "security": {"status": "pass", "evidence": "security.json", "sbom_verified": True, "tls_verified": True, "secrets_provider": "vault", "sbom_verification": evidence("security-sbom.json", label="security sbom"), "tls_verification": evidence("tls.json", label="tls"), "secrets_provider_verification": evidence("secrets-provider.json", label="secrets provider"), "vulnerability_scan": evidence("scan.json"), "penetration_test": evidence("pentest.json")},
                 "observability": {"status": "pass", "evidence": "observe.json", "metrics": "prometheus", "alerts": "pager", "dashboards": "grafana", "on_call": "platform-oncall", "metrics_verification": evidence("metrics.json", label="metrics"), "alerts_verification": evidence("alerts.json", label="alerts"), "dashboards_verification": evidence("dashboards.json", label="dashboards"), "on_call_verification": evidence("on-call.json", label="observability on-call"), "alert_delivery_test": evidence("alert.json", label="alert delivery")},
-                "recovery": {"status": "pass", "evidence": "recovery.json", "rollback_release": "2026.09.0", "rollback_artifact_digest": rollback_digest, "rollback_artifact": {"name": "previous-product-artifact", "path": "evidence/rollback-artifact.tar", "digest": rollback_digest, "sbom": "evidence/rollback.spdx.json", "signature": "evidence/rollback.sig", "signature_verified": True, "signature_verification": evidence("rollback-signature-verification.json", label="rollback signature")}, "rollback_test": evidence("rollback.json"), "repair_test": evidence("repair.json")},
+                "recovery": {"status": "pass", "evidence": "recovery.json", "rollback_release": "2026.09.0", "rollback_artifact_digest": rollback_digest, "rollback_artifact": {"name": "previous-product-artifact", "path": "evidence/rollback-artifact.tar", "digest": rollback_digest, "sbom": "evidence/rollback.spdx.json", "signature": "evidence/rollback.sigstore.json", "signature_verified": True, "signature_verification": evidence("rollback-signature-verification.json", label="rollback signature")}, "rollback_test": evidence("rollback.json", execution_environment="staging"), "repair_test": evidence("repair.json", execution_environment="staging")},
                 "governance": {"status": "pass", "evidence": "governance.json", "change_ticket": "CHG-1234", "approved_by": "ops@example.org", "approved_at": approved_at, "valid_until": valid_until, "evidence_immutable": True, "evidence_access_logged": True, "evidence_retention_days": 2555, "retention_control": evidence("retention.json", label="retention"), "risk_review": evidence("risk.json")},
                 "support": {"status": "pass", "evidence": "support.json", "service_owner": "Archive Platform", "on_call": "platform-oncall", "sla": "99.9%", "service_owner_verification": evidence("service-owner.json", label="service owner"), "on_call_verification": evidence("support-on-call.json", label="support on-call"), "sla_verification": evidence("sla.json", label="SLA"), "rpo_minutes": 60, "rto_minutes": 240, "runbooks": ["evidence/runbook.md"]},
             }
+            manifest["release"]["artifacts"].append({
+                "name": "paperless-image",
+                "image": image_ref,
+                "path": "evidence/paperless.manifest.json",
+                "digest": image_digest,
+                "sbom": "evidence/paperless.spdx.json",
+                "signature": "evidence/paperless.sigstore.json",
+                "signature_verified": True,
+                "signature_verification": evidence(
+                    "paperless-signature-verification.json", label="paperless image signature"
+                ),
+                "provenance": "evidence/paperless-provenance.json",
+                "provenance_bundle": "evidence/paperless-provenance.sigstore.json",
+            })
             for section_name in (
                 "control", "release", "product_certification", "resilience", "data_protection",
                 "security", "observability", "recovery", "governance", "support",
@@ -599,6 +740,7 @@ class ReadinessTests(unittest.TestCase):
                 manifest[section_name].update(evidence(manifest[section_name]["evidence"], label=section_name))
             manifest["data_protection"]["backup"].update(evidence("backup.json", label="backup"))
             manifest["release"]["artifacts"][0]["signature_verification"].update({"artifact_digest": digest, "verifier": "cosign"})
+            manifest["release"]["artifacts"][1]["signature_verification"].update({"artifact_digest": image_digest, "verifier": "cosign"})
             manifest["release"]["provider_bundle"]["signature_verification"].update({"artifact_digest": provider_bundle_digest, "verifier": "cosign"})
             manifest["release"]["provider_bundle"]["verification"].update({"artifact_digest": provider_bundle_digest, "remote_digest": provider_bundle_digest, "verifier": "ansible-provider-check"})
             manifest["release"]["github_controls"]["signature_verification"].update({"artifact_digest": github_audit_digest, "verifier": "sigstore verify identity"})
@@ -610,25 +752,200 @@ class ReadinessTests(unittest.TestCase):
                 "provenance": "evidence/execution-environment-provenance.json",
                 "provenance_verified": True,
                 "sbom": "evidence/execution-environment.spdx.json",
-                "signature": "evidence/execution-environment.sig",
+                "signature": "evidence/execution-environment.sigstore.json",
                 "signature_verified": True,
                 "signature_verification": evidence("execution-environment-signature-verification.json", label="execution environment signature"),
             }
-            manifest["release"]["execution_environment"]["signature_verification"].update({"artifact_digest": execution_environment_digest, "verifier": "cosign"})
+            manifest["release"]["execution_environment"]["signature_verification"].update({
+                "artifact_digest": execution_environment_digest,
+                "image": manifest["release"]["execution_environment"]["image"],
+                "verifier": "cosign",
+            })
 
-            def write_evidence_payloads(value):
+            ee_image = manifest["release"]["execution_environment"]["image"]
+            ee_publication = {
+                "schema_version": 2,
+                "base_image": "registry.example/base@sha256:" + "c" * 64,
+                "image_name": ee_image.split("@", 1)[0],
+                "immutable_reference": ee_image,
+                "local_image_id": "sha256:" + "d" * 64,
+                "registry_digest": execution_environment_digest,
+                "release_tag": "v0.1.0",
+                "source_revision": source_revision,
+                "artifact_digest": execution_environment_digest,
+                "image": ee_image,
+                "verifier": "cosign",
+                "provenance_sha256": "sha256:" + hashlib.sha256(
+                    (root / "execution-environment-provenance.json").read_bytes()
+                ).hexdigest(),
+                "sbom_sha256": "sha256:" + hashlib.sha256(
+                    (root / "execution-environment.spdx.json").read_bytes()
+                ).hexdigest(),
+            }
+
+            def write_evidence_payloads(value, path=()):
                 if isinstance(value, dict):
                     if value.get("status") == "pass" and isinstance(value.get("evidence"), str):
-                        (manifest_root / value["evidence"]).write_text(
-                            json.dumps(value), encoding="utf-8"
+                        claim_parts = [part for part in path if isinstance(part, str)]
+                        if path and path[-1] == "signature_verification":
+                            claim = (
+                                "recovery.rollback_artifact"
+                                if path[0] == "recovery"
+                                else "release"
+                            )
+                        elif len(path) >= 3 and path[1] in {"test_matrix", "failure_tests"}:
+                            claim = f"{path[0]}.{path[1]}.{value['name']}"
+                        else:
+                            claim = ".".join(claim_parts)
+                        payload = (
+                            ee_publication
+                            if value["evidence"] == "evidence/execution-environment-signature-verification.json"
+                            else {
+                                **value,
+                                "claim": claim,
+                                "source_revision": source_revision,
+                                "outcome": {
+                                    "status": "pass",
+                                    "method": "automated",
+                                    "summary": f"Fixture result for {claim}",
+                                    "source": "urn:archiveweaver:fixture:readiness",
+                                },
+                            }
                         )
-                    for child in value.values():
-                        write_evidence_payloads(child)
+                        evidence_path = manifest_root / value["evidence"]
+                        evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+                        if not claim.startswith("release"):
+                            receipt_reference = value["run_receipt"]
+                            result_bytes = evidence_path.read_bytes()
+                            receipt_completed_at = value["recorded_at"]
+                            finish = datetime.fromisoformat(
+                                receipt_completed_at.replace("Z", "+00:00")
+                            )
+                            receipt_payload = {
+                                "schema_version": 2,
+                                "claim": claim,
+                                "status": "pass",
+                                "service": {
+                                    "solution_id": "paperless-ngx",
+                                    "runtime": "ansible",
+                                    "underlying_runtime": "rke2",
+                                    "os_id": "ubuntu-24.04",
+                                    "environment": "production",
+                                },
+                                "release_version": "2026.09.1",
+                                "source_revision": source_revision,
+                                "execution_environment_digest": execution_environment_digest,
+                                "deployment_target": deployment_target,
+                                "run_id": "00000000-0000-4000-8000-000000000001",
+                                "started_at": (finish - timedelta(seconds=1))
+                                .isoformat()
+                                .replace("+00:00", "Z"),
+                                "completed_at": receipt_completed_at,
+                                "hook": value["run_hook"],
+                                "returncode": 0,
+                                "evidence_sha256": "sha256:"
+                                + hashlib.sha256(result_bytes).hexdigest(),
+                                "runner": {
+                                    "name": receipt_reference["signer"],
+                                    "image": operational_runner_image,
+                                    "digest": operational_runner_digest,
+                                },
+                            }
+                            receipt_bytes = json.dumps(
+                                receipt_payload, sort_keys=True
+                            ).encode("utf-8")
+                            receipt_path = manifest_root / receipt_reference["path"]
+                            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+                            receipt_path.write_bytes(receipt_bytes)
+                            signature_relative = (
+                                manifest_root / receipt_reference["signature"]
+                            ).relative_to(root).as_posix()
+                            write_fixture_bundle(signature_relative, receipt_bytes)
+                    for key, child in value.items():
+                        write_evidence_payloads(child, (*path, key))
                 elif isinstance(value, list):
-                    for child in value:
-                        write_evidence_payloads(child)
+                    for index, child in enumerate(value):
+                        write_evidence_payloads(child, (*path, index))
 
             write_evidence_payloads(manifest)
+            write_fixture_bundle(
+                "execution-environment.sigstore.json",
+                (root / "execution-environment-signature-verification.json").read_bytes(),
+            )
+            signer_identity = (
+                "https://github.com/Yunushan/archiveweaver/.github/workflows/"
+                "release.yml@refs/tags/v2026.09.1"
+            )
+            signer_issuer = "https://token.actions.githubusercontent.com"
+            signing_policy = {
+                "schema_version": 1,
+                "release_version": "2026.09.1",
+                "source_repository": "Yunushan/archiveweaver",
+                "github_controls_identity": (
+                    "https://github.com/Yunushan/archiveweaver/.github/workflows/"
+                    "release.yml@refs/tags/v0.1.0"
+                ),
+                "signers": [
+                    {"role": role, "name": name, "digest": item_digest,
+                     "identity": signer_identity, "issuer": signer_issuer}
+                    for role, name, item_digest in (
+                        ("release-artifact", "product-artifact", digest),
+                        ("provider-bundle", "provider-bundle", provider_bundle_digest),
+                    )
+                ] + [{
+                    "role": "rollback-artifact",
+                    "name": "previous-product-artifact",
+                    "digest": rollback_digest,
+                    "release_version": "2026.09.0",
+                    "identity": signer_identity,
+                    "issuer": signer_issuer,
+                }, {
+                    "role": "release-artifact", "name": "paperless-image",
+                    "digest": image_digest,
+                    "image": image_ref,
+                    "identity": (
+                        "https://github.com/paperless-ngx/paperless-ngx/.github/workflows/"
+                        "container.yml@refs/tags/v2026.09.1"
+                    ),
+                    "issuer": signer_issuer,
+                }, {
+                    "role": "execution-environment", "name": "archiveweaver-ee",
+                    "digest": execution_environment_digest,
+                    "image": manifest["release"]["execution_environment"]["image"],
+                    "identity": signer_identity, "issuer": signer_issuer,
+                }, {
+                    "role": "operational-evidence",
+                    "name": "trusted-operations-runner",
+                    "digest": operational_runner_digest,
+                    "image": operational_runner_image,
+                    "identity": (
+                        "https://github.com/Yunushan/archiveweaver/.github/workflows/"
+                        "operations-runner.yml@refs/heads/main"
+                    ),
+                    "issuer": signer_issuer,
+                }],
+            }
+            signing_policy_path = manifest_root / "signing-policy.json"
+            signing_policy_path.write_text(json.dumps(signing_policy), encoding="utf-8")
+            cosign_path = manifest_root / "cosign"
+            cosign_path.write_bytes(b"fixture verifier executable")
+            trusted_root_path = manifest_root / "trusted-root.json"
+            trusted_root_path.write_bytes(b"fixture Sigstore trusted root")
+            verifier_environment = {
+                "ARCHIVEWEAVER_COSIGN_PATH": str(cosign_path),
+                "ARCHIVEWEAVER_COSIGN_SHA256": hashlib.sha256(cosign_path.read_bytes()).hexdigest(),
+                "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH": str(trusted_root_path),
+                "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256": hashlib.sha256(
+                    trusted_root_path.read_bytes()
+                ).hexdigest(),
+                "ARCHIVEWEAVER_SIGNING_POLICY_PATH": str(signing_policy_path),
+                "ARCHIVEWEAVER_SIGNING_POLICY_SHA256": hashlib.sha256(
+                    signing_policy_path.read_bytes()
+                ).hexdigest(),
+            }
+            environment_patcher = patch.dict(os.environ, verifier_environment)
+            environment_patcher.start()
+            self.addCleanup(environment_patcher.stop)
             manifest_path = manifest_root / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -642,9 +959,329 @@ class ReadinessTests(unittest.TestCase):
 
             index_path = root / "evidence-index.json"
             build_evidence_index(root, index_path)
+            # The fixture deliberately contains made-up certificate/signature
+            # bytes. Its self-asserted verification flags cannot grant release
+            # points without the controller's cryptographic verifier.
+            unverified_report = assess_readiness(manifest_path, self.catalog)
+            self.assertLess(unverified_report["score"], 100)
+            self.assertEqual(unverified_report["criteria"][1]["status"], "fail")
+            self.assertEqual(unverified_report["criteria"][7]["status"], "fail")
+            self.assertTrue(
+                any(
+                    "cryptographically verified Sigstore" in error
+                    for error in unverified_report["errors"]
+                )
+            )
+            verifier_patcher = patch(
+                "archiveweaver.readiness._verify_sigstore_bundle", return_value=True
+            )
+            verifier = verifier_patcher.start()
+            self.addCleanup(verifier_patcher.stop)
             report = assess_readiness(manifest_path, self.catalog)
-            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["status"], "pass", report)
             self.assertEqual(report["score"], 100)
+            evidence_context = _evidence_context(manifest, manifest_root, self.catalog)
+            control_record = manifest["control"]
+            self.assertFalse(
+                _operational_run_receipt_ok(
+                    None,
+                    manifest_root,
+                    evidence_context,
+                    manifest,
+                    freshness_policy="control",
+                )
+            )
+            malformed_hook_record = copy.deepcopy(control_record)
+            malformed_hook_record["run_hook"]["argv_sha256"] = "not-a-digest"
+            self.assertFalse(
+                _operational_run_receipt_ok(
+                    malformed_hook_record,
+                    manifest_root,
+                    evidence_context,
+                    manifest,
+                    freshness_policy="control",
+                )
+            )
+            malformed_signature_record = copy.deepcopy(control_record)
+            malformed_signature_record["run_receipt"]["signature"] = ""
+            self.assertFalse(
+                _operational_run_receipt_ok(
+                    malformed_signature_record,
+                    manifest_root,
+                    evidence_context,
+                    manifest,
+                    freshness_policy="control",
+                )
+            )
+            saved_control_receipt = copy.deepcopy(manifest["control"]["run_receipt"])
+            manifest["control"]["run_receipt"] = None
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            missing_receipt_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(missing_receipt_report["score"], 90)
+            self.assertTrue(
+                any("run_receipt" in error for error in missing_receipt_report["errors"])
+            )
+            manifest["control"]["run_receipt"] = saved_control_receipt
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            manifest["control"]["run_receipt"] = {
+                **saved_control_receipt,
+                "path": "",
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            invalid_path_report = assess_readiness(manifest_path, self.catalog)
+            self.assertTrue(
+                any("run_receipt.path must be a relative indexed path" in error
+                    for error in invalid_path_report["errors"])
+            )
+            manifest["control"]["run_receipt"] = saved_control_receipt
+            saved_control_hook = manifest["control"]["run_hook"]
+            manifest["control"]["run_hook"] = {
+                "executable_sha256": "e" * 64,
+                "argv_sha256": "invalid",
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            invalid_hook_report = assess_readiness(manifest_path, self.catalog)
+            self.assertTrue(
+                any("run_hook must pin executable and argument digests" in error
+                    for error in invalid_hook_report["errors"])
+            )
+            manifest["control"]["run_hook"] = saved_control_hook
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            control_receipt_path = manifest_root / saved_control_receipt["path"]
+            original_control_receipt = control_receipt_path.read_bytes()
+            control_receipt_path.write_bytes(b"{malformed json")
+            build_evidence_index(root, index_path)
+            evidence_context = _evidence_context(manifest, manifest_root, self.catalog)
+            self.assertFalse(
+                _operational_run_receipt_ok(
+                    control_record,
+                    manifest_root,
+                    evidence_context,
+                    manifest,
+                    freshness_policy="control",
+                )
+            )
+            control_receipt_path.write_bytes(original_control_receipt)
+            build_evidence_index(root, index_path)
+            changed_control_receipt = json.loads(original_control_receipt)
+            changed_control_receipt["unexpected"] = "reject"
+            control_receipt_path.write_text(
+                json.dumps(changed_control_receipt, sort_keys=True), encoding="utf-8"
+            )
+            build_evidence_index(root, index_path)
+            evidence_context = _evidence_context(manifest, manifest_root, self.catalog)
+            self.assertFalse(
+                _operational_run_receipt_ok(
+                    control_record,
+                    manifest_root,
+                    evidence_context,
+                    manifest,
+                    freshness_policy="control",
+                )
+            )
+            control_receipt_path.write_bytes(original_control_receipt)
+            build_evidence_index(root, index_path)
+            changed_control_receipt = json.loads(original_control_receipt)
+            changed_control_receipt["claim"] = "governance"
+            control_receipt_path.write_text(
+                json.dumps(changed_control_receipt, sort_keys=True), encoding="utf-8"
+            )
+            build_evidence_index(root, index_path)
+            changed_receipt_report = assess_readiness(manifest_path, self.catalog)
+            self.assertLess(changed_receipt_report["score"], 100)
+            control_receipt_path.write_bytes(original_control_receipt)
+            build_evidence_index(root, index_path)
+            restored_receipt_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(restored_receipt_report["score"], 100)
+            for field, replacement in (
+                ("kube_context", "different-rke2-context"),
+                ("namespace", "different-namespace"),
+                ("kube_system_namespace_uid", "e4fabefa-c024-4588-88b1-c38095fd7740"),
+                ("application_namespace_uid", "2e7d7261-239a-447e-9461-a8c3f4115196"),
+            ):
+                with self.subTest(replayed_target_field=field):
+                    candidate = copy.deepcopy(deployment_target)
+                    candidate[field] = replacement
+                    manifest["deployment_target"] = candidate
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                    replay_report = assess_readiness(manifest_path, self.catalog)
+                    self.assertEqual(replay_report["status"], "fail")
+                    self.assertLess(replay_report["score"], 100)
+                    self.assertTrue(
+                        any("deployment_target" in error for error in replay_report["errors"]),
+                        replay_report,
+                    )
+            manifest["deployment_target"] = deployment_target
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            bootstrap_target = copy.deepcopy(deployment_target)
+            bootstrap_target["application_namespace_uid"] = None
+            manifest["deployment_target"] = bootstrap_target
+            manifest["observability"]["status"] = "pending"
+            manifest["bootstrap_authorization"] = {
+                field: deployment_target[field]
+                for field in ("kube_context", "kubeconfig_sha256", "inventory_sha256", "namespace")
+            }
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            bootstrap_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(bootstrap_report["score"], 90, bootstrap_report)
+            self.assertEqual(bootstrap_report["errors"], [], bootstrap_report)
+            manifest["deployment_target"] = deployment_target
+            manifest["observability"]["status"] = "pass"
+            del manifest["bootstrap_authorization"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            original_rollback_release = manifest["recovery"]["rollback_release"]
+            recovery_record_path = root / "recovery.json"
+            original_recovery_record = recovery_record_path.read_bytes()
+            manifest["recovery"]["rollback_release"] = "unrelated-release"
+            changed_recovery_record = json.loads(original_recovery_record)
+            changed_recovery_record["rollback_release"] = "unrelated-release"
+            recovery_record_path.write_text(json.dumps(changed_recovery_record), encoding="utf-8")
+            build_evidence_index(root, index_path)
+            wrong_rollback_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(wrong_rollback_report["criteria"][7]["status"], "fail")
+            self.assertEqual(wrong_rollback_report["score"], 90)
+            manifest["recovery"]["rollback_release"] = original_rollback_release
+            recovery_record_path.write_bytes(original_recovery_record)
+            build_evidence_index(root, index_path)
+            self.assertEqual(assess_readiness(manifest_path, self.catalog)["score"], 100)
+            self.assertTrue(any(
+                call.args[0] == "evidence/paperless-provenance.sigstore.json"
+                and call.args[1] == image_manifest_path
+                and call.kwargs.get("attestation") is True
+                for call in verifier.call_args_list
+            ))
+
+            image_statement_path = root / "paperless-provenance.json"
+            image_bundle_path = root / "paperless-provenance.sigstore.json"
+            original_image_statement = image_statement_path.read_bytes()
+            original_image_bundle = json.loads(image_bundle_path.read_text(encoding="utf-8"))
+            wrong_image_statement = json.loads(original_image_statement)
+            wrong_image_statement["subject"][0]["digest"]["sha256"] = "f" * 64
+            image_statement_path.write_text(json.dumps(wrong_image_statement), encoding="utf-8")
+            matching_wrong_bundle = copy.deepcopy(original_image_bundle)
+            matching_wrong_bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+                image_statement_path.read_bytes()
+            ).decode()
+            image_bundle_path.write_text(json.dumps(matching_wrong_bundle), encoding="utf-8")
+            build_evidence_index(root, index_path)
+            self.assertEqual(
+                assess_readiness(manifest_path, self.catalog)["criteria"][1]["status"],
+                "fail",
+            )
+
+            # The framework package statement cannot substitute for the image statement.
+            image_statement_path.write_bytes((root / "provenance.json").read_bytes())
+            matching_wrong_bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+                image_statement_path.read_bytes()
+            ).decode()
+            image_bundle_path.write_text(json.dumps(matching_wrong_bundle), encoding="utf-8")
+            build_evidence_index(root, index_path)
+            self.assertEqual(
+                assess_readiness(manifest_path, self.catalog)["criteria"][1]["status"],
+                "fail",
+            )
+            image_statement_path.write_bytes(original_image_statement)
+            image_bundle_path.write_text(json.dumps(original_image_bundle), encoding="utf-8")
+            build_evidence_index(root, index_path)
+            self.assertEqual(assess_readiness(manifest_path, self.catalog)["score"], 100)
+
+            image_row = manifest["release"]["artifacts"].pop()
+            build_evidence_index(root, index_path)
+            context = _evidence_context(manifest, manifest_root, self.catalog)
+            self.assertIsNotNone(context)
+            self.assertFalse(_release_ok(manifest, manifest_root, context))
+            missing_image_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(missing_image_report["criteria"][1]["status"], "fail")
+            self.assertTrue(any(
+                "must include an OCI image" in error
+                for error in missing_image_report["errors"]
+            ))
+            manifest["release"]["artifacts"].append(image_row)
+            image_row["image"] = image_repository + "@sha256:" + "f" * 64
+            build_evidence_index(root, index_path)
+            wrong_ref_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(wrong_ref_report["criteria"][1]["status"], "fail")
+            self.assertTrue(any(
+                ".digest must match the image digest" in error
+                for error in wrong_ref_report["errors"]
+            ))
+            image_row["image"] = image_ref
+            build_evidence_index(root, index_path)
+            self.assertEqual(assess_readiness(manifest_path, self.catalog)["score"], 100)
+
+            image_row["image"] = None
+            build_evidence_index(root, index_path)
+            invalid_ref_report = assess_readiness(manifest_path, self.catalog)
+            self.assertTrue(any(
+                ".image must be an exact repository@sha256" in error
+                for error in invalid_ref_report["errors"]
+            ))
+            image_row["image"] = image_ref
+            original_image_provenance_bundle_field = image_row.pop("provenance_bundle")
+            build_evidence_index(root, index_path)
+            missing_provenance_report = assess_readiness(manifest_path, self.catalog)
+            self.assertTrue(any(
+                ".provenance_bundle must identify indexed image provenance" in error
+                for error in missing_provenance_report["errors"]
+            ))
+            image_row["provenance_bundle"] = original_image_provenance_bundle_field
+            manifest["release"]["artifacts"].append(dict(image_row))
+            build_evidence_index(root, index_path)
+            duplicate_ref_report = assess_readiness(manifest_path, self.catalog)
+            self.assertTrue(any(
+                "image references must be unique" in error
+                for error in duplicate_ref_report["errors"]
+            ))
+            manifest["release"]["artifacts"].pop()
+            build_evidence_index(root, index_path)
+            self.assertEqual(assess_readiness(manifest_path, self.catalog)["score"], 100)
+
+            release_statement_path = root / "provenance.json"
+            release_bundle_path = root / "provenance.sigstore.json"
+            original_release_statement = release_statement_path.read_bytes()
+            original_release_bundle = release_bundle_path.read_bytes()
+            for wrong_subject in (
+                {"name": "provider-bundle", "digest": {"sha256": "f" * 64}},
+                {"name": "wrong-provider", "digest": {"sha256": provider_bundle_digest.removeprefix("sha256:")}},
+            ):
+                bad_statement = json.loads(original_release_statement)
+                bad_statement["subject"][1] = wrong_subject
+                release_statement_path.write_text(json.dumps(bad_statement), encoding="utf-8")
+                bad_bundle = json.loads(original_release_bundle)
+                bad_bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+                    release_statement_path.read_bytes()
+                ).decode()
+                release_bundle_path.write_text(json.dumps(bad_bundle), encoding="utf-8")
+                build_evidence_index(root, index_path)
+                self.assertEqual(
+                    assess_readiness(manifest_path, self.catalog)["criteria"][1]["status"],
+                    "fail",
+                )
+            release_statement_path.write_bytes(original_release_statement)
+            release_bundle_path.write_bytes(original_release_bundle)
+            build_evidence_index(root, index_path)
+            self.assertEqual(assess_readiness(manifest_path, self.catalog)["score"], 100)
+
+            original_provenance_bundle = (root / "provenance.sigstore.json").read_bytes()
+            tampered_provenance_bundle = json.loads(original_provenance_bundle)
+            tampered_provenance_bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+                b'{"subject":[]}'
+            ).decode()
+            (root / "provenance.sigstore.json").write_text(
+                json.dumps(tampered_provenance_bundle), encoding="utf-8"
+            )
+            build_evidence_index(root, index_path)
+            self.assertEqual(
+                assess_readiness(manifest_path, self.catalog)["criteria"][1]["status"],
+                "fail",
+            )
+            (root / "provenance.sigstore.json").write_bytes(original_provenance_bundle)
+            build_evidence_index(root, index_path)
+            with patch.dict(os.environ, {"ARCHIVEWEAVER_SIGNING_POLICY_SHA256": "0" * 64}):
+                untrusted_policy_report = assess_readiness(manifest_path, self.catalog)
+            self.assertLess(untrusted_policy_report["score"], 100)
+            self.assertEqual(untrusted_policy_report["criteria"][1]["status"], "fail")
+            self.assertEqual(untrusted_policy_report["criteria"][7]["status"], "fail")
 
             def assert_identity_collision_fails(
                 error_fragment: str, criterion_index: int
@@ -848,13 +1485,14 @@ class ReadinessTests(unittest.TestCase):
             build_evidence_index(root, root / "evidence-index.json")
 
             first_product_test = manifest["product_certification"]["test_matrix"][0]
+            original_product_test_environment = first_product_test["execution_environment"]
             first_product_test["execution_environment"] = {"artifacts": [], "provider_bundle": {}}
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["criteria"][2]["status"], "fail")
-            self.assertTrue(any("execution_environment must identify a supported execution environment" in error for error in report["errors"]))
-            first_product_test.pop("execution_environment")
+            self.assertTrue(any("execution_environment must explicitly identify a supported execution environment" in error for error in report["errors"]))
+            first_product_test["execution_environment"] = original_product_test_environment
 
             manifest["release"]["artifacts"].append(dict(manifest["release"]["artifacts"][0]))
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -1046,12 +1684,12 @@ class ReadinessTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             build_evidence_index(root, root / "evidence-index.json")
 
-            (root / "release.sig").write_bytes(b"")
+            (root / "release.sigstore.json").write_bytes(b"")
             build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["status"], "fail")
             self.assertEqual(report["criteria"][1]["status"], "fail")
-            (root / "release.sig").write_bytes(b"signature-bytes\n")
+            write_fixture_bundle("release.sigstore.json", artifact.read_bytes())
             build_evidence_index(root, root / "evidence-index.json")
             report = assess_readiness(manifest_path, self.catalog)
             self.assertEqual(report["status"], "pass")
@@ -1137,6 +1775,16 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(report["status"], "fail")
             self.assertTrue(any("execution_environment" in error for error in report["errors"]))
             manifest["product_certification"]["test_matrix"][0].pop("execution_environment")
+            write_evidence_payloads(manifest)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            build_evidence_index(root, root / "evidence-index.json")
+            omitted_environment_report = assess_readiness(manifest_path, self.catalog)
+            self.assertEqual(omitted_environment_report["criteria"][2]["status"], "fail")
+            self.assertTrue(any(
+                "execution_environment must explicitly identify"
+                in error for error in omitted_environment_report["errors"]
+            ))
+            manifest["product_certification"]["test_matrix"][0]["execution_environment"] = original_product_test_environment
 
             (root / "control.json").write_text('{"status":"pass"}\n', encoding="utf-8")
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -1191,8 +1839,19 @@ class ReadinessTests(unittest.TestCase):
             write_evidence_payloads(manifest)
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             build_evidence_index(root, root / "evidence-index.json")
+            evidence_context = _evidence_context(manifest, manifest_root, self.catalog)
+            self.assertTrue(
+                _evidence_record_exists(
+                    penetration_test,
+                    manifest_root,
+                    evidence_context,
+                    manifest,
+                    freshness_policy="security.penetration_test",
+                ),
+                "penetration-test receipt did not validate",
+            )
             report = assess_readiness(manifest_path, self.catalog)
-            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["status"], "pass", report)
             penetration_test["recorded_at"] = recorded_at
 
             backup = manifest["data_protection"]["backup"]

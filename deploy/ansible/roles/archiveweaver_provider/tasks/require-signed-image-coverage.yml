@@ -1,0 +1,39 @@
+---
+- name: Require the protected manifest digest for provider image coverage
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') is match('^[0-9a-f]{64}$')
+    fail_msg: "Provider image coverage requires the protected full-manifest SHA-256."
+  delegate_to: localhost
+  become: false
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Match every rendered provider image to signed release artifacts
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-provider-image-coverage.py"
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - "{{ archiveweaver_provider_image_coverage_runtime }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') }}"
+    stdin: "{{ archiveweaver_provider_image_coverage_model }}"
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_image_coverage_result
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Require complete signed provider image coverage
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_image_coverage_result.rc == 0
+    fail_msg: "Rendered provider images do not match the signed, indexed release artifact set."
+  no_log: true
+  tags: [provider, deploy, verify]

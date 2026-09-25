@@ -52,7 +52,8 @@ class GitHubProductionControlTests(unittest.TestCase):
                         "do_not_enforce_on_create": False,
                         "strict_required_status_checks_policy": True,
                         "required_status_checks": [
-                            {"context": context} for context in checks
+                            {"context": context, "integration_id": 15368}
+                            for context in checks
                         ],
                     },
                 },
@@ -85,6 +86,12 @@ class GitHubProductionControlTests(unittest.TestCase):
                 "archived": False,
                 "disabled": False,
                 "security_and_analysis": security,
+            },
+            github_actions_app={
+                "id": 15368,
+                "slug": "github-actions",
+                "html_url": "https://github.com/apps/github-actions",
+                "owner": {"login": "github"},
             },
             actions_permissions={
                 "enabled": True,
@@ -368,6 +375,13 @@ class GitHubProductionControlTests(unittest.TestCase):
                         "allowed_actions": "all",
                         "sha_pinning_required": False,
                     }
+                if endpoint == "apps/github-actions":
+                    return {
+                        "id": 15368,
+                        "slug": "github-actions",
+                        "html_url": "https://github.com/apps/github-actions",
+                        "owner": {"login": "github"},
+                    }
                 if endpoint.endswith("/actions/permissions/workflow"):
                     return {
                         "default_workflow_permissions": "read",
@@ -406,6 +420,7 @@ class GitHubProductionControlTests(unittest.TestCase):
         client = FakeClient()
         snapshot = self.audit["collect_snapshot"](client)
         self.assertEqual(snapshot.selected_actions, {})
+        self.assertIn("apps/github-actions", client.endpoints)
         self.assertFalse(
             any(endpoint.endswith("/selected-actions") for endpoint in client.endpoints)
         )
@@ -557,12 +572,88 @@ class GitHubProductionControlTests(unittest.TestCase):
         status = next(
             rule for rule in branch["rules"] if rule["type"] == "required_status_checks"
         )
+        status["parameters"]["required_status_checks"].append(
+            {"context": "Additional check"}
+        )
+        self.assertFalse(
+            self.results(replace(snapshot, rulesets=[branch, snapshot.rulesets[1]]))[
+                "main-ruleset"
+            ]
+        )
+
+        branch = copy.deepcopy(snapshot.rulesets[0])
+        status = next(
+            rule for rule in branch["rules"] if rule["type"] == "required_status_checks"
+        )
         status["parameters"]["required_status_checks"].pop()
         self.assertFalse(
             self.results(replace(snapshot, rulesets=[branch, snapshot.rulesets[1]]))[
                 "main-ruleset"
             ]
         )
+
+    def test_main_ruleset_requires_checks_from_github_actions_app(self) -> None:
+        snapshot = self.passing_snapshot()
+        for malformed in (
+            {"context": "CodeQL"},
+            {"context": "CodeQL", "integration_id": None},
+            {"context": "CodeQL", "integration_id": True},
+            {"context": "CodeQL", "integration_id": 0},
+            {"context": "CodeQL", "integration_id": "15368"},
+            {"context": "CodeQL", "integration_id": 15369},
+            {"context": "", "integration_id": 15368},
+        ):
+            with self.subTest(malformed=malformed):
+                branch = copy.deepcopy(snapshot.rulesets[0])
+                status = next(
+                    rule
+                    for rule in branch["rules"]
+                    if rule["type"] == "required_status_checks"
+                )
+                checks = status["parameters"]["required_status_checks"]
+                codeql_index = next(
+                    i for i, item in enumerate(checks) if item["context"] == "CodeQL"
+                )
+                checks[codeql_index] = malformed
+                self.assertFalse(
+                    self.results(replace(snapshot, rulesets=[branch, snapshot.rulesets[1]]))[
+                        "main-ruleset"
+                    ]
+                )
+
+        branch = copy.deepcopy(snapshot.rulesets[0])
+        status = next(
+            rule for rule in branch["rules"] if rule["type"] == "required_status_checks"
+        )
+        status["parameters"]["required_status_checks"].append(
+            {"context": "CodeQL", "integration_id": 15368}
+        )
+        self.assertFalse(
+            self.results(replace(snapshot, rulesets=[branch, snapshot.rulesets[1]]))[
+                "main-ruleset"
+            ]
+        )
+
+    def test_main_ruleset_requires_authoritative_github_actions_app_identity(self) -> None:
+        snapshot = self.passing_snapshot()
+        for malformed in (
+            None,
+            [],
+            {"id": 15368},
+            {**snapshot.github_actions_app, "id": True},
+            {**snapshot.github_actions_app, "id": 0},
+            {**snapshot.github_actions_app, "id": "15368"},
+            {**snapshot.github_actions_app, "id": 15369},
+            {**snapshot.github_actions_app, "slug": "other-app"},
+            {**snapshot.github_actions_app, "owner": {"login": "other"}},
+            {**snapshot.github_actions_app, "html_url": "https://example.com"},
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(
+                    self.results(replace(snapshot, github_actions_app=malformed))[
+                        "main-ruleset"
+                    ]
+                )
 
     def test_rulesets_reject_bypass_exclusions_and_mutable_tags(self) -> None:
         snapshot = self.passing_snapshot()
