@@ -64,6 +64,19 @@ class ReleaseToolsLockTests(unittest.TestCase):
             with self.subTest(content=content), self.assertRaises(RuntimeError):
                 parse_lock(content, "test lock")
 
+    def test_lock_parser_accepts_extras_and_canonicalizes_package_name(self) -> None:
+        digest = "a" * 64
+        self.assertEqual(
+            parse_lock(
+                (
+                    "CacheControl[filecache]==0.14.4 \\\n"
+                    f"    --hash=sha256:{digest}\n"
+                ),
+                "test lock",
+            ),
+            {"cachecontrol": "0.14.4"},
+        )
+
     def test_direct_requirements_must_be_exact_and_unique(self) -> None:
         self.assertEqual(
             direct_requirements("# tools\nExample_Pkg==1.2.3\n"),
