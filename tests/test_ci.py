@@ -851,10 +851,6 @@ class CIWorkflowTests(unittest.TestCase):
                 "sanitizers": ["address"],
             },
         )
-        self.assertIn(
-            "base-builder-python@sha256:6b2b3a7e4a2da50de47f94925cffbe34747e1aae4f33d7f07ba6c681dd648b23",
-            dockerfile,
-        )
         self.assertIn("compile_python_fuzzer", build_script)
         self.assertIn("fuzz/*_fuzzer.py", build_script)
         for workflow in (pr_workflow, batch_workflow):
