@@ -11,7 +11,7 @@ The following matrix is the policy applied by the planner. Product-specific fit 
 | Pacemaker / Corosync | supported | supported-with-stonith | supported | supported | STONITH-backed active/passive resource management |
 | Podman Quadlet | supported | conditional | conditional | conditional | Single-host systemd lifecycle; Pacemaker for failover |
 | k0s | supported | not-recommended | supported | supported | 3/5 controllers and a control-plane endpoint |
-| Docker Swarm | supported | not-recommended | supported | supported | 3/5 managers for Raft quorum |
+| Docker Swarm | supported | not-recommended | supported | supported | At least 3 managers for manager-failure tolerance; 3 or 5 are the normal quorum sizes |
 | MicroK8s | supported | not-recommended | supported | supported | HA datastore and 3/5 control-plane nodes |
 | Ansible orchestration adapter | supported | supported | supported | supported | Coordinates an underlying provider; it is not an HA runtime |
 
@@ -23,10 +23,20 @@ Ansible's row describes the hosts it can coordinate. It does not change the
 underlying runtime topology policy or create HA by itself; use a real
 Kubernetes, Swarm, Pacemaker, or product-native design for resilience.
 
+For Docker Swarm, `--nodes` counts all hosts, not managers. Two hosts could be
+two managers (neither manager can fail without losing quorum) or one manager
+and one worker (a functioning Swarm with no manager failover). The planner
+cannot distinguish those roles from the node count, so both two-host cases
+remain blocked for a production HA plan, including through Ansible. Neither
+`--external-datastore` nor `--allow-conditional` can change Swarm's internal
+manager quorum. Use at least three managers on separate hosts and verify the
+actual roles and failure behavior before promotion. See the
+[Docker Swarm administration guide](https://docs.docker.com/engine/swarm/admin_guide/).
+
 ## Required exception inputs
 
 - `--allow-conditional`: acknowledges that a product/mode needs design review;
-- `--external-datastore`: acknowledges externally managed consensus or state;
+- `--external-datastore`: acknowledges externally managed consensus or state for runtimes that support it; it does not externalize Docker Swarm's manager state;
 - `--stonith`: confirms fencing exists for Pacemaker two-node plans;
 - `--qdevice`: records that a quorum witness/device is planned.
 

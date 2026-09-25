@@ -1,0 +1,98 @@
+---
+# Run on the designated Kubernetes control host. The slurped bytes are checked
+# by the pinned controller interpreter; no PyYAML installation is needed on a node.
+- name: Inspect staged Kustomize path components
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /etc
+    - /etc/archiveweaver
+    - "{{ archiveweaver_kustomize_path | dirname }}"
+    - "{{ archiveweaver_kustomize_path }}"
+  register: archiveweaver_provider_kustomize_tree_ancestors
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Inspect every staged Kustomize directory
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: directory
+    hidden: true
+    follow: false
+  register: archiveweaver_provider_kustomize_tree_directories
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Inspect every staged Kustomize entry
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: any
+    hidden: true
+    follow: false
+  register: archiveweaver_provider_kustomize_tree_all_entries
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Hash every staged Kustomize input file independently
+  ansible.builtin.find:
+    paths: "{{ archiveweaver_kustomize_path }}"
+    recurse: true
+    file_type: file
+    hidden: true
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_provider_kustomize_tree_files
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Bound the staged Kustomize input before reading its contents
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_kustomize_tree_files.files | length > 0
+      - archiveweaver_provider_kustomize_tree_files.files | length <= 1000
+      - archiveweaver_provider_kustomize_tree_all_entries.files | length <= 1000
+      - archiveweaver_provider_kustomize_tree_files.files | map(attribute='size') | sum <= 16777216
+      - archiveweaver_provider_kustomize_tree_files.files | map(attribute='size') | max <= 8388608
+    fail_msg: "The staged Kustomize tree exceeds the approved local-input limits."
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Read the observed Kustomize file bytes for closure and digest validation
+  ansible.builtin.slurp:
+    src: "{{ item.path }}"
+  loop: "{{ archiveweaver_provider_kustomize_tree_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: archiveweaver_provider_kustomize_tree_slurped
+  no_log: true
+  tags: [provider, deploy, verify]
+
+- name: Require an immutable local-only Kustomize input closure
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-kustomize-bundle.py"
+      - "{{ archiveweaver_kustomize_bundle_sha256 }}"
+    stdin: >-
+      {{ {'root': archiveweaver_kustomize_path,
+          'ancestors': archiveweaver_provider_kustomize_tree_ancestors.results
+            | map(attribute='stat') | list,
+          'directories': archiveweaver_provider_kustomize_tree_directories.files,
+          'all_entries': archiveweaver_provider_kustomize_tree_all_entries.files,
+          'files': archiveweaver_provider_kustomize_tree_slurped.results} | to_json }}
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_kustomize_tree_validation
+  changed_when: false
+  failed_when: archiveweaver_provider_kustomize_tree_validation.rc != 0
+  check_mode: false
+  no_log: true
+  tags: [provider, deploy, verify]

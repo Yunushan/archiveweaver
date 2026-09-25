@@ -33,7 +33,6 @@
       - (ansible_limit | default('all', true)) in ['all', archiveweaver_controller_target_group]
     fail_msg: "Operational workflows must target the complete controller target group; partial --limit runs are not permitted."
   when:
-    - not ansible_check_mode | bool
     - >-
       archiveweaver_apply | default(false) | bool
       or archiveweaver_repair_apply | default(false) | bool
@@ -151,7 +150,6 @@
       - (ansible_skip_tags | default([]) | length) == 0
     fail_msg: "Operational workflows require an unfiltered play so mutation, verification, and evidence-sealing controls cannot be skipped."
   when:
-    - not ansible_check_mode | bool
     - >-
       archiveweaver_apply | default(false) | bool
       or archiveweaver_repair_apply | default(false) | bool
@@ -172,9 +170,12 @@
       - "{{ archiveweaver_bundle_root }}"
       - "{{ archiveweaver_readiness_manifest_path }}"
       - "{{ archiveweaver_evidence_root }}"
+      - "{{ archiveweaver_bundle_root }}/inventory/production/hosts.yml"
+      - "{{ archiveweaver_bundle_root }}/inventory/staging/hosts.yml"
     expand_argument_vars: false
   environment:
     PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+    PYTHONDONTWRITEBYTECODE: "1"
   delegate_to: localhost
   become: false
   register: archiveweaver_controller_preflight_path_boundary
@@ -193,10 +194,103 @@
   no_log: true
   tags: [always, controller]
 
+- name: Determine whether a staging recovery drill was requested
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_recovery_drill_active: "{{ archiveweaver_recovery_drill | default(false) | bool }}"
+  tags: [always, controller]
+
+- name: Determine whether the first production apply was requested
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_bootstrap_active: "{{ archiveweaver_bootstrap_apply | default(false) | bool }}"
+  tags: [always, controller]
+
+- name: Determine whether the first staging seed was requested
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_staging_seed_active: "{{ archiveweaver_staging_seed_apply | default(false) | bool }}"
+  tags: [always, controller]
+
+- name: Confine first staging seed to the approved Paperless RKE2 staging target
+  ansible.builtin.assert:
+    that:
+      - ansible_inventory_sources | default([]) is sequence
+      - ansible_inventory_sources | default([]) | length == 1
+      - >-
+        ansible_inventory_sources == ['inventory/staging/hosts.yml']
+        or ansible_inventory_sources == [archiveweaver_bundle_root ~ '/inventory/staging/hosts.yml']
+      - archiveweaver_environment == 'staging'
+      - archiveweaver_evidence_environment == 'staging'
+      - archiveweaver_solution_id == 'paperless-ngx'
+      - archiveweaver_runtime == 'rke2'
+      - archiveweaver_nodes in ['3', '3+']
+      - not (ansible_check_mode | bool)
+      - not (archiveweaver_staging_preview | default(false) | bool)
+      - archiveweaver_apply | default(false) | bool
+      - not (archiveweaver_controller_preflight_bootstrap_active | bool)
+      - not (archiveweaver_repair_apply | default(false) | bool)
+      - not (archiveweaver_rollback_apply | default(false) | bool)
+      - not (archiveweaver_run_verification | default(false) | bool)
+      - not (archiveweaver_controller_preflight_recovery_drill_active | bool)
+    fail_msg: "First staging seed requires the complete staging inventory, Paperless on RKE2, and one non-check apply."
+  when: archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Confine first-apply bootstrap to the approved Paperless RKE2 production target
+  ansible.builtin.assert:
+    that:
+      - ansible_inventory_sources | default([]) is sequence
+      - ansible_inventory_sources | default([]) | length == 1
+      - >-
+        ansible_inventory_sources == ['inventory/production/hosts.yml']
+        or ansible_inventory_sources == [archiveweaver_bundle_root ~ '/inventory/production/hosts.yml']
+      - archiveweaver_environment == 'production'
+      - archiveweaver_evidence_environment == 'production'
+      - archiveweaver_solution_id == 'paperless-ngx'
+      - archiveweaver_runtime == 'rke2'
+      - archiveweaver_nodes in ['3', '3+']
+      - not (ansible_check_mode | bool)
+      - not (archiveweaver_staging_preview | default(false) | bool)
+      - archiveweaver_apply | default(false) | bool
+      - not (archiveweaver_repair_apply | default(false) | bool)
+      - not (archiveweaver_rollback_apply | default(false) | bool)
+      - not (archiveweaver_run_verification | default(false) | bool)
+      - not (archiveweaver_controller_preflight_recovery_drill_active | bool)
+      - not (archiveweaver_controller_preflight_staging_seed_active | bool)
+    fail_msg: "First-apply bootstrap requires the complete production inventory, Paperless on RKE2, and one non-check apply."
+  when: archiveweaver_controller_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Confine recovery drills to the approved staging inventory and target
+  ansible.builtin.assert:
+    that:
+      - ansible_inventory_sources | default([]) is sequence
+      - ansible_inventory_sources | default([]) | length == 1
+      - >-
+        ansible_inventory_sources == ['inventory/staging/hosts.yml']
+        or ansible_inventory_sources == [archiveweaver_bundle_root ~ '/inventory/staging/hosts.yml']
+      - archiveweaver_environment == 'staging'
+      - archiveweaver_evidence_environment == 'production'
+      - not (ansible_check_mode | bool)
+      - not (archiveweaver_staging_preview | default(false) | bool)
+      - not (archiveweaver_apply | default(false) | bool)
+      - archiveweaver_repair_apply | default(false) | bool or archiveweaver_rollback_apply | default(false) | bool
+      - not ((archiveweaver_repair_apply | default(false) | bool) and (archiveweaver_rollback_apply | default(false) | bool))
+      - >-
+        not (archiveweaver_rollback_apply | default(false) | bool)
+        or archiveweaver_rollback_environment | default('') == 'staging'
+    fail_msg: "Recovery drills require the single approved staging inventory, a production evidence target, and one non-check repair or rollback action."
+  when: archiveweaver_controller_preflight_recovery_drill_active | bool
+  no_log: true
+  tags: [always, controller]
+
 - name: Determine whether immutable source verification applies
   ansible.builtin.set_fact:
     archiveweaver_controller_preflight_source_gate_active: >-
-      {{ (not (ansible_check_mode | bool)) and (
+      {{ not ((ansible_check_mode | bool)
+         and (archiveweaver_staging_preview | default(false) | bool)
+         and archiveweaver_environment == 'staging')
+         and (
          archiveweaver_apply | default(false) | bool
          or archiveweaver_repair_apply | default(false) | bool
          or archiveweaver_run_verification | default(false) | bool
@@ -240,6 +334,8 @@
   delegate_to: localhost
   become: false
   register: archiveweaver_controller_preflight_source_identity
+  environment:
+    GIT_OPTIONAL_LOCKS: "0"
   changed_when: false
   check_mode: false
   when: archiveweaver_controller_preflight_source_gate_active | bool
@@ -315,9 +411,11 @@
       - "{{ archiveweaver_bundle_root }}/../../scripts/verify-readiness-manifest.py"
       - "{{ archiveweaver_readiness_manifest_path }}"
       - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') }}"
     expand_argument_vars: false
   environment:
     PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+    PYTHONDONTWRITEBYTECODE: "1"
   delegate_to: localhost
   become: false
   register: archiveweaver_controller_preflight_operational_manifest_verification
@@ -367,6 +465,9 @@
         archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('version')
         == archiveweaver_release
       - >-
+        archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('source_revision')
+        == (lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower)
+      - >-
         archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('execution_environment', {}).get('digest')
         == archiveweaver_execution_environment_digest
     fail_msg: "The applied workflow inputs do not match the controller-approved readiness manifest identity."
@@ -380,30 +481,14 @@
       - archiveweaver_execution_environment_digest is string
       - archiveweaver_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
     fail_msg: "Applied controller workflows require the immutable execution-environment digest binding."
-  when:
-    - not ansible_check_mode | bool
-    - archiveweaver_apply | default(false) | bool
-      or archiveweaver_repair_apply | default(false) | bool
-      or archiveweaver_run_verification | default(false) | bool
-      or archiveweaver_certification_apply | default(false) | bool
-      or archiveweaver_restore_apply | default(false) | bool
-      or archiveweaver_failure_apply | default(false) | bool
-      or archiveweaver_rollback_apply | default(false) | bool
+  when: archiveweaver_controller_preflight_source_gate_active | bool
   no_log: true
   tags: [always, controller]
 
 - name: Read the controller-provided execution-environment identity
   ansible.builtin.set_fact:
     archiveweaver_controller_preflight_execution_environment_digest: "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') }}"
-  when:
-    - not ansible_check_mode | bool
-    - archiveweaver_apply | default(false) | bool
-      or archiveweaver_repair_apply | default(false) | bool
-      or archiveweaver_run_verification | default(false) | bool
-      or archiveweaver_certification_apply | default(false) | bool
-      or archiveweaver_restore_apply | default(false) | bool
-      or archiveweaver_failure_apply | default(false) | bool
-      or archiveweaver_rollback_apply | default(false) | bool
+  when: archiveweaver_controller_preflight_source_gate_active | bool
   no_log: true
   tags: [always, controller]
 
@@ -413,27 +498,409 @@
       - archiveweaver_controller_preflight_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
       - archiveweaver_controller_preflight_execution_environment_digest == archiveweaver_execution_environment_digest
     fail_msg: "The controller-provided execution-environment identity does not match the applied job binding."
+  when: archiveweaver_controller_preflight_source_gate_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require first-use or production post-apply evidence controls before mutation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_operator is string
+      - archiveweaver_operator is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_fixture_set is string
+      - archiveweaver_fixture_set is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_evidence_publish_enabled | bool
+      - archiveweaver_evidence_publish_command is sequence
+      - archiveweaver_evidence_publish_command is not string
+      - archiveweaver_evidence_publish_command | length > 0
+      - archiveweaver_evidence_verify_command is sequence
+      - archiveweaver_evidence_verify_command is not string
+      - archiveweaver_evidence_verify_command | length > 0
+      - archiveweaver_evidence_retention_days | int > 0
+      - archiveweaver_evidence_immutable | bool
+      - archiveweaver_evidence_access_logged | bool
+    fail_msg: "A production apply requires attributable verification and immutable evidence publication before mutation."
   when:
-    - not ansible_check_mode | bool
     - archiveweaver_apply | default(false) | bool
-      or archiveweaver_repair_apply | default(false) | bool
-      or archiveweaver_run_verification | default(false) | bool
-      or archiveweaver_certification_apply | default(false) | bool
-      or archiveweaver_restore_apply | default(false) | bool
-      or archiveweaver_failure_apply | default(false) | bool
-      or archiveweaver_rollback_apply | default(false) | bool
+    - not (ansible_check_mode | bool)
+    - >-
+      archiveweaver_environment == 'production'
+      or archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Verify first-use or production evidence publication hooks before mutation
+  ansible.builtin.include_tasks:
+    file: "{{ role_path }}/tasks/hook-boundary.yml"
+    apply:
+      tags: [controller]
+  vars:
+    archiveweaver_hook_specs:
+      - name: evidence-publish
+        command: "{{ archiveweaver_evidence_publish_command }}"
+        sha256: "{{ archiveweaver_evidence_publish_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_evidence_publish_command_argv_sha256 }}"
+      - name: evidence-verify
+        command: "{{ archiveweaver_evidence_verify_command }}"
+        sha256: "{{ archiveweaver_evidence_verify_command_sha256 }}"
+        argv_sha256: "{{ archiveweaver_evidence_verify_command_argv_sha256 }}"
+  when:
+    - archiveweaver_apply | default(false) | bool
+    - not (ansible_check_mode | bool)
+    - >-
+      archiveweaver_environment == 'production'
+      or archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Bind the first-use inventory to its protected digest
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_first_use_inventory_path: >-
+      {{ archiveweaver_bundle_root ~ '/inventory/'
+         ~ ('production' if archiveweaver_controller_preflight_bootstrap_active | bool else 'staging')
+         ~ '/hosts.yml' }}
+    archiveweaver_controller_preflight_first_use_inventory_sha256: >-
+      {{ lookup('ansible.builtin.env',
+          'ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256'
+          if archiveweaver_controller_preflight_bootstrap_active | bool
+          else 'ARCHIVEWEAVER_STAGING_INVENTORY_SHA256') }}
+  when: >-
+    archiveweaver_controller_preflight_bootstrap_active | bool
+    or archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Inspect the separately approved first-use inventory bytes
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_controller_preflight_first_use_inventory_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_first_use_inventory_stat
+  when: >-
+    archiveweaver_controller_preflight_bootstrap_active | bool
+    or archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the protected first-use inventory identity
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_first_use_inventory_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_controller_preflight_first_use_inventory_stat.stat.exists | default(false) | bool
+      - archiveweaver_controller_preflight_first_use_inventory_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_controller_preflight_first_use_inventory_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_controller_preflight_first_use_inventory_stat.stat.uid | default(-1) | int == 0
+      - archiveweaver_controller_preflight_first_use_inventory_stat.stat.mode in ['0400', '0440', '0600', '0640']
+      - archiveweaver_controller_preflight_first_use_inventory_stat.stat.checksum | default('') == archiveweaver_controller_preflight_first_use_inventory_sha256
+    fail_msg: "First-use inventory bytes must match the separately protected controller digest."
+  when: >-
+    archiveweaver_controller_preflight_bootstrap_active | bool
+    or archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require independent first-apply authorization and named change controls
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256') is match('^[0-9a-f]{64}$')
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kustomize_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kubeconfig_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kube_context is match('^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,252}$')
+      - archiveweaver_namespace is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - archiveweaver_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_approval_ticket is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_backup_verified | bool
+      - archiveweaver_release_manifest_verified | bool
+      - archiveweaver_product_stack_ready | bool
+      - archiveweaver_operator == archiveweaver_controller_preflight_readiness_identity.get('control', {}).get('operator')
+    fail_msg: "First-apply bootstrap requires an independently approved authorization, reviewed digests, change ticket, and verified backup."
+  when: archiveweaver_controller_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Verify the separately approved first-apply authorization
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-bootstrap-authorization.py"
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256') }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') }}"
+      - "{{ archiveweaver_execution_environment_digest }}"
+      - "{{ 'sha256:' ~ archiveweaver_provider_bundle_sha256 }}"
+      - "{{ archiveweaver_kustomize_bundle_sha256 }}"
+      - "{{ archiveweaver_kubeconfig_sha256 }}"
+      - "{{ archiveweaver_controller_preflight_first_use_inventory_sha256 }}"
+      - "{{ archiveweaver_kube_context }}"
+      - "{{ archiveweaver_namespace }}"
+      - "{{ archiveweaver_change_id }}"
+      - "{{ archiveweaver_approval_ticket }}"
+    expand_argument_vars: false
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_bootstrap_authorization
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the first-apply authorization to match the protected release
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_bootstrap_authorization.rc == 0
+    fail_msg: "The protected manifest and independent first-apply authorization do not match this release and target."
+  when: archiveweaver_controller_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require independent staging seed authorization and named change controls
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256') is match('^[0-9a-f]{64}$')
+      - archiveweaver_provider_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kustomize_bundle_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kubeconfig_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kube_context is match('^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,252}$')
+      - archiveweaver_namespace is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - archiveweaver_change_id is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_approval_ticket is match('^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$')
+      - archiveweaver_backup_verified | bool
+      - archiveweaver_release_manifest_verified | bool
+      - archiveweaver_product_stack_ready | bool
+      - archiveweaver_operator == archiveweaver_controller_preflight_readiness_identity.get('control', {}).get('operator')
+    fail_msg: "First staging seed requires independent authorization, reviewed digests, change ticket, and verified backup."
+  when: archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Verify the separately approved first staging seed authorization
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-staging-seed-authorization.py"
+      - "{{ archiveweaver_readiness_manifest_path }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_READINESS_MANIFEST_SHA256') }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256') }}"
+      - "{{ lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') }}"
+      - "{{ archiveweaver_execution_environment_digest }}"
+      - "{{ 'sha256:' ~ archiveweaver_provider_bundle_sha256 }}"
+      - "{{ archiveweaver_kustomize_bundle_sha256 }}"
+      - "{{ archiveweaver_kubeconfig_sha256 }}"
+      - "{{ archiveweaver_controller_preflight_first_use_inventory_sha256 }}"
+      - "{{ archiveweaver_kube_context }}"
+      - "{{ archiveweaver_namespace }}"
+      - "{{ archiveweaver_change_id }}"
+      - "{{ archiveweaver_approval_ticket }}"
+    expand_argument_vars: false
+  environment:
+    PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_staging_seed_authorization
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the staging seed authorization to match the protected release
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_staging_seed_authorization.rc == 0
+    fail_msg: "The protected manifest and independent staging seed authorization do not match this release and target."
+  when: archiveweaver_controller_preflight_staging_seed_active | bool
   no_log: true
   tags: [always, controller]
 
 - name: Determine whether the final readiness gate applies
   ansible.builtin.set_fact:
     archiveweaver_controller_preflight_readiness_gate_active: >-
-      {{ (not (ansible_check_mode | bool)) and (
+      {{ not ((ansible_check_mode | bool)
+         and (archiveweaver_staging_preview | default(false) | bool)
+         and archiveweaver_environment == 'staging')
+         and not (archiveweaver_controller_preflight_recovery_drill_active | bool)
+         and not (archiveweaver_controller_preflight_bootstrap_active | bool)
+         and not (archiveweaver_controller_preflight_staging_seed_active | bool)
+         and (
          archiveweaver_apply | default(false) | bool
          or archiveweaver_repair_apply | default(false) | bool
          or archiveweaver_run_verification | default(false) | bool
          or archiveweaver_rollback_apply | default(false) | bool
       ) }}
+  tags: [always, controller]
+
+- name: Select the ordinary Paperless RKE2 production target binding
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_target_binding_active: >-
+      {{ (archiveweaver_controller_preflight_readiness_gate_active | bool)
+         and archiveweaver_environment == 'production'
+         and archiveweaver_evidence_environment == 'production'
+         and archiveweaver_solution_id == 'paperless-ngx'
+         and archiveweaver_runtime == 'rke2' }}
+  tags: [always, controller]
+
+- name: Read the protected production deployment target
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_target_binding: >-
+      {{ archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}) }}
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the protected manifest to identify the approved production target
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_target_binding is mapping
+      - >-
+        archiveweaver_controller_preflight_target_binding.keys() | list | sort
+        == ['application_namespace_uid', 'inventory_sha256', 'kube_context',
+            'kube_system_namespace_uid', 'kubeconfig_sha256', 'namespace'] | sort
+      - archiveweaver_controller_preflight_target_binding.kube_context == archiveweaver_kube_context
+      - archiveweaver_controller_preflight_target_binding.kubeconfig_sha256 == archiveweaver_kubeconfig_sha256
+      - archiveweaver_controller_preflight_target_binding.inventory_sha256 == lookup('ansible.builtin.env', 'ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256')
+      - archiveweaver_controller_preflight_target_binding.namespace == archiveweaver_namespace
+      - archiveweaver_controller_preflight_target_binding.kube_system_namespace_uid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+      - archiveweaver_controller_preflight_target_binding.application_namespace_uid is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+      - >-
+        archiveweaver_controller_preflight_target_binding.kube_system_namespace_uid
+        != archiveweaver_controller_preflight_target_binding.application_namespace_uid
+      - archiveweaver_kubeconfig_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_controller_preflight_target_binding.inventory_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kube_context is match('^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,252}$')
+      - archiveweaver_namespace is match('^[a-z0-9][a-z0-9-]{0,62}$')
+      - groups['archiveweaver_control'] | default([]) | length > 0
+      - groups['archiveweaver_control'][0] in (groups['archiveweaver_nodes'] | default([]))
+      - ansible_inventory_sources | default([]) is sequence
+      - ansible_inventory_sources | default([]) is not string
+      - ansible_inventory_sources | default([]) | length == 1
+      - >-
+        ansible_inventory_sources == ['inventory/production/hosts.yml']
+        or ansible_inventory_sources == [archiveweaver_bundle_root ~ '/inventory/production/hosts.yml']
+    fail_msg: "The protected readiness manifest must identify the exact approved production inventory, cluster context, and Namespace UIDs."
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require one production Kubernetes target on every managed host
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].archiveweaver_kube_context | default('') == archiveweaver_kube_context
+      - hostvars[item].archiveweaver_kubeconfig_sha256 | default('') == archiveweaver_kubeconfig_sha256
+      - hostvars[item].archiveweaver_namespace | default('') == archiveweaver_namespace
+    fail_msg: "All production managed hosts must use the protected Kubernetes target."
+  loop: "{{ groups['archiveweaver_nodes'] | default([]) }}"
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Inspect the exact production inventory selected by the controller
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_bundle_root }}/inventory/production/hosts.yml"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_controller_preflight_target_inventory_stat
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require the approved production inventory bytes
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_target_inventory_stat.stat.exists | default(false) | bool
+      - archiveweaver_controller_preflight_target_inventory_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_controller_preflight_target_inventory_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_controller_preflight_target_inventory_stat.stat.uid | default(-1) | int == 0
+      - archiveweaver_controller_preflight_target_inventory_stat.stat.mode in ['0400', '0440', '0600', '0640']
+      - >-
+        archiveweaver_controller_preflight_target_inventory_stat.stat.checksum
+        | default('') == archiveweaver_controller_preflight_target_binding.inventory_sha256
+    fail_msg: "The selected production inventory does not match the protected manifest digest."
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Inspect the approved kubeconfig on the production control host
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_kubeconfig }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: "{{ groups['archiveweaver_control'][0] }}"
+  become: true
+  register: archiveweaver_controller_preflight_target_kubeconfig_stat
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Require approved kubeconfig bytes before querying the production cluster
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_target_kubeconfig_stat.stat.exists | default(false) | bool
+      - archiveweaver_controller_preflight_target_kubeconfig_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_controller_preflight_target_kubeconfig_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_controller_preflight_target_kubeconfig_stat.stat.uid | default(-1) | int == 0
+      - archiveweaver_controller_preflight_target_kubeconfig_stat.stat.mode in ['0600', '0640']
+      - >-
+        archiveweaver_controller_preflight_target_kubeconfig_stat.stat.checksum
+        | default('') == archiveweaver_controller_preflight_target_binding.kubeconfig_sha256
+    fail_msg: "The production control host kubeconfig differs from the protected readiness target."
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Read the live kube-system Namespace UID from the approved cluster
+  ansible.builtin.command:
+    argv: >-
+      {{ ['kubectl', '--kubeconfig', archiveweaver_kubeconfig,
+          '--context', archiveweaver_kube_context, '--request-timeout=30s',
+          'get', 'namespace', 'kube-system', '-o', 'jsonpath={.metadata.uid}'] }}
+  delegate_to: "{{ groups['archiveweaver_control'][0] }}"
+  become: true
+  register: archiveweaver_controller_preflight_kube_system_uid
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Read the live application Namespace UID from the approved cluster
+  ansible.builtin.command:
+    argv: >-
+      {{ ['kubectl', '--kubeconfig', archiveweaver_kubeconfig,
+          '--context', archiveweaver_kube_context, '--request-timeout=30s',
+          'get', 'namespace', archiveweaver_namespace, '-o', 'jsonpath={.metadata.uid}'] }}
+  delegate_to: "{{ groups['archiveweaver_control'][0] }}"
+  become: true
+  register: archiveweaver_controller_preflight_application_uid
+  changed_when: false
+  check_mode: false
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Bind ordinary production apply and verify to both live Namespace UIDs
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_kube_system_uid.rc == 0
+      - archiveweaver_controller_preflight_application_uid.rc == 0
+      - archiveweaver_controller_preflight_kube_system_uid.stdout | trim == archiveweaver_controller_preflight_target_binding.kube_system_namespace_uid
+      - archiveweaver_controller_preflight_application_uid.stdout | trim == archiveweaver_controller_preflight_target_binding.application_namespace_uid
+    fail_msg: "The live production cluster or application Namespace UID does not match the protected readiness target."
+  when: archiveweaver_controller_preflight_target_binding_active | bool
+  no_log: true
   tags: [always, controller]
 
 - name: Validate the controller readiness manifest boundary
@@ -492,10 +959,20 @@
       - --json
   environment:
     PYTHONPATH: "{{ archiveweaver_readiness_pythonpath }}"
+    PYTHONDONTWRITEBYTECODE: "1"
   register: archiveweaver_controller_preflight_readiness_result
   changed_when: false
+  failed_when: >-
+    archiveweaver_controller_preflight_readiness_result.rc != 0
+    and not (archiveweaver_controller_preflight_bootstrap_active | bool
+             and archiveweaver_controller_preflight_readiness_result.rc == 2)
+    and not (archiveweaver_controller_preflight_staging_seed_active | bool
+             and archiveweaver_controller_preflight_readiness_result.rc == 2)
   check_mode: false
-  when: archiveweaver_controller_preflight_readiness_gate_active | bool
+  when: >-
+    archiveweaver_controller_preflight_readiness_gate_active | bool
+    or archiveweaver_controller_preflight_bootstrap_active | bool
+    or archiveweaver_controller_preflight_staging_seed_active | bool
   no_log: true
   tags: [always, controller]
 
@@ -503,8 +980,11 @@
   ansible.builtin.set_fact:
     archiveweaver_controller_preflight_readiness_report: "{{ archiveweaver_controller_preflight_readiness_result.stdout | from_json }}"
   when:
-    - archiveweaver_controller_preflight_readiness_gate_active | bool
-    - archiveweaver_controller_preflight_readiness_result.rc == 0
+    - >-
+      archiveweaver_controller_preflight_readiness_gate_active | bool
+      or archiveweaver_controller_preflight_bootstrap_active | bool
+      or archiveweaver_controller_preflight_staging_seed_active | bool
+    - archiveweaver_controller_preflight_readiness_result.rc in [0, 2]
   no_log: true
   tags: [always, controller]
 
@@ -523,6 +1003,70 @@
     fail_msg: "Applied workflow identity or execution-environment digest does not match the signed 100/100 readiness manifest."
   when: archiveweaver_controller_preflight_readiness_gate_active | bool
   no_log: true
+  tags: [always, controller]
+
+- name: Require nine independently proven pre-deployment readiness domains
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_readiness_result.rc == 2
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('status') == 'fail'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('score', 0) | int == 90
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('errors', []) | length == 0
+      - >-
+        (archiveweaver_controller_preflight_readiness_report | default({})).get('criteria', [])
+        | selectattr('status', 'equalto', 'pass') | map(attribute='code') | list | sort
+        == ['control', 'data_protection', 'governance', 'product', 'recovery',
+            'release', 'resilience', 'security', 'support']
+      - >-
+        (archiveweaver_controller_preflight_readiness_report | default({})).get('criteria', [])
+        | selectattr('status', 'equalto', 'fail') | map(attribute='code') | list
+        == ['observability']
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('release_version') == archiveweaver_release
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+    fail_msg: "First-apply bootstrap requires nine valid 90-point pre-deployment domains; only live observability may remain pending."
+  when: archiveweaver_controller_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Attest the approved first-apply bootstrap floor
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_bootstrap_authorized: true
+  when: archiveweaver_controller_preflight_bootstrap_active | bool
+  tags: [always, controller]
+
+- name: Require four independently proven preseed readiness domains
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_controller_preflight_readiness_result.rc == 2
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('status') == 'fail'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('score', 0) | int >= 40
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('score', 0) | int < 100
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('errors', []) | length == 0
+      - >-
+        ['control', 'release', 'governance', 'support']
+        | difference((archiveweaver_controller_preflight_readiness_report | default({})).get('criteria', [])
+          | selectattr('status', 'equalto', 'pass') | map(attribute='code') | list)
+        | length == 0
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('service', {}).get('environment') == 'staging'
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('release_version') == archiveweaver_release
+      - (archiveweaver_controller_preflight_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+    fail_msg: "First staging seed requires valid control, release, governance, and support evidence before deployment."
+  when: archiveweaver_controller_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, controller]
+
+- name: Attest the approved first staging seed floor
+  ansible.builtin.set_fact:
+    archiveweaver_controller_preflight_staging_seed_authorized: true
+  when: archiveweaver_controller_preflight_staging_seed_active | bool
   tags: [always, controller]
 
 - name: Attest completed controller preflight

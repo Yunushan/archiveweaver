@@ -43,6 +43,7 @@ class CatalogMatrixIntegrationTests(unittest.TestCase):
     def test_every_renderable_solution_mode_has_a_deterministic_envelope(self) -> None:
         image = "registry.example.org/archiveweaver/product@sha256:" + "a" * 64
         combinations = 0
+        paperless_kubernetes_blocks = 0
         for solution_id in self.catalog.solutions:
             for mode in self.catalog.runtimes:
                 if mode == "pacemaker":
@@ -55,6 +56,14 @@ class CatalogMatrixIntegrationTests(unittest.TestCase):
                     }
                     if mode == "ansible":
                         options["underlying_mode"] = "raw"
+                    if solution_id == "paperless-ngx" and self.catalog.runtimes[mode]["kind"] == "kubernetes":
+                        plan = build_plan(self.catalog, solution_id, mode, "1", os_id, allow_conditional=True)
+                        self.assertTrue(any("Redis-compatible broker" in item for item in plan.prerequisites))
+                        self.assertFalse(any("apply -k" in item for item in plan.commands))
+                        with self.assertRaisesRegex(ValueError, "release-specific product stack"):
+                            render(self.catalog, solution_id, mode, "1", os_id, **options)
+                        paperless_kubernetes_blocks += 1
+                        continue
                     plan, content = render(
                         self.catalog,
                         solution_id,
@@ -66,7 +75,8 @@ class CatalogMatrixIntegrationTests(unittest.TestCase):
                     self.assertNotEqual(plan["status"], "blocked")
                     self.assertTrue(content.strip())
                     combinations += 1
-        self.assertEqual(combinations, 540)
+        self.assertEqual(combinations, 532)
+        self.assertEqual(paperless_kubernetes_blocks, 8)
 
 
 if __name__ == "__main__":

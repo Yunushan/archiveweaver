@@ -1,0 +1,29 @@
+{
+  "staging_seed_authorization": {
+    "schema_version": 1,
+    "purpose": "first-staging-apply",
+    "service": {
+      "solution_id": "paperless-ngx",
+      "runtime": "ansible",
+      "underlying_runtime": "rke2",
+      "os_id": "ubuntu-24.04",
+      "environment": "staging"
+    },
+    "release_version": "REPLACE_WITH_PINNED_RELEASE",
+    "source_repository": "REPLACE_WITH_GITHUB_OWNER_REPOSITORY",
+    "source_repository_id": 0,
+    "source_revision": "REPLACE_WITH_SIGNED_COMMIT",
+    "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
+    "provider_bundle_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
+    "kustomize_bundle_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+    "kubeconfig_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+    "inventory_sha256": "REPLACE_WITH_64_HEX_DIGEST",
+    "kube_context": "REPLACE_WITH_STAGING_CONTEXT",
+    "namespace": "REPLACE_WITH_DEDICATED_STAGING_NAMESPACE",
+    "change_ticket": "REPLACE_WITH_CHANGE_TICKET",
+    "approval_ticket": "REPLACE_WITH_INDEPENDENT_APPROVAL_TICKET",
+    "approved_by": "REPLACE_WITH_INDEPENDENT_APPROVER",
+    "issued_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
+    "expires_at": "REPLACE_WITH_RFC3339_TIMESTAMP"
+  }
+}

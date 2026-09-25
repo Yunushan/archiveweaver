@@ -8,7 +8,7 @@ from setuptools import setup
 
 ROOT = Path(__file__).resolve().parent
 BUNDLE_MANIFEST = ROOT / "packaging" / "operational-bundle-files.txt"
-ALLOWED_ROOTS = ("deploy/ansible/", "scripts/")
+ALLOWED_ROOTS = ("deploy/ansible/", "deploy/paperless-ngx/", "scripts/")
 
 
 def operational_data_files() -> list[tuple[str, list[str]]]:

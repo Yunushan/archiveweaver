@@ -12,7 +12,16 @@
 
 - name: Build a safe kubectl argv prefix
   ansible.builtin.set_fact:
-    archiveweaver_provider_kubectl_argv: "{{ ['kubectl'] + (['--kubeconfig', archiveweaver_kubeconfig] if archiveweaver_kubeconfig | length > 0 else []) }}"
+    archiveweaver_provider_kubectl_argv: >-
+      {{ ['kubectl', '--kubeconfig', archiveweaver_kubeconfig,
+          '--context', archiveweaver_kube_context, '--request-timeout=30s'] }}
+  tags: [provider, deploy]
+
+- name: Derive the separately authorized first-use Kubernetes mode
+  ansible.builtin.set_fact:
+    archiveweaver_provider_first_use_active: >-
+      {{ (archiveweaver_bootstrap_apply | default(false) | bool)
+         or (archiveweaver_staging_seed_apply | default(false) | bool) }}
   tags: [provider, deploy]
 
 - name: Validate the Kubernetes cluster before apply
@@ -70,6 +79,7 @@
     recurse: true
     file_type: file
     hidden: true
+    get_checksum: true
     checksum_algorithm: sha256
   register: archiveweaver_provider_kustomize_files
   no_log: true
@@ -114,6 +124,11 @@
   when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
   tags: [provider, deploy]
 
+- name: Require a protected local-only Kustomize closure before rendering
+  ansible.builtin.include_tasks: verify-kustomize-tree.yml
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
 - name: Render the staged product Kustomize bundle read-only
   ansible.builtin.command:
     argv: "{{ archiveweaver_provider_kubectl_argv + ['kustomize', archiveweaver_kustomize_path] }}"
@@ -124,6 +139,34 @@
   when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
   tags: [provider, deploy]
 
+- name: Rehash the protected Kustomize closure after rendering
+  ansible.builtin.include_tasks: verify-kustomize-tree.yml
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Validate the rendered Paperless RKE2 product model before apply
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-paperless-rke2-model.py"
+      - "{{ archiveweaver_namespace }}"
+    stdin: "{{ archiveweaver_provider_kustomize_render.stdout }}"
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_paperless_model_validation
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - archiveweaver_runtime == 'rke2'
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
 - name: Require immutable images in the rendered Kustomize model
   ansible.builtin.include_tasks: require-immutable-images.yml
   vars:
@@ -131,10 +174,584 @@
   when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
   tags: [provider, deploy]
 
+- name: Require signed image coverage before Kubernetes apply
+  ansible.builtin.include_tasks: require-signed-image-coverage.yml
+  vars:
+    archiveweaver_provider_image_coverage_runtime: kubernetes
+    archiveweaver_provider_image_coverage_model: "{{ archiveweaver_provider_kustomize_render.stdout }}"
+  when:
+    - not archiveweaver_preflight_is_staging_preview | default(false) | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Parse every rendered bootstrap Kubernetes object
+  ansible.builtin.set_fact:
+    archiveweaver_provider_bootstrap_objects: >-
+      {{ archiveweaver_provider_kustomize_render.stdout | from_yaml_all | list }}
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Require a fully parsed first-use namespace model
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_bootstrap_objects | length > 1
+      - archiveweaver_provider_bootstrap_objects | select('mapping') | list | length == archiveweaver_provider_bootstrap_objects | length
+      - archiveweaver_provider_bootstrap_objects | selectattr('kind', 'equalto', 'Namespace') | list | length == 1
+    fail_msg: "First-apply bootstrap requires one reviewed Namespace and only parseable Kubernetes objects."
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Confine every bootstrap resource to the dedicated namespace
+  ansible.builtin.assert:
+    that:
+      - item.get('metadata', {}) is mapping
+      - item.get('metadata', {}).get('name', '') is match('^[a-z0-9][a-z0-9.-]{0,252}$')
+      - >-
+        (item.get('apiVersion') == 'v1' and item.get('kind') == 'Namespace'
+         and item.get('metadata', {}).get('name') == archiveweaver_namespace
+         and not item.get('metadata', {}).get('namespace'))
+        or
+        ((item.get('apiVersion'), item.get('kind')) in [
+          ('apps/v1', 'Deployment'), ('apps/v1', 'StatefulSet'),
+          ('v1', 'Service'), ('v1', 'ServiceAccount'),
+          ('v1', 'ConfigMap'), ('v1', 'Secret'),
+          ('v1', 'PersistentVolumeClaim'),
+          ('batch/v1', 'Job'), ('batch/v1', 'CronJob'),
+          ('networking.k8s.io/v1', 'Ingress'),
+          ('networking.k8s.io/v1', 'NetworkPolicy'),
+          ('policy/v1', 'PodDisruptionBudget'),
+          ('autoscaling/v2', 'HorizontalPodAutoscaler')]
+         and item.get('metadata', {}).get('namespace') == archiveweaver_namespace)
+    fail_msg: "First-apply bootstrap rejects resources outside the exact approved namespace and namespaced API allowlist."
+  loop: "{{ archiveweaver_provider_bootstrap_objects | default([]) }}"
+  loop_control:
+    label: "{{ item.get('kind', 'unknown') }}"
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Select the reviewed named Kubernetes deployment
+  ansible.builtin.set_fact:
+    archiveweaver_provider_expected_named_deployments: >-
+      {{ archiveweaver_provider_kustomize_render.stdout
+         | from_yaml_all | select('mapping')
+         | selectattr('apiVersion', 'equalto', 'apps/v1')
+         | selectattr('kind', 'equalto', 'Deployment')
+         | selectattr('metadata.name', 'equalto', archiveweaver_solution_id)
+         | list }}
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Require exactly one reviewed named Kubernetes deployment
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_expected_named_deployments | length == 1
+    fail_msg: "The reviewed Kustomize bundle must contain exactly one apps/v1 Deployment named for the solution."
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Bind the reviewed Kubernetes deployment to the selected namespace
+  ansible.builtin.assert:
+    that:
+      - (archiveweaver_provider_expected_named_deployments[0].metadata.namespace | default(archiveweaver_namespace, true)) == archiveweaver_namespace
+      - archiveweaver_provider_expected_named_deployments[0].spec.template.spec.containers is sequence
+      - archiveweaver_provider_expected_named_deployments[0].spec.template.spec.containers is not string
+      - archiveweaver_provider_expected_named_deployments[0].spec.template.spec.containers | length > 0
+      - (archiveweaver_provider_expected_named_deployments[0].spec.replicas | default(1) | int) > 0
+    fail_msg: "The reviewed named Deployment must target the selected namespace and declare positive replicas and containers."
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Select every reviewed Kubernetes controller and one-shot job
+  ansible.builtin.set_fact:
+    archiveweaver_provider_expected_replicated_workloads: >-
+      {{ archiveweaver_provider_kustomize_render.stdout | from_yaml_all
+         | select('mapping') | selectattr('apiVersion', 'equalto', 'apps/v1')
+         | selectattr('kind', 'in', ['Deployment', 'StatefulSet']) | list }}
+    archiveweaver_provider_expected_jobs: >-
+      {{ archiveweaver_provider_kustomize_render.stdout | from_yaml_all
+         | select('mapping') | selectattr('apiVersion', 'equalto', 'batch/v1')
+         | selectattr('kind', 'equalto', 'Job') | list }}
+  no_log: true
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Recheck the approved kubeconfig immediately before Kubernetes apply
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_kubeconfig }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_provider_kubeconfig_recheck
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require the approved kubeconfig to be unchanged before Kubernetes apply
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_kubeconfig_recheck.stat.exists
+      - archiveweaver_provider_kubeconfig_recheck.stat.isreg | default(false) | bool
+      - not (archiveweaver_provider_kubeconfig_recheck.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_kubeconfig_recheck.stat.uid | default(-1) | int == 0
+      - archiveweaver_provider_kubeconfig_recheck.stat.mode in ['0600', '0640']
+      - archiveweaver_provider_kubeconfig_recheck.stat.checksum | default('') == archiveweaver_kubeconfig_sha256
+    fail_msg: "The approved kubeconfig changed before Kubernetes apply."
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Recheck that the bootstrap namespace is still absent immediately before apply
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['get', 'namespace', archiveweaver_namespace,
+          '--ignore-not-found', '-o', 'name'] }}
+  register: archiveweaver_provider_bootstrap_namespace_result
+  changed_when: false
+  check_mode: false
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Reject bootstrap when another actor has populated the target namespace
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_bootstrap_namespace_result.rc == 0
+      - archiveweaver_provider_bootstrap_namespace_result.stdout | trim == ''
+    fail_msg: "The dedicated namespace appeared after first-use preflight; bootstrap will not apply into a populated target."
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Atomically claim the absent bootstrap namespace
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['create', 'namespace', archiveweaver_namespace,
+          '-o', 'json'] }}
+  register: archiveweaver_provider_bootstrap_namespace_claim
+  changed_when: true
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Record the claimed bootstrap namespace identity
+  ansible.builtin.set_fact:
+    archiveweaver_provider_bootstrap_namespace_uid: >-
+      {{ (archiveweaver_provider_bootstrap_namespace_claim.stdout | from_json).metadata.uid }}
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Require an assigned identity for the newly claimed bootstrap namespace
+  ansible.builtin.assert:
+    that:
+      - (archiveweaver_provider_bootstrap_namespace_claim.stdout | from_json).kind == 'Namespace'
+      - (archiveweaver_provider_bootstrap_namespace_claim.stdout | from_json).metadata.name == archiveweaver_namespace
+      - archiveweaver_provider_bootstrap_namespace_uid is match('^[0-9a-f-]{36}$')
+    fail_msg: "The newly claimed bootstrap namespace has no trustworthy live identity."
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Recheck the claimed first-use namespace immediately before apply
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['get', 'namespace', archiveweaver_namespace,
+          '-o', 'json'] }}
+  register: archiveweaver_provider_first_use_preapply_namespace
+  changed_when: false
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Require the namespace claim to be unchanged at apply
+  ansible.builtin.assert:
+    that:
+      - (archiveweaver_provider_first_use_preapply_namespace.stdout | from_json).kind == 'Namespace'
+      - (archiveweaver_provider_first_use_preapply_namespace.stdout | from_json).metadata.name == archiveweaver_namespace
+      - (archiveweaver_provider_first_use_preapply_namespace.stdout | from_json).metadata.uid == archiveweaver_provider_bootstrap_namespace_uid
+    fail_msg: "The first-use namespace was replaced before applying the reviewed release."
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [always, provider, deploy]
+
+- name: Rehash the protected Kustomize closure immediately before apply
+  ansible.builtin.include_tasks: verify-kustomize-tree.yml
+  when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Require the protected production target preflight before Paperless apply
+  ansible.builtin.assert:
+    that:
+      - hostvars['localhost'].archiveweaver_controller_preflight_target_binding_active | default(false) | bool
+      - hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.deployment_target is mapping
+    fail_msg: "Paperless production apply requires the approved live Kubernetes target preflight."
+  when:
+    - not archiveweaver_provider_first_use_active | bool
+    - archiveweaver_environment == 'production'
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Recheck the approved production cluster identity immediately before apply
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['get', 'namespace', item, '-o', 'json'] }}
+  loop:
+    - kube-system
+    - "{{ archiveweaver_namespace }}"
+  register: archiveweaver_provider_preapply_namespaces
+  changed_when: false
+  check_mode: false
+  when:
+    - not archiveweaver_provider_first_use_active | bool
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - hostvars['localhost'].archiveweaver_controller_preflight_target_binding_active | default(false) | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require the approved production cluster identity at apply
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_preapply_namespaces.results | length == 2
+      - (archiveweaver_provider_preapply_namespaces.results[0].stdout | from_json).kind == 'Namespace'
+      - (archiveweaver_provider_preapply_namespaces.results[0].stdout | from_json).metadata.name == 'kube-system'
+      - >-
+        (archiveweaver_provider_preapply_namespaces.results[0].stdout | from_json).metadata.uid
+        == archiveweaver_provider_approved_target.kube_system_namespace_uid
+      - (archiveweaver_provider_preapply_namespaces.results[1].stdout | from_json).kind == 'Namespace'
+      - (archiveweaver_provider_preapply_namespaces.results[1].stdout | from_json).metadata.name == archiveweaver_namespace
+      - >-
+        (archiveweaver_provider_preapply_namespaces.results[1].stdout | from_json).metadata.uid
+        == archiveweaver_provider_approved_target.application_namespace_uid
+      - archiveweaver_provider_approved_target.namespace == archiveweaver_namespace
+      - archiveweaver_provider_approved_target.kube_context == archiveweaver_kube_context
+      - archiveweaver_provider_approved_target.kubeconfig_sha256 == archiveweaver_kubeconfig_sha256
+    fail_msg: "The production Kubernetes target changed before applying the reviewed release."
+  vars:
+    archiveweaver_provider_approved_target: >-
+      {{ hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.deployment_target }}
+  when:
+    - not archiveweaver_provider_first_use_active | bool
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - hostvars['localhost'].archiveweaver_controller_preflight_target_binding_active | default(false) | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require server admission of the exact rendered Kubernetes model before apply
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'apply', '--dry-run=server', '-f', '-'] }}
+    stdin: "{{ archiveweaver_provider_kustomize_render.stdout }}"
+    stdin_add_newline: false
+  register: archiveweaver_provider_server_dry_run
+  changed_when: false
+  failed_when: archiveweaver_provider_server_dry_run.rc != 0
+  check_mode: false
+  when:
+    - not ansible_check_mode | bool
+    - not archiveweaver_preflight_is_staging_preview | default(false) | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
 - name: Apply the reviewed product Kustomize bundle
   ansible.builtin.command:
-    argv: "{{ archiveweaver_provider_kubectl_argv + ['apply', '-k', archiveweaver_kustomize_path] }}"
+    argv: "{{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace, 'apply', '-f', '-'] }}"
+    stdin: "{{ archiveweaver_provider_kustomize_render.stdout }}"
+    stdin_add_newline: false
   changed_when: true
   no_log: true
   when: inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Require the named Kubernetes deployment rollout to complete
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'rollout', 'status', 'deployment/' + archiveweaver_solution_id, '--timeout=300s'] }}
+  changed_when: false
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Wait for every reviewed Deployment and StatefulSet rollout
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'rollout', 'status', (item.kind | lower) ~ '/' ~ item.metadata.name,
+          '--timeout=300s'] }}
+  loop: "{{ archiveweaver_provider_expected_replicated_workloads | default([]) }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+  changed_when: false
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Wait for every reviewed Kubernetes Job to complete
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'wait', '--for=condition=complete', 'job/' ~ item.metadata.name,
+          '--timeout=300s'] }}
+  loop: "{{ archiveweaver_provider_expected_jobs | default([]) }}"
+  loop_control:
+    label: "Job/{{ item.metadata.name }}"
+  changed_when: false
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Read the live named Kubernetes deployment after rollout
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'get', 'deployment/' + archiveweaver_solution_id, '-o', 'json'] }}
+  register: archiveweaver_provider_live_deployment_result
+  changed_when: false
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Parse the live named Kubernetes deployment
+  ansible.builtin.set_fact:
+    archiveweaver_provider_live_deployment: "{{ archiveweaver_provider_live_deployment_result.stdout | from_json }}"
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Require the live Kubernetes deployment to match the reviewed image set and current generation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_live_deployment.apiVersion == 'apps/v1'
+      - archiveweaver_provider_live_deployment.kind == 'Deployment'
+      - archiveweaver_provider_live_deployment.metadata.name == archiveweaver_solution_id
+      - archiveweaver_provider_live_deployment.metadata.namespace == archiveweaver_namespace
+      - archiveweaver_provider_expected_containers | selectattr('name', 'defined') | list | length == archiveweaver_provider_expected_containers | length
+      - archiveweaver_provider_expected_containers | selectattr('image', 'defined') | list | length == archiveweaver_provider_expected_containers | length
+      - >-
+        archiveweaver_provider_expected_init_containers | selectattr('name', 'defined')
+        | list | length == archiveweaver_provider_expected_init_containers | length
+      - >-
+        archiveweaver_provider_expected_init_containers | selectattr('image', 'defined')
+        | list | length == archiveweaver_provider_expected_init_containers | length
+      - archiveweaver_provider_live_containers | selectattr('name', 'defined') | list | length == archiveweaver_provider_live_containers | length
+      - archiveweaver_provider_live_containers | selectattr('image', 'defined') | list | length == archiveweaver_provider_live_containers | length
+      - archiveweaver_provider_live_init_containers | selectattr('name', 'defined') | list | length == archiveweaver_provider_live_init_containers | length
+      - archiveweaver_provider_live_init_containers | selectattr('image', 'defined') | list | length == archiveweaver_provider_live_init_containers | length
+      - >-
+        (archiveweaver_provider_expected_containers | map(attribute='name')
+         | zip(archiveweaver_provider_expected_containers | map(attribute='image')) | list | sort)
+        ==
+        (archiveweaver_provider_live_containers | map(attribute='name')
+         | zip(archiveweaver_provider_live_containers | map(attribute='image')) | list | sort)
+      - >-
+        (archiveweaver_provider_expected_init_containers | map(attribute='name')
+         | zip(archiveweaver_provider_expected_init_containers | map(attribute='image')) | list | sort)
+        ==
+        (archiveweaver_provider_live_init_containers | map(attribute='name')
+         | zip(archiveweaver_provider_live_init_containers | map(attribute='image')) | list | sort)
+      - (archiveweaver_provider_live_deployment.spec.replicas | int) > 0
+      - >-
+        (archiveweaver_provider_live_deployment.status.observedGeneration | default(0) | int)
+        >= (archiveweaver_provider_live_deployment.metadata.generation | int)
+      - (archiveweaver_provider_live_deployment.status.replicas | default(0) | int) == (archiveweaver_provider_live_deployment.spec.replicas | int)
+      - (archiveweaver_provider_live_deployment.status.updatedReplicas | default(0) | int) == (archiveweaver_provider_live_deployment.spec.replicas | int)
+      - (archiveweaver_provider_live_deployment.status.readyReplicas | default(0) | int) >= (archiveweaver_provider_live_deployment.spec.replicas | int)
+      - (archiveweaver_provider_live_deployment.status.availableReplicas | default(0) | int) >= (archiveweaver_provider_live_deployment.spec.replicas | int)
+    fail_msg: "The live named Deployment does not match the reviewed image set or its current desired rollout state."
+  vars:
+    archiveweaver_provider_expected_containers: >-
+      {{ archiveweaver_provider_expected_named_deployments[0].spec.template.spec.containers }}
+    archiveweaver_provider_expected_init_containers: >-
+      {{ archiveweaver_provider_expected_named_deployments[0].spec.template.spec.initContainers | default([], true) }}
+    archiveweaver_provider_live_containers: >-
+      {{ archiveweaver_provider_live_deployment.spec.template.spec.containers }}
+    archiveweaver_provider_live_init_containers: >-
+      {{ archiveweaver_provider_live_deployment.spec.template.spec.initContainers | default([], true) }}
+  no_log: true
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  tags: [provider, deploy]
+
+- name: Recheck the claimed bootstrap namespace after rollout
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['get', 'namespace', archiveweaver_namespace,
+          '-o', 'json'] }}
+  register: archiveweaver_provider_bootstrap_namespace_verify
+  changed_when: false
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require the claimed bootstrap namespace to retain its identity
+  ansible.builtin.assert:
+    that:
+      - (archiveweaver_provider_bootstrap_namespace_verify.stdout | from_json).kind == 'Namespace'
+      - (archiveweaver_provider_bootstrap_namespace_verify.stdout | from_json).metadata.name == archiveweaver_namespace
+      - (archiveweaver_provider_bootstrap_namespace_verify.stdout | from_json).metadata.uid == archiveweaver_provider_bootstrap_namespace_uid
+    fail_msg: "The bootstrap namespace changed identity during the release rollout."
+  when:
+    - archiveweaver_provider_first_use_active | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Read all live namespaced Kubernetes workloads after apply
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'get', 'deployments,statefulsets,jobs,cronjobs', '-o', 'json'] }}
+  register: archiveweaver_provider_live_workloads
+  changed_when: false
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Verify every live Kubernetes workload against the reviewed model
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-live-kubernetes-workloads.py"
+      - "{{ archiveweaver_namespace }}"
+    stdin: >-
+      {{ {'rendered_yaml': archiveweaver_provider_kustomize_render.stdout,
+          'live_json': (archiveweaver_provider_live_workloads.stdout | from_json)} | to_json }}
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_live_workload_verification
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require all live Kubernetes workload images to match the reviewed release
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_live_workload_verification.rc == 0
+    fail_msg: "A live Kubernetes workload has a missing, extra, or changed image relative to the reviewed release."
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Inventory live namespaced Kubernetes resources after apply
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'get', ('deployments,statefulsets,daemonsets,jobs,cronjobs,pods,replicasets,'
+                  ~ 'services,ingresses,networkpolicies,persistentvolumeclaims,secrets,configmaps,serviceaccounts,'
+                  ~ 'resourcequotas,limitranges,poddisruptionbudgets,horizontalpodautoscalers,roles,rolebindings'),
+          '-o', 'json'] }}
+  register: archiveweaver_provider_live_resources
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode | bool
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Reject unreviewed live namespaced Kubernetes resources after apply
+  ansible.builtin.command:
+    argv:
+      - "{{ archiveweaver_readiness_python }}"
+      - "{{ archiveweaver_bundle_root }}/../../scripts/verify-live-kubernetes-resources.py"
+      - "{{ archiveweaver_namespace }}"
+    stdin: >-
+      {{ {'rendered_yaml': archiveweaver_provider_kustomize_render.stdout,
+          'live_json': (archiveweaver_provider_live_resources.stdout | from_json)} | to_json }}
+    stdin_add_newline: false
+    expand_argument_vars: false
+  environment:
+    PYTHONDONTWRITEBYTECODE: "1"
+  delegate_to: localhost
+  become: false
+  register: archiveweaver_provider_live_resource_verification
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode | bool
+    - archiveweaver_runtime == 'rke2'
+    - archiveweaver_solution_id == 'paperless-ngx'
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Require every applied Kubernetes resource to match the reviewed model
+  ansible.builtin.command:
+    argv: >-
+      {{ archiveweaver_provider_kubectl_argv + ['-n', archiveweaver_namespace,
+          'diff', '--show-secrets', '-f', '-'] }}
+    stdin: "{{ archiveweaver_provider_kustomize_render.stdout }}"
+    stdin_add_newline: false
+  environment:
+    KUBECTL_EXTERNAL_DIFF: /usr/bin/diff
+  register: archiveweaver_provider_postapply_diff
+  changed_when: false
+  failed_when: archiveweaver_provider_postapply_diff.rc != 0
+  check_mode: false
+  when:
+    - not ansible_check_mode | bool
+    - inventory_hostname == (groups['archiveweaver_control'] | default([inventory_hostname]))[0]
+  no_log: true
   tags: [provider, deploy]

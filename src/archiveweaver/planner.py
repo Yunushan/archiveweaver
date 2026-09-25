@@ -91,6 +91,10 @@ def _base_commands(mode: str, solution_id: str, nodes: str, namespace: str, os_i
             f"cd deploy/ansible && bash ../../scripts/run-ansible-operational.sh site.yml --check --diff -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_solution_id={solution_id} -e archiveweaver_nodes={nodes} -e archiveweaver_os_id={os_id} -e archiveweaver_runtime={provider}",
             f"cd deploy/ansible && bash ../../scripts/run-ansible-operational.sh site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_runtime={provider}",
         ]
+    if solution_id == "paperless-ngx":
+        # The checked-in overlay has no Paperless database, broker, secrets, or
+        # application storage model. Never suggest applying it as the product.
+        return [f"kubectl --context <{mode}-context> get nodes"]
     return [
         f"kubectl --context <{mode}-context> get nodes",
         f"kubectl --context <{mode}-context> -n {namespace} apply -k deploy/kubernetes/overlays/{mode}",
@@ -161,7 +165,7 @@ def build_plan(
     if topology_level == "not-recommended":
         if not allow_conditional:
             blockers.append(f"The {underlying_runtime['name']} topology policy marks {bucket} nodes as not-recommended.")
-        else:
+        elif not (selected_underlying_mode == "docker-swarm" and bucket == "2"):
             warnings.append(
                 f"A documented exception is being used for the not-recommended {underlying_runtime['name']} {bucket}-node topology."
             )
@@ -169,9 +173,17 @@ def build_plan(
         blockers.append("Pacemaker two-node plans require --stonith; STONITH fencing cannot be optional in production.")
     if selected_underlying_mode == "pacemaker" and bucket == "2" and not qdevice:
         warnings.append("A quorum device or third witness is strongly recommended for a two-node Pacemaker cluster.")
-    if selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s", "docker-swarm"} and bucket in {"2", "3", "3+"}:
+    if selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s"} and bucket in {"2", "3", "3+"}:
         if bucket == "2" and not external_datastore:
             blockers.append("Two-node consensus is not a resilient baseline; use three control/manager nodes or an external quorum-capable datastore.")
+        warnings.append("Keep the application database, object storage, and search cluster outside the scheduler's local ephemeral storage.")
+    if selected_underlying_mode == "docker-swarm" and bucket == "2":
+        blockers.append(
+            "Two-node Docker Swarm cannot provide manager failover: two managers lose quorum after either fails, "
+            "while one manager and one worker have no replacement manager. Neither --external-datastore nor "
+            "--allow-conditional changes Swarm's internal manager quorum; use at least three manager nodes."
+        )
+    if selected_underlying_mode == "docker-swarm" and bucket in {"2", "3", "3+"}:
         warnings.append("Keep the application database, object storage, and search cluster outside the scheduler's local ephemeral storage.")
     if selected_underlying_mode == "docker-swarm" and bucket != "1" and not external_storage:
         blockers.append(
@@ -200,10 +212,21 @@ def build_plan(
             warnings.append("Two managed hosts are not automatically HA; the underlying runtime still needs a quorum, witness, or tested active/passive fencing design.")
     if selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s"}:
         warnings.append("Use CSI-backed persistent volumes, PodDisruptionBudgets, anti-affinity, ingress health checks, and tested backup/restore.")
+        if solution_id == "paperless-ngx":
+            warnings.append(
+                "The generic Kubernetes overlay is not a Paperless-ngx stack. Pin a product release and validate "
+                "one full application instance and a non-overlapping upgrade before testing any multi-instance design."
+            )
 
     prerequisites = list(runtime["prerequisites"])
     if mode == "ansible":
         prerequisites.extend(underlying_runtime["prerequisites"])
+    if solution_id == "paperless-ngx" and selected_underlying_mode in {"k3s", "rke2", "k0s", "microk8s"}:
+        prerequisites.extend([
+            "reviewed product Kustomize bundle with a pinned Paperless-ngx image, PostgreSQL and Redis-compatible broker endpoints",
+            "Paperless secret key and URL, durable data/media/consume/export paths, ingress TLS, and reviewed dependency egress",
+            "tested product migration, storage backup/restore, and isolated failure and upgrade drills",
+        ])
     prerequisites.extend([
         f"approved {operating_system['name']} image and pinned kernel/userspace baseline",
         "DNS, NTP, TLS certificates, firewall rules, and least-privilege service identities",
@@ -217,6 +240,11 @@ def build_plan(
         "Run health, dependency, configuration, fixity, and smoke checks.",
         "Record the deployment manifest and backup verification result before accepting traffic.",
     ]
+    if solution_id == "paperless-ngx" and mode in {"k3s", "rke2", "k0s", "microk8s"}:
+        steps[3] = (
+            "Build and verify the release-specific Paperless-ngx Kustomize stack and non-overlapping upgrade; "
+            "do not apply the generic overlay."
+        )
     if mode == "ansible":
         steps = [
             "Pin the Ansible Core execution environment and required collection content.",

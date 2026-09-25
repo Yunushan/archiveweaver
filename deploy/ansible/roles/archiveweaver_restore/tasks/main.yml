@@ -165,6 +165,7 @@
       environment: "{{ archiveweaver_evidence_environment }}"
       execution_environment: "{{ archiveweaver_restore_environment }}"
       execution_environment_digest: "{{ archiveweaver_execution_environment_digest }}"
+      deployment_target: "{{ hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}) }}"
       recorded_at: "{{ ansible_date_time.iso8601 }}"
       operator: "{{ archiveweaver_operator }}"
       fixture_set: "{{ archiveweaver_fixture_set }}"
@@ -240,6 +241,14 @@
       {{ {
         'name': item.name,
         'status': 'pass' if (item.returncode | int) == 0 else 'fail',
+        'claim': 'data_protection.restore_test' if item.name == 'restore' else 'data_protection.fixity_test',
+        'source_revision': lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower,
+        'outcome': {
+          'status': 'pass' if (item.returncode | int) == 0 else 'fail',
+          'method': 'automated',
+          'summary': 'Reviewed ' ~ item.name ~ ' drill completed with exit status ' ~ (item.returncode | string),
+          'source': 'urn:archiveweaver:ansible:restore-fixity'
+        },
         'evidence': (archiveweaver_restore_evidence_dir
           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', ''))
           ~ '/' ~ item.name ~ '-'
@@ -253,6 +262,7 @@
         'environment': archiveweaver_evidence_environment,
         'execution_environment': archiveweaver_restore_environment,
         'execution_environment_digest': archiveweaver_execution_environment_digest,
+        'deployment_target': hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}),
         'recorded_at': ansible_date_time.iso8601,
         'operator': archiveweaver_operator,
         'fixture_set': archiveweaver_fixture_set,

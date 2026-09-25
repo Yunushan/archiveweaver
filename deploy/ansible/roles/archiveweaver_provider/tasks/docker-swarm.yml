@@ -45,9 +45,111 @@
     archiveweaver_provider_rendered_content: "{{ archiveweaver_provider_swarm_config.stdout }}"
   tags: [provider, deploy]
 
+- name: Require signed image coverage before Swarm deploy
+  ansible.builtin.include_tasks: require-signed-image-coverage.yml
+  vars:
+    archiveweaver_provider_image_coverage_runtime: docker-swarm
+    archiveweaver_provider_image_coverage_model: "{{ archiveweaver_provider_swarm_config.stdout }}"
+  when: not archiveweaver_preflight_is_staging_preview | default(false) | bool
+  tags: [provider, deploy]
+
+- name: Rehash the reviewed Swarm file immediately before mutation
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_compose_path }}"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: archiveweaver_provider_swarm_recheck
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Refuse a changed Swarm file after image coverage verification
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_provider_swarm_recheck.stat.isreg | default(false) | bool
+      - not (archiveweaver_provider_swarm_recheck.stat.islnk | default(false) | bool)
+      - archiveweaver_provider_swarm_recheck.stat.uid | default(-1) | int == 0
+      - archiveweaver_provider_swarm_recheck.stat.gid | default(-1) | int == 0
+      - archiveweaver_provider_swarm_recheck.stat.mode is match('^0[0-7][0-5][0-5]$')
+      - archiveweaver_provider_swarm_recheck.stat.checksum | default('') == archiveweaver_product_stack_sha256
+    fail_msg: "The Swarm file changed after its reviewed image set was verified."
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Define the reviewed Swarm service targets
+  ansible.builtin.set_fact:
+    archiveweaver_provider_swarm_targets: >-
+      {{ (archiveweaver_provider_swarm_config.stdout | from_yaml)
+         | archiveweaver_swarm_targets }}
+  no_log: true
+  tags: [provider, deploy]
+
 - name: Deploy the reviewed Swarm stack
   ansible.builtin.command:
     argv: [docker, stack, deploy, --compose-file, "{{ archiveweaver_compose_path }}", "{{ archiveweaver_solution_id }}"]
   changed_when: true
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Wait for every Swarm service to declare the reviewed target
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - --signal=TERM
+      - --kill-after=5s
+      - 15s
+      - docker
+      - service
+      - inspect
+      - "{{ archiveweaver_solution_id }}_{{ item.key }}"
+  register: archiveweaver_provider_swarm_inspect
+  changed_when: false
+  retries: 12
+  delay: 10
+  until: >-
+    archiveweaver_provider_swarm_inspect.rc == 0
+    and (archiveweaver_provider_swarm_inspect.stdout
+         | archiveweaver_swarm_service_spec_matches(
+             archiveweaver_solution_id ~ '_' ~ item.key,
+             item.value.image,
+             item.value.replicas))
+  loop: "{{ archiveweaver_provider_swarm_targets | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: not ansible_check_mode | bool
+  no_log: true
+  tags: [provider, deploy]
+
+- name: Wait for every reviewed Swarm replica to run the new image
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - --signal=TERM
+      - --kill-after=5s
+      - 15s
+      - docker
+      - service
+      - ps
+      - --no-trunc
+      - --filter
+      - desired-state=running
+      - --format
+      - "{{ '{{json .}}' }}"
+      - "{{ archiveweaver_solution_id }}_{{ item.key }}"
+  register: archiveweaver_provider_swarm_tasks
+  changed_when: false
+  retries: 12
+  delay: 10
+  until: >-
+    archiveweaver_provider_swarm_tasks.rc == 0
+    and (archiveweaver_provider_swarm_tasks.stdout
+         | archiveweaver_swarm_tasks_converged(
+             archiveweaver_solution_id ~ '_' ~ item.key,
+             item.value.image,
+             item.value.replicas))
+  loop: "{{ archiveweaver_provider_swarm_targets | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: not ansible_check_mode | bool
   no_log: true
   tags: [provider, deploy]

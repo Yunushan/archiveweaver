@@ -17,10 +17,22 @@ not an automatic provisioner. The rendered stack references
 `ARCHIVEWEAVER_DATA_VOLUME` as an existing external volume and will not silently
 fall back to node-local state.
 
+The generic Swarm stacks do not publish the application port through the
+routing mesh. Add a reviewed TLS reverse proxy in the same stack or attach its
+service to a reviewed overlay network shared with the app. Route to the app's
+service name and container port. Configure the public listener, TLS, access
+controls, and health checks as part of that product-specific stack before
+calling the deployment ready.
+
+When upgrading a stack that previously published the app port, deploy and test
+the TLS proxy and its route to the app first. Confirm an external request and
+the proxy health check succeed, then apply the stack that removes the routing
+mesh port. Recheck external reachability after the change; do not remove the
+old route before its replacement is serving traffic.
+
 ## Render examples
 
 ```bash
 PYTHONPATH=src python3 -m archiveweaver render --solution mayan-edms --mode podman-quadlet --nodes 1 --os rocky-9 --image mayanedms/mayanedms@sha256:<digest>
 PYTHONPATH=src python3 -m archiveweaver render --solution dspace --mode docker-swarm --nodes 3 --os ubuntu-24.04 --image registry.example.org/dspace@sha256:<digest> --external-storage
 ```
-

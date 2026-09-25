@@ -71,7 +71,23 @@ overwrite or apply the generic envelope as a substitute. Docker/Swarm stacks
 and Kubernetes Kustomize bundles must also match their configured SHA-256
 release binding before apply or repair, and every rendered product image must
 use an approved full `@sha256:` digest rather than a mutable or placeholder
-tag.
+tag. The controller also compares the complete rendered image set with the
+signed, indexed `release.artifacts[].image` set before apply and during
+independent verification; digest syntax alone is not release proof.
+For Kubernetes, Ansible sends those checked rendered bytes directly to
+`kubectl apply -f -`, so mutation does not re-render the Kustomize tree.
+For a Kubernetes-family runtime, set `archiveweaver_kubeconfig` to the
+protected absolute kubeconfig path on the designated control host and
+`archiveweaver_kube_context` to its reviewed cluster context. Preflight
+also requires `archiveweaver_kubeconfig_sha256`, the file's approved bare
+64-character SHA-256 digest, for apply, verification, repair, and staging
+preview. Apply and repair recheck the digest immediately before mutation.
+The kubeconfig must be root-owned, regular, non-symlinked, and mode 0600 or
+0640; copy a user-owned config to a protected root-owned path before use.
+All Ansible `kubectl` commands pass the kubeconfig and context flags explicitly.
+Controller jobs using an older binding set must supply both new values before
+running again.
+
 Raw systemd and Quadlet templates are rendered into a private host staging
 directory and hash-checked before they are copied into the active service path;
 an apply cannot leave a newly rendered live unit behind a failed digest gate.
@@ -101,6 +117,8 @@ Compose, raw, or Quadlet design, and set
 single-node Kubernetes/Swarm edge exception. These approvals do not make the
 underlying runtime highly available; they record that the limitation was
 accepted before mutation.
+Two-node Docker Swarm is rejected for deployment and repair even with external
+quorum or storage flags; multi-node Swarm needs at least three manager hosts.
 
 The default inventory and variable files are examples. Copy them into the
 operator-only paths, encrypt the Vault file, and use a protected execution
@@ -150,8 +168,9 @@ PYTHONPATH=src python3 -m archiveweaver readiness \
   --json
 ```
 
-The command scores ten independently evidenced domains. It returns success
-only at 100/100; placeholders, missing files, failed tests, or evidence paths
+The command scores ten independently evidenced domains. Ordinary production
+apply, repair, rollback, and verification require success at 100/100;
+placeholders, missing files, failed tests, or evidence paths
 outside the manifest bundle keep the deployment non-ready. The manifest's
 `evidence_index` must be a verified SHA-256 index, and every file referenced by
 the manifest must be listed in that index. The Ansible preflight role reruns
@@ -164,6 +183,59 @@ all twelve hosted production controls must pass, and the indexed report expires
 for scoring after 24 hours.
 See [`premium-readiness.md`](../operations/premium-readiness.md) for the
 contract and ownership model.
+
+### First Paperless-ngx installation on RKE2
+
+The first production installation has a separate, on-demand controller branch.
+It is limited to Paperless-ngx on a three-or-more-node RKE2 inventory whose
+dedicated namespace, release record, data root, and log root do not exist.
+Use it only after a real staging installation and product certification,
+restore, failure, repair, and rollback drills there. A distinct on-demand
+`staging-seed-apply` job can create the first staging installation when the
+ordinary staging apply is blocked by its 100/100 gate. Its protected staging
+manifest must have valid `control`, `release`, `governance`, and `support`
+evidence, no validation errors, and a score from 40 to 90. A separate
+`staging_seed_authorization` with `purpose: first-staging-apply` binds the
+exact staging service, release, signed source, execution environment, provider,
+Kustomize, kubeconfig, cluster context, namespace, and approval. Protect its
+canonical JSON digest in `ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256`.
+Protect the root-owned staging inventory bytes separately in
+`ARCHIVEWEAVER_STAGING_INVENTORY_SHA256` and bind that digest into the
+authorization object.
+The seed is limited to an empty staging target, creates the namespace once,
+and forces service verification and staging-only evidence publication. It
+cannot use the production bootstrap authorization. Run certification and
+drills only after the seed evidence is reviewed.
+
+The protected production manifest must score exactly 90/100 with all domains
+except `observability` passing and with no validation errors. A distinct
+`bootstrap_authorization` object in that manifest binds the exact release,
+signed source commit, execution environment, provider and Kustomize digests,
+kubeconfig and context, namespace, change ticket, approval ticket, and
+approver. The controller holds its canonical JSON SHA-256 digest in
+`ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256`, protected independently from
+`ARCHIVEWEAVER_READINESS_MANIFEST_SHA256`. Authorization is valid for at most
+24 hours and also binds the root-owned production inventory digest held in
+`ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256`. It
+must fall within the governance approval window, and needs a
+different approver from the change operator. See the exact field contract and
+digest calculation in the [controller guide](../../deploy/ansible/controller/README.md).
+
+After separate human approval, the bootstrap job runs `site.yml` with
+`archiveweaver_apply=true` and `archiveweaver_bootstrap_apply=true` against the
+complete production inventory. It verifies the empty target before mutation,
+limits every rendered Kubernetes resource to the approved namespace, and
+rechecks and atomically creates that namespace immediately before applying
+the validated rendered bytes. The control-host verification record includes
+the claimed namespace UID. The same playbook forces post-apply verification
+and evidence sealing. Bootstrap never reports a
+100/100 score. Promote the resulting production observations into the
+protected evidence index and manifest, then run the ordinary 100/100 gate.
+Before writing a release record, the provider compares every live Deployment,
+StatefulSet, Job, and CronJob image in the dedicated namespace with the
+reviewed rendered model and rejects extra or changed workloads.
+A partially applied bootstrap cannot be retried as first use; it requires a
+separately approved incident and recovery procedure.
 
 The product-specific test requirements are in
 [`product-certification.md`](../operations/product-certification.md), and the

@@ -15,10 +15,12 @@ from typing import Any
 
 from .catalog import Catalog
 from .path_utils import has_symlink_component
+from .provider_digest import digest_file
 
 
 _SAFE_TARGET_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$")
 _SAFE_KUBERNETES_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?$")
+_KUBERNETES_MODES = frozenset({"k3s", "rke2", "k0s", "microk8s"})
 _PLAN_AUTHORITY = object()
 _PLAN_SEAL_KEY = secrets.token_bytes(32)
 
@@ -113,13 +115,7 @@ def _usable_ansible_root(candidate: Path) -> bool:
 
 
 def _find_ansible_root() -> Path:
-    """Locate the repository Ansible bundle without following cwd symlinks."""
-    cwd = Path(os.path.abspath(os.fspath(Path.cwd())))
-    for base in (cwd, *cwd.parents):
-        candidate = base / "deploy" / "ansible"
-        if _usable_ansible_root(candidate):
-            return candidate
-
+    """Locate the bundle shipped with this source tree or distribution."""
     package_root = Path(__file__).resolve().parents[2]
     candidate = package_root / "deploy" / "ansible"
     if _usable_ansible_root(candidate):
@@ -229,6 +225,30 @@ def _require_safe_kubernetes_name(value: str, label: str) -> str:
     return value
 
 
+def _require_kubernetes_context(value: str | None) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 253
+        or value != value.strip()
+        or value.startswith("-")
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        raise ValueError("--context must name one explicit Kubernetes context")
+    return value
+
+
+def _require_kubeconfig(value: str | None) -> tuple[str, str]:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("--kubeconfig must name an absolute regular file")
+    path = Path(value)
+    if not path.is_absolute() or has_symlink_component(path) or not path.is_file():
+        raise ValueError("--kubeconfig must name an absolute regular non-symlink file")
+    try:
+        return str(path.resolve(strict=True)), digest_file(path)
+    except (OSError, ValueError) as exc:
+        raise ValueError("--kubeconfig could not be measured safely") from exc
+
+
 def _require_safe_path_argument(value: str, label: str) -> str:
     if (
         not isinstance(value, str)
@@ -249,6 +269,7 @@ class RepairAction:
     reason: str
     requires_explicit_apply: bool = True
     environment: dict[str, str] | None = None
+    timeout_seconds: int = 120
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -269,6 +290,8 @@ def build_repair_plan(
     readiness_manifest: str | None = None,
     namespace: str = "archiveweaver",
     deployment: str | None = None,
+    kubeconfig: str | None = None,
+    context: str | None = None,
     unit: str | None = None,
     resource: str | None = None,
     allow_fencing_actions: bool = False,
@@ -289,6 +312,15 @@ def build_repair_plan(
         raise ValueError("--underlying-mode is only valid when --mode ansible is selected")
     elif readiness_manifest is not None:
         raise ValueError("--readiness-manifest is only valid when --mode ansible is selected")
+    if mode in _KUBERNETES_MODES:
+        selected_context = _require_kubernetes_context(context)
+        selected_kubeconfig, kubeconfig_digest = _require_kubeconfig(kubeconfig)
+    else:
+        if kubeconfig is not None or context is not None:
+            raise ValueError("--kubeconfig and --context require a Kubernetes repair mode")
+        selected_context = None
+        selected_kubeconfig = None
+        kubeconfig_digest = None
     target_service = service or (solution["health"]["service_aliases"][0] if solution["health"]["service_aliases"] else solution_id)
     target_deployment = deployment or solution_id
     actions: list[RepairAction] = []
@@ -402,20 +434,23 @@ def build_repair_plan(
         runner_command = ["bash", str(runner_path), "repair.yml", "-i", str(inventory_path)]
         actions.extend([
             RepairAction("validate-playbook", [*runner_command, "--syntax-check"], "read-only", "Validate the approved Ansible repair playbook before contacting managed nodes.", environment=controller_environment),
-            RepairAction("plan-repair", [*runner_command, "--check", "--diff", "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Produce an Ansible check-mode diff; no remote changes are allowed in this action.", environment=controller_environment),
-            RepairAction("apply-repair", [*runner_command, "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "orchestrator-restart", "Run the explicitly approved Ansible repair playbook. The playbook itself has a separate apply gate.", environment=controller_environment),
-            RepairAction("verify-repair", [*runner_command, "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Collect post-repair service, endpoint, storage, and sealed evidence results through an unfiltered play.", environment=controller_environment),
+            RepairAction("plan-repair", [*runner_command, "--check", "--diff", "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "read-only", "Preview repair task selection and check-mode-supported changes; production source, release, and evidence gates run again at apply.", environment=controller_environment, timeout_seconds=1800),
+            RepairAction("apply-repair", [*runner_command, "-e", f"archiveweaver_solution_id={solution_id}", "-e", "archiveweaver_repair_apply=true", *provider_args], "orchestrator-restart", "Run the explicitly approved Ansible repair playbook. The playbook itself has a separate apply gate.", environment=controller_environment, timeout_seconds=1800),
+            RepairAction("verify-repair", [*runner_command, "-e", f"archiveweaver_solution_id={solution_id}", *provider_args], "read-only", "Collect post-repair service, endpoint, storage, and sealed evidence results through an unfiltered play.", environment=controller_environment, timeout_seconds=1800),
         ])
     else:
         _require_safe_kubernetes_name(namespace, "--namespace")
         _require_safe_kubernetes_name(target_deployment, "--deployment")
+        if selected_kubeconfig is None or selected_context is None:
+            raise ValueError("Kubernetes repair requires an explicit kubeconfig and context")
+        kubectl = ["kubectl", "--kubeconfig", selected_kubeconfig, "--context", selected_context, "--request-timeout=30s"]
         actions.extend([
-            RepairAction("verify-cluster", ["kubectl", "get", "nodes", "-o", "wide"], "read-only", "Check control-plane and worker readiness."),
-            RepairAction("rollout-restart", ["kubectl", "-n", namespace, "rollout", "restart", f"deployment/{target_deployment}"], "orchestrator-restart", "Perform a rolling restart of the named deployment."),
-            RepairAction("verify-rollout", ["kubectl", "-n", namespace, "rollout", "status", f"deployment/{target_deployment}"], "read-only", "Wait for the rollout to complete."),
+            RepairAction("verify-cluster", [*kubectl, "get", "nodes", "-o", "wide"], "read-only", "Check control-plane and worker readiness in the bound cluster."),
+            RepairAction("rollout-restart", [*kubectl, "-n", namespace, "rollout", "restart", f"deployment/{target_deployment}"], "orchestrator-restart", "Perform a rolling restart of the named deployment in the bound cluster."),
+            RepairAction("verify-rollout", [*kubectl, "-n", namespace, "rollout", "status", f"deployment/{target_deployment}", "--timeout=300s"], "read-only", "Wait up to five minutes for the rollout to complete.", timeout_seconds=600),
         ])
 
-    return _seal_repair_plan({
+    plan_value: dict[str, Any] = {
         "solution": solution_id,
         "solution_name": solution["name"],
         "mode": mode,
@@ -427,7 +462,12 @@ def build_repair_plan(
             "No action removes volumes, deletes files, bypasses authentication, or disables fencing.",
             "Review backup, fixity, quorum, and application logs before applying a recovery action.",
         ],
-    })
+    }
+    if selected_kubeconfig is not None:
+        plan_value["kubeconfig"] = selected_kubeconfig
+        plan_value["kubeconfig_digest"] = kubeconfig_digest
+        plan_value["context"] = selected_context
+    return _seal_repair_plan(plan_value)
 
 
 def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
@@ -452,12 +492,20 @@ def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, An
         if dry_run:
             results.append({"name": item["name"], "status": "planned", "command": command})
             continue
+        if execution_plan.get("mode") in _KUBERNETES_MODES:
+            try:
+                observed_digest = digest_file(Path(execution_plan["kubeconfig"]))
+            except (OSError, ValueError):
+                observed_digest = None
+            if observed_digest != execution_plan.get("kubeconfig_digest"):
+                results.append({"name": item["name"], "status": "fail", "error": "bound kubeconfig changed or became unsafe", "output_redacted": True, "command": command})
+                break
         try:
             run_options: dict[str, Any] = {
                 "check": False,
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
-                "timeout": 120,
+                "timeout": item["timeout_seconds"],
             }
             if isinstance(item.get("environment"), dict):
                 environment = os.environ.copy()
@@ -473,9 +521,11 @@ def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, An
             })
             if completed.returncode != 0:
                 break
-        except (OSError, subprocess.TimeoutExpired):
-            results.append({"name": item["name"], "status": "fail", "output_redacted": True, "command": command})
+        except subprocess.TimeoutExpired:
+            results.append({"name": item["name"], "status": "fail", "error": "timed out; a remote operation may still be running", "output_redacted": True, "command": command})
+            break
+        except OSError:
+            results.append({"name": item["name"], "status": "fail", "error": "could not start repair command", "output_redacted": True, "command": command})
             break
     failures = [result for result in results if result["status"] == "fail"]
     return {"status": "fail" if failures else ("planned" if dry_run else "pass"), "results": results, "safety": execution_plan.get("safety", [])}
-

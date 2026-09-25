@@ -69,8 +69,9 @@ class ExtendedCheckTests(unittest.TestCase):
         self.assertEqual(passed["status"], "pass")
 
     @patch("archiveweaver.checks.shutil.which", return_value=None)
-    def test_service_skips_without_systemd(self, _which: MagicMock) -> None:
-        self.assertEqual(check_service("archive")["status"], "skip")
+    def test_service_requires_systemd_only_for_an_explicit_unit(self, _which: MagicMock) -> None:
+        self.assertEqual(check_service("archive")["status"], "fail")
+        self.assertEqual(check_service("archive", required=False)["status"], "skip")
 
     @patch("archiveweaver.checks._command")
     @patch("archiveweaver.checks.shutil.which", return_value="/bin/systemctl")
@@ -82,10 +83,16 @@ class ExtendedCheckTests(unittest.TestCase):
         command.return_value = (0, "active", "")
         self.assertEqual(check_service("archive")["status"], "pass")
         command.assert_called_with("systemctl", "is-active", "--", "archive")
-        command.return_value = (3, "failed", "journal unavailable")
+        for state in ("inactive", "failed"):
+            with self.subTest(state=state):
+                command.return_value = (3, state, "journal unavailable")
+                self.assertEqual(check_service("archive")["status"], "fail")
+                self.assertEqual(check_service("archive", required=False)["status"], "skip")
+        command.return_value = (3, "activating", "")
         self.assertEqual(check_service("archive")["status"], "warn")
         command.return_value = (4, "unknown", "not found")
-        self.assertEqual(check_service("archive")["status"], "skip")
+        self.assertEqual(check_service("archive")["status"], "fail")
+        self.assertEqual(check_service("archive", required=False)["status"], "skip")
 
     def test_service_rejects_option_and_control_syntax(self) -> None:
         for value in ("--root=/tmp", "archive\nforged", "archive\x1b[2J"):

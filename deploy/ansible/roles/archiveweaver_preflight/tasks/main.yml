@@ -26,6 +26,81 @@
          and archiveweaver_environment == 'staging' }}
   tags: [always, preflight]
 
+- name: Derive the controller-approved staging recovery drill mode
+  ansible.builtin.set_fact:
+    archiveweaver_preflight_recovery_drill_active: "{{ archiveweaver_recovery_drill | default(false) | bool }}"
+  tags: [always, preflight]
+
+- name: Derive the controller-approved first production apply mode
+  ansible.builtin.set_fact:
+    archiveweaver_preflight_bootstrap_active: "{{ archiveweaver_bootstrap_apply | default(false) | bool }}"
+  tags: [always, preflight]
+
+- name: Derive the controller-approved first staging seed mode
+  ansible.builtin.set_fact:
+    archiveweaver_preflight_staging_seed_active: "{{ archiveweaver_staging_seed_apply | default(false) | bool }}"
+  tags: [always, preflight]
+
+- name: Require controller authorization for every staging seed managed host
+  ansible.builtin.assert:
+    that:
+      - hostvars['localhost'].archiveweaver_controller_preflight_staging_seed_active | default(false) | bool
+      - hostvars['localhost'].archiveweaver_controller_preflight_staging_seed_authorized | default(false) | bool
+      - inventory_file in ['inventory/staging/hosts.yml', archiveweaver_bundle_root ~ '/inventory/staging/hosts.yml']
+      - archiveweaver_environment == 'staging'
+      - archiveweaver_evidence_environment == 'staging'
+      - archiveweaver_solution_id == 'paperless-ngx'
+      - archiveweaver_runtime == 'rke2'
+      - archiveweaver_apply | bool
+      - not (ansible_check_mode | bool)
+      - not (archiveweaver_preflight_bootstrap_active | bool)
+      - not (archiveweaver_repair_apply | bool)
+      - not (archiveweaver_run_verification | bool)
+    fail_msg: "First staging seed requires approved controller authorization and the complete RKE2 staging inventory."
+  when: archiveweaver_preflight_staging_seed_active | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require controller authorization for every bootstrap managed host
+  ansible.builtin.assert:
+    that:
+      - hostvars['localhost'].archiveweaver_controller_preflight_bootstrap_active | default(false) | bool
+      - hostvars['localhost'].archiveweaver_controller_preflight_bootstrap_authorized | default(false) | bool
+      - inventory_file in ['inventory/production/hosts.yml', archiveweaver_bundle_root ~ '/inventory/production/hosts.yml']
+      - archiveweaver_environment == 'production'
+      - archiveweaver_evidence_environment == 'production'
+      - archiveweaver_solution_id == 'paperless-ngx'
+      - archiveweaver_runtime == 'rke2'
+      - archiveweaver_apply | bool
+      - not (ansible_check_mode | bool)
+      - not (archiveweaver_repair_apply | bool)
+      - not (archiveweaver_run_verification | bool)
+      - not (archiveweaver_preflight_staging_seed_active | bool)
+    fail_msg: "A first production apply requires the approved controller authorization and complete RKE2 production inventory."
+  when: archiveweaver_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Confine managed recovery drills to the approved staging hosts
+  ansible.builtin.assert:
+    that:
+      - hostvars['localhost'].archiveweaver_controller_preflight_recovery_drill_active | default(false) | bool
+      - inventory_file in ['inventory/staging/hosts.yml', archiveweaver_bundle_root ~ '/inventory/staging/hosts.yml']
+      - archiveweaver_environment == 'staging'
+      - archiveweaver_evidence_environment == 'production'
+      - inventory_hostname is not search('(?i)(?:^|\\.)example\\.(?:com|net|org)$')
+      - (ansible_host | default('') | string) is not match('^(?:192\\.0\\.2|198\\.51\\.100|203\\.0\\.113)\\.')
+      - not (ansible_check_mode | bool)
+      - not (archiveweaver_apply | bool)
+      - archiveweaver_repair_apply | bool
+      - >-
+        not (archiveweaver_rollback_apply | default(false) | bool)
+        or archiveweaver_rollback_environment | default('') == 'staging'
+    fail_msg: "Recovery evidence may be produced only by approved staging repair or rollback hosts."
+  when: archiveweaver_preflight_recovery_drill_active | bool
+  no_log: true
+  tags: [always, preflight]
+
 - name: Reject tag-filtered production mutations and repairs
   ansible.builtin.assert:
     that:
@@ -95,6 +170,10 @@
       - archiveweaver_kubeconfig is string
       - archiveweaver_kubeconfig is not search('[\"\\r\\n]')
       - archiveweaver_kubeconfig | length == 0 or archiveweaver_kubeconfig is match('^/')
+      - archiveweaver_kubeconfig_sha256 is string
+      - archiveweaver_kubeconfig_sha256 | length == 0 or archiveweaver_kubeconfig_sha256 is match('^[0-9a-f]{64}$')
+      - archiveweaver_kube_context is string
+      - archiveweaver_kube_context | length == 0 or archiveweaver_kube_context is match('^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,252}$')
       - archiveweaver_service_name is match('^[a-z0-9][a-z0-9-]{1,62}$')
       - archiveweaver_resource_name is match('^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$')
       - archiveweaver_serial | int > 0
@@ -360,11 +439,14 @@
   no_log: true
   tags: [always, preflight]
 
-- name: Require an explicit kubeconfig for Kubernetes-family operations
+- name: Require an explicit kubeconfig, digest, and context for Kubernetes-family operations
   ansible.builtin.assert:
     that:
       - archiveweaver_kubeconfig | length > 0
-    fail_msg: "Kubernetes-family operations require an explicit kubeconfig; ambient kubectl contexts are not accepted."
+      - archiveweaver_kubeconfig_sha256 | length > 0
+      - archiveweaver_kube_context | length > 0
+      - archiveweaver_kube_context is not search('(?i)(?:replace|todo|tbd|latest)')
+    fail_msg: "Kubernetes-family operations require an explicit kubeconfig, approved SHA-256 digest, and context; ambient kubectl contexts are not accepted."
   when:
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
@@ -375,6 +457,8 @@
   ansible.builtin.stat:
     path: "{{ archiveweaver_kubeconfig }}"
     follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
   register: archiveweaver_preflight_kubeconfig_stat
   when:
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
@@ -389,8 +473,10 @@
       - archiveweaver_preflight_kubeconfig_stat.stat.exists
       - archiveweaver_preflight_kubeconfig_stat.stat.isreg | default(false) | bool
       - not (archiveweaver_preflight_kubeconfig_stat.stat.islnk | default(false) | bool)
+      - archiveweaver_preflight_kubeconfig_stat.stat.uid | default(-1) | int == 0
       - archiveweaver_preflight_kubeconfig_stat.stat.mode in ['0600', '0640']
-    fail_msg: "The explicit kubeconfig must be a regular non-symlink file with 0600 or 0640 permissions."
+      - archiveweaver_preflight_kubeconfig_stat.stat.checksum | default('') == archiveweaver_kubeconfig_sha256
+    fail_msg: "The explicit kubeconfig must be a root-owned regular non-symlink file with 0600 or 0640 permissions and the approved SHA-256 digest."
   when:
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
@@ -401,7 +487,9 @@
 - name: Bind standard-playbook evidence to its target environment
   ansible.builtin.assert:
     that:
-      - archiveweaver_evidence_environment == archiveweaver_environment
+      - >-
+        archiveweaver_evidence_environment == archiveweaver_environment
+        or archiveweaver_preflight_recovery_drill_active | bool
     fail_msg: "Deployment and verification evidence must target the same environment as the playbook."
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
@@ -449,9 +537,16 @@
   become: false
   register: archiveweaver_preflight_readiness_result
   changed_when: false
+  failed_when: >-
+    archiveweaver_preflight_readiness_result.rc != 0
+    and not (archiveweaver_preflight_bootstrap_active | bool
+             and archiveweaver_preflight_readiness_result.rc == 2)
+    and not (archiveweaver_preflight_staging_seed_active | bool
+             and archiveweaver_preflight_readiness_result.rc == 2)
   check_mode: false
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
   no_log: true
   tags: [always, preflight]
@@ -461,8 +556,9 @@
     archiveweaver_preflight_readiness_report: "{{ archiveweaver_preflight_readiness_result.stdout | from_json }}"
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
-    - archiveweaver_preflight_readiness_result.rc == 0
+    - archiveweaver_preflight_readiness_result.rc in [0, 2]
   no_log: true
   tags: [always, preflight]
 
@@ -480,7 +576,65 @@
     fail_msg: "The controller-side readiness manifest did not score 100 or match the target identity; operation remains blocked."
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
+    - not archiveweaver_preflight_bootstrap_active | bool
+    - not archiveweaver_preflight_staging_seed_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require the approved 90-point first-apply floor on each managed host
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_manifest_path == hostvars['localhost'].archiveweaver_readiness_manifest_path
+      - archiveweaver_preflight_readiness_result.rc == 2
+      - (archiveweaver_preflight_readiness_report | default({})).get('status') == 'fail'
+      - (archiveweaver_preflight_readiness_report | default({})).get('score', 0) | int == 90
+      - (archiveweaver_preflight_readiness_report | default({})).get('errors', []) | length == 0
+      - >-
+        (archiveweaver_preflight_readiness_report | default({})).get('criteria', [])
+        | selectattr('status', 'equalto', 'pass') | map(attribute='code') | list | sort
+        == ['control', 'data_protection', 'governance', 'product', 'recovery',
+            'release', 'resilience', 'security', 'support']
+      - >-
+        (archiveweaver_preflight_readiness_report | default({})).get('criteria', [])
+        | selectattr('status', 'equalto', 'fail') | map(attribute='code') | list
+        == ['observability']
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('environment') == 'production'
+      - (archiveweaver_preflight_readiness_report | default({})).get('release_version') == archiveweaver_release
+      - (archiveweaver_preflight_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+    fail_msg: "First-apply bootstrap requires the protected manifest's nine passing pre-deployment domains on every managed host."
+  when: archiveweaver_preflight_bootstrap_active | bool
+  no_log: true
+  tags: [always, preflight]
+
+- name: Require the approved preseed floor on each staging managed host
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_readiness_manifest_path == hostvars['localhost'].archiveweaver_readiness_manifest_path
+      - archiveweaver_preflight_readiness_result.rc == 2
+      - (archiveweaver_preflight_readiness_report | default({})).get('status') == 'fail'
+      - (archiveweaver_preflight_readiness_report | default({})).get('score', 0) | int >= 40
+      - (archiveweaver_preflight_readiness_report | default({})).get('score', 0) | int < 100
+      - (archiveweaver_preflight_readiness_report | default({})).get('errors', []) | length == 0
+      - >-
+        ['control', 'release', 'governance', 'support']
+        | difference((archiveweaver_preflight_readiness_report | default({})).get('criteria', [])
+          | selectattr('status', 'equalto', 'pass') | map(attribute='code') | list)
+        | length == 0
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('solution_id') == archiveweaver_solution_id
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('runtime') == 'ansible'
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('underlying_runtime') == archiveweaver_runtime
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('os_id') == archiveweaver_os_id
+      - (archiveweaver_preflight_readiness_report | default({})).get('service', {}).get('environment') == 'staging'
+      - (archiveweaver_preflight_readiness_report | default({})).get('release_version') == archiveweaver_release
+      - (archiveweaver_preflight_readiness_report | default({})).get('execution_environment_digest') == archiveweaver_execution_environment_digest
+    fail_msg: "First staging seed requires protected control, release, governance, and support proof on every host."
+  when: archiveweaver_preflight_staging_seed_active | bool
   no_log: true
   tags: [always, preflight]
 
@@ -491,6 +645,7 @@
     fail_msg: "The readiness provider-bundle digest does not match the reviewed Compose or Swarm content."
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
     - archiveweaver_runtime in ['docker', 'docker-swarm']
   no_log: true
@@ -504,6 +659,7 @@
     fail_msg: "The live Ansible execution-environment digest does not match the signed readiness manifest."
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
   no_log: true
   tags: [always, preflight]
@@ -527,6 +683,7 @@
     fail_msg: "The readiness provider-bundle digest does not match the reviewed Kustomize content."
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
     - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
   no_log: true
@@ -539,8 +696,62 @@
     fail_msg: "The readiness provider-bundle digest does not match the reviewed raw or Quadlet content."
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
+    - not archiveweaver_preflight_recovery_drill_active | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool or archiveweaver_run_verification | bool
     - archiveweaver_runtime in ['raw', 'podman-quadlet']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind a staging recovery drill to the protected manifest and execution environment
+  ansible.builtin.assert:
+    that:
+      - hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity is mapping
+      - >-
+        hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('provider_bundle', {}).get('remote_digest')
+        == ('sha256:' ~ archiveweaver_product_stack_sha256)
+    fail_msg: "The staging drill Compose or Swarm bundle differs from the controller-approved release."
+  when:
+    - archiveweaver_preflight_recovery_drill_active | bool
+    - archiveweaver_runtime in ['docker', 'docker-swarm']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind a Kubernetes staging recovery drill to the protected provider bundle
+  ansible.builtin.assert:
+    that:
+      - >-
+        hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('provider_bundle', {}).get('remote_digest')
+        == ('sha256:' ~ archiveweaver_kustomize_bundle_sha256)
+    fail_msg: "The staging drill Kustomize bundle differs from the controller-approved release."
+  when:
+    - archiveweaver_preflight_recovery_drill_active | bool
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind a raw or Quadlet staging recovery drill to the protected provider bundle
+  ansible.builtin.assert:
+    that:
+      - >-
+        hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('provider_bundle', {}).get('remote_digest')
+        == ('sha256:' ~ archiveweaver_provider_bundle_sha256)
+    fail_msg: "The staging drill provider bundle differs from the controller-approved release."
+  when:
+    - archiveweaver_preflight_recovery_drill_active | bool
+    - archiveweaver_runtime in ['raw', 'podman-quadlet', 'pacemaker']
+  no_log: true
+  tags: [always, preflight]
+
+- name: Bind staging recovery drill execution to the controller-approved image
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_execution_environment_digest is match('^sha256:[0-9a-f]{64}$')
+      - >-
+        hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('release', {}).get('execution_environment', {}).get('digest')
+        == archiveweaver_execution_environment_digest
+      - lookup('ansible.builtin.env', 'ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST') == archiveweaver_execution_environment_digest
+    fail_msg: "The staging drill execution image differs from the controller-approved release."
+  when: archiveweaver_preflight_recovery_drill_active | bool
   no_log: true
   tags: [always, preflight]
 
@@ -668,6 +879,16 @@
     - archiveweaver_nodes in ['3', '3+']
   tags: [always, preflight]
 
+- name: Reject two-node Docker Swarm before mutation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_nodes != '2'
+    fail_msg: "Two-node Docker Swarm cannot provide manager failover; use at least three manager nodes."
+  when:
+    - archiveweaver_runtime == 'docker-swarm'
+    - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
+  tags: [always, preflight]
+
 - name: Require an external quorum design for two-node consensus
   ansible.builtin.assert:
     that:
@@ -676,7 +897,7 @@
   when:
     - not archiveweaver_preflight_is_staging_preview | bool
     - archiveweaver_apply | bool or archiveweaver_repair_apply | bool
-    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s', 'docker-swarm']
+    - archiveweaver_runtime in ['k3s', 'rke2', 'k0s', 'microk8s']
     - archiveweaver_nodes == '2'
   no_log: true
   tags: [always, preflight]

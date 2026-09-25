@@ -17,6 +17,12 @@ Ansible is an orchestration layer, not a runtime or an HA system. The variable
 - `pacemaker` — deliberately fail-closed; resource definitions remain a
   change-controlled cluster runbook.
 
+The Swarm provider requires each rendered service to declare a positive
+`deploy.replicas` target in replicated mode. After `docker stack deploy`, it
+polls the manager's service specification and all desired running task slots
+for the reviewed image digest. A missing, stale, or partially updated service
+fails the bounded convergence check before the release is recorded.
+
 The product's official application, database, search, queue, object-storage,
 ingress, migration, backup, and fixity assets must be supplied as one tested
 release set. The playbooks refuse to apply while that release set, backup
@@ -86,7 +92,12 @@ Applied operational playbooks also require the controller environment variable
 `ARCHIVEWEAVER_IMMUTABLE_REF`, the approved signer list, and the protected
 `ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` binding. They verify the signed,
 clean Git checkout and exact manifest bytes before they contact managed hosts.
-Check-mode previews remain available without that production-only source gate.
+The manifest's certified `release.source_revision` must equal that checkout's
+`ARCHIVEWEAVER_IMMUTABLE_REF`.
+Operational check-mode previews run the same read-only source, execution
+environment, and final readiness identity gates. The staging preview runs
+before final readiness exists and is exempt from those final identity gates;
+its managed-host preflight and change preview still run.
 
 Edit the copied inventory and `group_vars/all/main.yml`. Give every managed
 multi-node host an explicit `archiveweaver_failure_domain` label, and give the
@@ -156,6 +167,36 @@ Use the returned `sha256:...` value as `release.provider_bundle.remote_digest`;
 strip the `sha256:` prefix for the matching Ansible group variable, which
 expects the bare 64-character hexadecimal value. The staged content must be
 byte-for-byte identical to the reviewed binding.
+For Kubernetes-family apply, verification, repair, and staging preview, bind
+`archiveweaver_kubeconfig` to an absolute private kubeconfig on the designated
+control host. It must be root-owned, regular, non-symlinked, and mode 0600 or
+0640. Set `archiveweaver_kubeconfig_sha256` to that file's approved
+bare 64-character SHA-256 digest, and set `archiveweaver_kube_context` to the
+reviewed context name in that file. All three values are required; every
+`kubectl` command passes the kubeconfig and context explicitly. Preflight
+checks the digest, and apply and repair recheck it immediately before mutation.
+The rendered bundle must contain exactly one `apps/v1` Deployment named by
+`archiveweaver_solution_id` in `archiveweaver_namespace`; apply uses that
+namespace explicitly. After apply, the provider waits up to five minutes for
+the named rollout, then compares the live Deployment's regular and init
+container name/image pairs with the reviewed render. It also requires the
+current generation to be observed and every desired replica to be updated,
+ready, and available. A mismatch or timed-out rollout stops the apply before
+its managed release record is written.
+For Kubernetes-family deployments, the managed release record preserves the
+selected context and kubeconfig digest. Verification compares them with the
+current approved bindings. An existing Kubernetes release record needs a
+reviewed apply and recertification before it can satisfy this new check;
+Kubernetes repair rejects the old record before restarting any deployment.
+The repair playbook completes managed-host preflight and checks the recorded
+Kubernetes target on every managed host before entering its serial repair
+phase. A missing or legacy record on any host stops the entire repair before
+the first rollout restart.
+Existing controller jobs and protected inventories must add both new bindings
+before using these workflows. Copy an existing user-owned kubeconfig into a
+protected root-owned control-host path and review its context and digest before
+using it here.
+
 The staged Compose/Swarm file must remain a regular root-owned file without
 group/world write permission; rendered raw units and Quadlet definitions use
 mode `0644`. Verification checks ownership and permissions again after
@@ -175,9 +216,19 @@ Every passing evidence record must carry the exact solution, provider/runtime,
 OS, release, environment, operator, fixture-set, and timezone-qualified
 timestamp fields required by the readiness contract. For Ansible evidence,
 also carry the exact `release.execution_environment.digest` used by the
-controller. JSON evidence files must
+controller. Passing operational records must explicitly identify their
+`execution_environment` as `production`, `staging`, `restore`, or `dr`; the
+top-level release record has a separate structured controller-image field.
+JSON evidence files must
 also contain a matching `status: pass` payload; the evidence index alone does
-not make an empty or unrelated file valid.
+not make an empty or unrelated file valid. Scored JSON records additionally
+need an exact claim identifier, the approved `release.source_revision`, and a
+passing `outcome` with method, summary, and absolute run/review source URI.
+Manual outcomes name a `reviewed_by` person other than the operator; any recorded return code must be integer
+zero. Certification records use claims such as
+`product_certification.test_matrix.smoke`, while restore and fixity use
+`data_protection.restore_test` and `data_protection.fixity_test`. Rebuild and
+rebind the evidence index after upgrading existing records to this schema.
 The readiness contract additionally requires dedicated passing evidence
 records for security SBOM/TLS/secret-provider claims, each observability
 surface and on-call rotation, and support ownership/on-call/SLA claims. The
@@ -206,7 +257,7 @@ bash ../../scripts/run-ansible-operational.sh site.yml --check --diff -i invento
 # gates in group_vars/all/main.yml have been reviewed and set true.
 bash ../../scripts/run-ansible-operational.sh site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true
 
-# Collect read-only verification and evidence.
+# Run an independent read-only verification and evidence job later.
 bash ../../scripts/run-ansible-operational.sh verify.yml -i inventory/production/hosts.yml
 
 # Run the product matrix in the isolated certification environment. Supply
@@ -226,6 +277,20 @@ bash ../../scripts/run-ansible-operational.sh rollback.yml --check --diff -i inv
 requires `archiveweaver_approval_ticket`, `archiveweaver_backup_verified`,
 `archiveweaver_release_manifest_verified`, `archiveweaver_product_stack_ready`,
 and a non-placeholder release. Secrets are never placed on the command line.
+An applied `site.yml` run flushes pending provider handlers and records the
+release identity only after provider convergence. It then verifies every
+managed host and seals the evidence index before it can succeed. Production
+evidence must also pass immutable publication and retention verification.
+For Kubernetes and Swarm, list the control host first in the managed inventory;
+for Compose, list the application host first. The serial apply checks this
+before any host mutates. Guarded repair checks the same order before its
+first mutation.
+Optional health-check timer installation follows evidence sealing, so a timer
+failure cannot prevent verification of an already applied release.
+`archiveweaver_run_verification` enables verification for a read-only
+`site.yml` run; setting it false cannot skip verification after apply.
+The staging `--check --diff` preview remains a preview and does not seal
+post-apply evidence.
 
 Host package installation is also disabled by default. Production images
 should pre-provision the small prerequisite set, or an operator may enable

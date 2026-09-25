@@ -12,21 +12,29 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from archiveweaver.path_utils import has_symlink_component  # noqa: E402
-from archiveweaver.evidence import _measure_regular_file  # noqa: E402
+from archiveweaver.evidence import _read_stable_bytes  # noqa: E402
+from archiveweaver.json_utils import load_json_document  # noqa: E402
 
 
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: verify-readiness-manifest.py <manifest> <sha256-hex>", file=sys.stderr)
+    if len(argv) != 4:
+        print(
+            "usage: verify-readiness-manifest.py <manifest> <sha256-hex> <source-commit-sha>",
+            file=sys.stderr,
+        )
         return 2
 
     manifest = Path(argv[1])
     expected = argv[2]
     if not re.fullmatch(r"[0-9a-f]{64}", expected):
         print("the approved readiness manifest binding must be a 64-character SHA-256 hex digest", file=sys.stderr)
+        return 2
+    source_commit = argv[3].lower()
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", source_commit):
+        print("the approved source commit must be a full Git commit SHA", file=sys.stderr)
         return 2
     if has_symlink_component(manifest) or not manifest.is_file():
         print("the readiness manifest must be a regular, non-symlink file", file=sys.stderr)
@@ -35,16 +43,23 @@ def main(argv: list[str]) -> int:
     try:
         resolved = manifest.resolve()
         resolved.relative_to(REPOSITORY_ROOT.resolve())
-        _, actual = _measure_regular_file(
+        manifest_bytes, actual = _read_stable_bytes(
             resolved,
             max_bytes=MAX_MANIFEST_BYTES,
-            label="readiness manifest",
         )
     except (OSError, RuntimeError, ValueError):
         print("the readiness manifest must stay inside the signed repository checkout", file=sys.stderr)
         return 1
     if actual != expected:
         print("the readiness manifest does not match the controller-approved digest", file=sys.stderr)
+        return 1
+    try:
+        identity = load_json_document(manifest_bytes.decode("utf-8", errors="strict"))
+        certified_commit = identity.get("release", {}).get("source_revision") if isinstance(identity, dict) else None
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        certified_commit = None
+    if certified_commit != source_commit:
+        print("the readiness manifest source revision does not match the approved checkout", file=sys.stderr)
         return 1
     return 0
 

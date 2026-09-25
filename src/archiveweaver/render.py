@@ -57,10 +57,18 @@ def render_docker(solution_id: str, image: str, port: int) -> str:
     """).lstrip()
 
 
-def render_kubernetes(solution_id: str, image: str, port: int, namespace: str, replicas: int) -> str:
+def render_kubernetes(solution_id: str, image: str, port: int, namespace: str) -> str:
+    if solution_id == "paperless-ngx":
+        raise ValueError(
+            "Paperless-ngx Kubernetes render is blocked: a release-specific product stack must bind "
+            "PostgreSQL, a Redis-compatible broker, the Paperless secret key and URL, separate data/media/consume/export "
+            "storage, reviewed ingress and dependency egress, and a tested non-overlapping upgrade strategy. "
+            "Stage and verify that product Kustomize bundle instead of applying the generic envelope."
+        )
     return dedent(f"""
         # ArchiveWeaver deployment envelope for {solution_id}
-        # Replace the image with a pinned, approved OCI digest before applying.
+        # This generic review artifact is not a complete product stack.
+        # Cluster node count does not establish safe application replica count.
         apiVersion: v1
         kind: Namespace
         metadata:
@@ -87,9 +95,9 @@ def render_kubernetes(solution_id: str, image: str, port: int, namespace: str, r
             app.kubernetes.io/name: {solution_id}
             app.kubernetes.io/managed-by: archiveweaver
         spec:
-          replicas: {replicas}
+          replicas: 1
           strategy:
-            type: RollingUpdate
+            type: Recreate
           selector:
             matchLabels:
               app.kubernetes.io/name: {solution_id}
@@ -98,6 +106,7 @@ def render_kubernetes(solution_id: str, image: str, port: int, namespace: str, r
               labels:
                 app.kubernetes.io/name: {solution_id}
             spec:
+              automountServiceAccountToken: false
               securityContext:
                 seccompProfile:
                   type: RuntimeDefault
@@ -143,8 +152,22 @@ def render_kubernetes(solution_id: str, image: str, port: int, namespace: str, r
             - name: http
               port: 80
               targetPort: {port}
-        # This envelope does not create the product database, search, queue,
-        # object store, or ingress TLS policy. Add official dependencies first.
+        ---
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: {solution_id}-default-deny
+          namespace: {namespace}
+        spec:
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {solution_id}
+          policyTypes: ["Ingress", "Egress"]
+          ingress: []
+          egress: []
+        # Add reviewed NetworkPolicies for the ingress controller, DNS, and
+        # product dependencies before deployment. This envelope does not create
+        # the database, search, queue, object store, or ingress TLS policy.
     """).lstrip()
 
 
@@ -190,11 +213,8 @@ def render_swarm(
         services:
           app:
             image: {image}
-            ports:
-              - target: {port}
-                published: {port}
-                protocol: tcp
-                mode: ingress
+            # No routing-mesh port is published. Connect a reviewed TLS reverse
+            # proxy to the stack network and route to app:{port}.
             environment:
               ARCHIVEWEAVER_SOLUTION_ID: {solution_id}
             volumes:
@@ -432,7 +452,7 @@ def render(
             external_storage,
         )
     elif runtime["kind"] == "kubernetes":
-        content = render_kubernetes(solution_id, selected_image, port, namespace, replica_count)
+        content = render_kubernetes(solution_id, selected_image, port, namespace)
     else:
         raise ValueError(f"mode '{mode}' does not have a renderer; use the documented Pacemaker resource template")
     return plan.as_dict(), content
