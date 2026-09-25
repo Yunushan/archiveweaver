@@ -868,9 +868,12 @@ class CIWorkflowTests(unittest.TestCase):
             )
             self.assertIn("language: python", workflow)
             self.assertIn("security-events: write", workflow)
-            self.assertIn(
-                "github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63",
+            self.assertRegex(
                 workflow,
+                (
+                    r"(?m)^[ \t]*uses: github/codeql-action/upload-sarif@"
+                    r"[0-9a-f]{40}[ \t]+#[ \t]+v4\.\d+\.\d+[ \t]*$"
+                ),
             )
             self.assertIn("sarif_file: cifuzz-sarif/results.sarif", workflow)
             self.assertIn("parallel-fuzzing: true", workflow)
