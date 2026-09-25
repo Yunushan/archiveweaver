@@ -27,18 +27,19 @@ declared in `workflow.yml` across production apply, verification, rollback,
 and repair workflows; `serial: 1` alone does not prevent separate jobs from
 racing one another.
 The standalone readiness node also verifies the protected
-`ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` binding before it scores the
-operator manifest, so the score used for promotion is the same manifest that
-the later operational preflight will accept.
+`ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` binding and requires the manifest's
+`release.source_revision` to equal `ARCHIVEWEAVER_IMMUTABLE_REF` before it
+scores the operator manifest. The later operational preflight repeats both
+checks against the signed checkout used for that job.
 Every source-gated certification, drill, apply, verification, repair, and
 rollback job must inherit both source-integrity environment bindings so a
 direct playbook invocation cannot run without the immutable-ref and trusted-
 signer context. It must also inherit the controller-protected
 `ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` binding; preflight runs
 `scripts/verify-readiness-manifest.py` against the actual selected manifest
-bytes before any non-check-mode operational job, so changing an operator-owned
-manifest cannot bypass source verification. This also permits staging and
-restore jobs to use their own approved manifest path.
+bytes and approved source commit for every source-gated operational job, so
+changing an operator-owned manifest cannot bypass source verification. This
+also permits staging and restore jobs to use their own approved manifest path.
 Every operational role additionally requires the controller-preflight
 completion attestation, so selecting only a provider/repair/verify tag or
 skipping the `always` tag cannot reach a role without the controller checks.
@@ -82,9 +83,11 @@ Required workflow order:
 1. validate the catalog and repository tests;
 2. run `ansible-lint` and playbook syntax checks;
 3. run staging check-mode/diff, product certification, and failure-domain tests;
-4. verify backup and restore evidence plus a tested rollback point;
-5. score the exact release manifest at 100/100;
-6. require human approval for serial production apply, repair, or rollback;
+4. verify backup and restore evidence, then run approved staging repair and
+   rollback drills against a seeded staging installation;
+5. index the resulting recovery records and score the exact release manifest;
+6. require human approval for the separately authorized first-use Paperless RKE2
+   bootstrap at 90/100, or score 100/100 for ordinary production apply;
 7. run the mandatory post-apply verification, then verify health,
    dependencies, storage, and evidence;
 8. retain signed logs and schedule the next restore/fixity/failure drill;
@@ -100,6 +103,98 @@ hourly check cannot trigger a deployment. Scheduled verification, repair, and
 rollback paths depend on the signed readiness stage and their own approval
 node, so an on-demand recovery action cannot skip the same source and release
 gates.
+
+The `staging-repair-drill` and `staging-rollback-drill` nodes break the recovery
+evidence dependency before the final readiness score. They use only the
+approved staging inventory, staging change credentials, human approval, and
+serial execution. The runner rejects `archiveweaver_recovery_drill=true` for
+production or restore inventories and for any playbook other than `repair.yml`
+or `rollback.yml`; controller and managed-host preflight repeat the staging
+inventory check. The drill flag skips only the final 100/100 score check.
+Signed source verification, the protected SHA-256 manifest bytes, production
+solution/release/source identity, reviewed provider-bundle digest, and pinned
+execution-environment image all remain required. The selected staging manifest
+must describe the **production release being certified** and match the
+controller-protected digest. Drill evidence records `environment: production`
+as its target and `execution_environment: staging` as the actual execution
+site. Index those passing records in the production target manifest before
+running `readiness`; a staging preview or a planned/check-mode run is not
+passing recovery evidence. A real, separately provisioned staging installation
+and approved rollback artifact are required to run these drills.
+
+The ordinary production apply still requires 100/100. An on-demand
+`production-bootstrap-approval` and `production-bootstrap-apply` branch can
+install Paperless-ngx on RKE2 for the first time. This branch requires a
+controller-protected `ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256` distinct
+from the protected full-manifest digest. The approved manifest contains a
+`bootstrap_authorization` object with exactly the fields shown in
+`release-manifest.example.json`. The independent approver must differ from the
+change operator; `governance.approved_at` must precede issuance; the authorization
+must expire within 24 hours and before `governance.valid_until`. Its digest is
+SHA-256 over UTF-8 JSON produced with sorted keys, no whitespace separators,
+and preserved Unicode (`json.dumps(record, sort_keys=True,
+separators=(',', ':'), ensure_ascii=False)`). Protect that digest in a separate
+controller approval credential or policy binding; a job submitter must not be
+able to alter it or the approved readiness-manifest digest. The object binds
+the exact release, source repository and commit, controller image, signed
+provider bundle, Kustomize bytes, kubeconfig digest, protected production
+inventory digest, cluster context, target namespace, change ticket, approval
+ticket, and approving identity.
+The authorization verifier also rehashes the stable full-manifest bytes against
+`ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` on its own read.
+
+Bootstrap accepts only an otherwise valid **90/100** report with `control`,
+`release`, `product`, `resilience`, `data_protection`, `security`, `recovery`,
+`governance`, and `support` passing. Only `observability` may be pending; the
+bootstrap report remains `status: fail` and is never presented as 100/100.
+This floor requires a real staging installation and isolated staging/restore
+evidence. For an empty staging estate, the separate on-demand
+`staging-seed-approval` and `staging-seed-apply` nodes first install the pinned
+Paperless release into an empty three-node RKE2 staging target. The protected
+manifest must identify `service.environment: staging`, score at least 40 and
+below 100 with no validation errors, and pass `control`, `release`,
+`governance`, and `support`. The separate `staging_seed_authorization` object
+uses the exact fields in `staging-seed-authorization.example.json` with
+`purpose: first-staging-apply`. Its canonical JSON SHA-256 belongs in
+`ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256`, protected independently of
+the full staging manifest, protected staging inventory digest, and production
+bootstrap digests. It expires within
+24 hours, stays inside the governance window, and requires an approver other
+than the operator. The seed uses the same signed source, protected manifest,
+immutable release and image proof, empty-host and absent-namespace checks,
+atomic namespace claim, forced verification, and evidence seal. Its evidence
+environment remains `staging`. Run certification and recovery drills only
+after reviewing a successful seed; never treat the seed as production proof.
+
+The runner confines bootstrap to an explicit non-check `site.yml` apply using
+the complete production inventory. Controller and managed preflight repeat
+the signed-checkout, protected-manifest, image, approval, backup, and 90-point
+checks. Before any managed mutation, every host must lack its release record,
+data root, and log root; the designated RKE2 control host must prove that the
+dedicated namespace is absent using the approved kubeconfig and context.
+Every rendered Kustomize document must be the one approved Namespace object
+or an allowlisted namespaced API object explicitly bound to that namespace;
+cluster-scoped and other-namespace objects are refused. The provider rechecks
+namespace absence and atomically creates it before applying the already
+validated rendered bytes. The control-host verification record includes the
+new namespace UID. The `site.yml` play then forces post-apply verification and
+evidence sealing. If a run mutates the target and
+then fails, the first-use branch cannot be retried against that populated
+target; handle it under a separately approved incident and recovery procedure.
+After successful bootstrap, publish and review the new production observations,
+update the protected manifest and evidence index, and reach 100/100 before
+using the ordinary production jobs.
+
+Ordinary Paperless/RKE2 production apply and verify jobs require the protected
+manifest's complete `deployment_target` with the approved context, kubeconfig
+and production inventory digests, application namespace, and live `kube-system`
+and application Namespace UIDs. Set the separately protected
+`ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256` to the digest of the exact
+root-owned production inventory supplied to the job. Controller preflight
+compares those inventory bytes and the control-host kubeconfig with the
+manifest, then queries both Namespace UIDs through the approved kubeconfig and
+context before accepting the 100-point score. A changed cluster or recreated
+Namespace requires new approval, manifest, and evidence.
 
 Do not paste credentials into extra variables. Use controller credential
 bindings, Ansible Vault, or an approved external secret manager.
@@ -132,14 +227,16 @@ that value to match the injected variable and the manifest.
 The workflow contract lists these required bindings explicitly so empty or
 placeholder example defaults cannot look like completed evidence. Production
 apply, verification, repair, and rollback jobs must also inject the selected
-provider-content digests, health endpoint, and explicit Kubernetes kubeconfig
-binding; the provider preflight rejects a missing or mismatched value.
+provider-content digests, health endpoint, and explicit Kubernetes kubeconfig,
+kubeconfig SHA-256, and context bindings; preflight rejects missing values for
+Kubernetes-family operations. The context must name the reviewed cluster in
+the approved kubeconfig bytes.
 
 The staging-preview node carries a runtime-specific binding map as well as its
 common inputs. A raw preview requires the reviewed `ExecStart` and raw bundle
 digest; Quadlet requires its immutable image and rendered-unit digest; Docker
 and Swarm require the staged Compose path and product-stack digest; and each
 Kubernetes-family preview requires the Kustomize path, deterministic bundle
-digest, and explicit kubeconfig. The generic preview marks Pacemaker
+digest, explicit kubeconfig and SHA-256 binding, and reviewed context. The generic preview marks Pacemaker
 unsupported because this edition deliberately does not invent cluster
 resources; use the separately reviewed Pacemaker procedure for that runtime.

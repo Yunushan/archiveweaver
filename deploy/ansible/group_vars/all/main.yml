@@ -23,9 +23,16 @@ archiveweaver_change_id: CHG-REPLACE
 # Safety gates. The default is plan-only and must remain false in shared
 # branches. Ansible --check is still recommended for the mutation preview.
 archiveweaver_apply: false
+# First production installation requires a separately protected, expiring
+# authorization and an empty target. The controller never sets this by default.
+archiveweaver_bootstrap_apply: false
+archiveweaver_staging_seed_apply: false
 archiveweaver_run_verification: false
 archiveweaver_repair_apply: false
 archiveweaver_rollback_apply: false
+# A controller-approved staging repair/rollback exercise for production evidence.
+# This never enables a production inventory mutation.
+archiveweaver_recovery_drill: false
 archiveweaver_rollback_release_manifest_verified: false
 archiveweaver_rollback_product_stack_ready: false
 archiveweaver_rollback_verify_command: []
@@ -71,6 +78,8 @@ archiveweaver_product_stack_sha256: ""
 archiveweaver_kustomize_path: "/etc/archiveweaver/{{ archiveweaver_solution_id }}/kustomize"
 archiveweaver_kustomize_bundle_sha256: ""
 archiveweaver_kubeconfig: ""
+archiveweaver_kubeconfig_sha256: ""
+archiveweaver_kube_context: ""
 archiveweaver_resource_name: "{{ archiveweaver_solution_id }}"
 
 archiveweaver_service_name: "{{ archiveweaver_solution_id }}"

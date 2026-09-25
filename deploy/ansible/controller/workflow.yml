@@ -147,6 +147,7 @@ workflow:
     command: python3 -m unittest discover -s tests -v
     environment:
       PYTHONPATH: src
+      PYTHONDONTWRITEBYTECODE: "1"
     on_failure: stop
   - id: ansible-quality
     depends_on:
@@ -154,6 +155,8 @@ workflow:
     working_directory: deploy/ansible
     commands:
       - bash ../../scripts/validate-ansible.sh
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
     on_failure: stop
   - id: staging-preview
     depends_on:
@@ -169,6 +172,8 @@ workflow:
       - archiveweaver_kustomize_path
       - archiveweaver_kustomize_bundle_sha256
       - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
       - archiveweaver_health_url
       - archiveweaver_execution_environment_digest
     required_extra_vars_by_runtime:
@@ -188,21 +193,90 @@ workflow:
         - archiveweaver_kustomize_path
         - archiveweaver_kustomize_bundle_sha256
         - archiveweaver_kubeconfig
+        - archiveweaver_kubeconfig_sha256
+        - archiveweaver_kube_context
       rke2:
         - archiveweaver_kustomize_path
         - archiveweaver_kustomize_bundle_sha256
         - archiveweaver_kubeconfig
+        - archiveweaver_kubeconfig_sha256
+        - archiveweaver_kube_context
       k0s:
         - archiveweaver_kustomize_path
         - archiveweaver_kustomize_bundle_sha256
         - archiveweaver_kubeconfig
+        - archiveweaver_kubeconfig_sha256
+        - archiveweaver_kube_context
       microk8s:
         - archiveweaver_kustomize_path
         - archiveweaver_kustomize_bundle_sha256
         - archiveweaver_kubeconfig
+        - archiveweaver_kubeconfig_sha256
+        - archiveweaver_kube_context
       unsupported_runtimes:
         - pacemaker
     credential_binding: staging-read-only
+    on_failure: stop
+  - id: staging-seed-approval
+    depends_on:
+      - staging-preview
+    type: manual-approval
+    required_group: archive-platform-approvers
+    trigger: on-demand
+  - id: staging-seed-apply
+    depends_on:
+      - staging-seed-approval
+    trigger: on-demand
+    working_directory: deploy/ansible
+    command: >-
+      bash ../../scripts/run-ansible-operational.sh site.yml
+      -i inventory/staging/hosts.yml
+      -e archiveweaver_apply=true
+      -e archiveweaver_staging_seed_apply=true
+      -e archiveweaver_evidence_environment=staging
+    required_extra_vars:
+      - archiveweaver_apply
+      - archiveweaver_staging_seed_apply
+      - archiveweaver_evidence_environment
+      - archiveweaver_release
+      - archiveweaver_change_id
+      - archiveweaver_approval_ticket
+      - archiveweaver_backup_verified
+      - archiveweaver_release_manifest_verified
+      - archiveweaver_product_stack_ready
+      - archiveweaver_operator
+      - archiveweaver_fixture_set
+      - archiveweaver_evidence_publish_enabled
+      - archiveweaver_evidence_publish_command
+      - archiveweaver_evidence_verify_command
+      - archiveweaver_evidence_publish_command_sha256
+      - archiveweaver_evidence_publish_command_argv_sha256
+      - archiveweaver_evidence_verify_command_sha256
+      - archiveweaver_evidence_verify_command_argv_sha256
+      - archiveweaver_evidence_retention_days
+      - archiveweaver_evidence_immutable
+      - archiveweaver_evidence_access_logged
+      - archiveweaver_topology_design_approved
+      - archiveweaver_provider_bundle_sha256
+      - archiveweaver_kustomize_bundle_sha256
+      - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
+      - archiveweaver_health_url
+      - archiveweaver_execution_environment_digest
+    required_environment:
+      - ARCHIVEWEAVER_IMMUTABLE_REF
+      - ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
+      - ARCHIVEWEAVER_READINESS_MANIFEST_SHA256
+      - ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST
+      - ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256
+      - ARCHIVEWEAVER_STAGING_INVENTORY_SHA256
+    credential_binding: staging-change-account
+    requires_approval: true
+    approval_node: staging-seed-approval
+    serial: 1
+    any_errors_fatal: true
+    resource_lock: archiveweaver-staging-seed
     on_failure: stop
   - id: product-certification
     depends_on:
@@ -314,18 +388,193 @@ workflow:
     credential_binding: preservation-restore-account
     requires_approval: true
     on_failure: stop
-  - id: readiness
+  - id: staging-repair-drill
     depends_on:
       - backup-and-restore-gate
+    working_directory: deploy/ansible
+    command: >-
+      bash ../../scripts/run-ansible-operational.sh repair.yml
+      -i inventory/staging/hosts.yml
+      -e archiveweaver_recovery_drill=true
+      -e archiveweaver_repair_apply=true
+      -e archiveweaver_evidence_environment=production
+    required_extra_vars:
+      - archiveweaver_recovery_drill
+      - archiveweaver_repair_apply
+      - archiveweaver_evidence_environment
+      - archiveweaver_release
+      - archiveweaver_change_id
+      - archiveweaver_approval_ticket
+      - archiveweaver_backup_verified
+      - archiveweaver_release_manifest_verified
+      - archiveweaver_product_stack_ready
+      - archiveweaver_operator
+      - archiveweaver_fixture_set
+      - archiveweaver_evidence_publish_enabled
+      - archiveweaver_evidence_publish_command
+      - archiveweaver_evidence_verify_command
+      - archiveweaver_evidence_publish_command_sha256
+      - archiveweaver_evidence_publish_command_argv_sha256
+      - archiveweaver_evidence_verify_command_sha256
+      - archiveweaver_evidence_verify_command_argv_sha256
+      - archiveweaver_evidence_retention_days
+      - archiveweaver_evidence_immutable
+      - archiveweaver_evidence_access_logged
+      - archiveweaver_provider_bundle_sha256
+      - archiveweaver_product_stack_sha256
+      - archiveweaver_kustomize_bundle_sha256
+      - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
+      - archiveweaver_health_url
+      - archiveweaver_execution_environment_digest
+    required_environment:
+      - ARCHIVEWEAVER_IMMUTABLE_REF
+      - ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
+      - ARCHIVEWEAVER_READINESS_MANIFEST_SHA256
+      - ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST
+    credential_binding: staging-change-account
+    requires_approval: true
+    serial: 1
+    any_errors_fatal: true
+    resource_lock: archiveweaver-staging-recovery
+    on_failure: stop
+  - id: staging-rollback-drill
+    depends_on:
+      - staging-repair-drill
+    working_directory: deploy/ansible
+    command: >-
+      bash ../../scripts/run-ansible-operational.sh rollback.yml
+      -i inventory/staging/hosts.yml
+      -e archiveweaver_recovery_drill=true
+      -e archiveweaver_rollback_apply=true
+      -e archiveweaver_rollback_environment=staging
+      -e archiveweaver_evidence_environment=production
+    required_extra_vars:
+      - archiveweaver_recovery_drill
+      - archiveweaver_rollback_apply
+      - archiveweaver_rollback_environment
+      - archiveweaver_evidence_environment
+      - archiveweaver_release
+      - archiveweaver_change_id
+      - archiveweaver_rollback_change_id
+      - archiveweaver_rollback_release
+      - archiveweaver_rollback_artifact_digest
+      - archiveweaver_rollback_command
+      - archiveweaver_rollback_approval_ticket
+      - archiveweaver_rollback_backup_verified
+      - archiveweaver_rollback_verify_command
+      - archiveweaver_rollback_command_sha256
+      - archiveweaver_rollback_command_argv_sha256
+      - archiveweaver_rollback_verify_command_sha256
+      - archiveweaver_rollback_verify_command_argv_sha256
+      - archiveweaver_rollback_release_manifest_verified
+      - archiveweaver_rollback_product_stack_ready
+      - archiveweaver_operator
+      - archiveweaver_fixture_set
+      - archiveweaver_evidence_publish_enabled
+      - archiveweaver_evidence_publish_command
+      - archiveweaver_evidence_verify_command
+      - archiveweaver_evidence_publish_command_sha256
+      - archiveweaver_evidence_publish_command_argv_sha256
+      - archiveweaver_evidence_verify_command_sha256
+      - archiveweaver_evidence_verify_command_argv_sha256
+      - archiveweaver_evidence_retention_days
+      - archiveweaver_evidence_immutable
+      - archiveweaver_evidence_access_logged
+      - archiveweaver_provider_bundle_sha256
+      - archiveweaver_product_stack_sha256
+      - archiveweaver_kustomize_bundle_sha256
+      - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
+      - archiveweaver_health_url
+      - archiveweaver_execution_environment_digest
+    required_environment:
+      - ARCHIVEWEAVER_IMMUTABLE_REF
+      - ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
+      - ARCHIVEWEAVER_READINESS_MANIFEST_SHA256
+      - ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST
+    credential_binding: staging-change-account
+    requires_approval: true
+    serial: 1
+    any_errors_fatal: true
+    resource_lock: archiveweaver-staging-recovery
+    on_failure: stop
+  - id: production-bootstrap-approval
+    depends_on:
+      - staging-rollback-drill
+    type: manual-approval
+    required_group: archive-platform-approvers
+    trigger: on-demand
+  - id: production-bootstrap-apply
+    depends_on:
+      - production-bootstrap-approval
+    trigger: on-demand
+    working_directory: deploy/ansible
+    command: >-
+      bash ../../scripts/run-ansible-operational.sh site.yml
+      -i inventory/production/hosts.yml
+      -e archiveweaver_apply=true
+      -e archiveweaver_bootstrap_apply=true
+    required_extra_vars:
+      - archiveweaver_apply
+      - archiveweaver_bootstrap_apply
+      - archiveweaver_release
+      - archiveweaver_change_id
+      - archiveweaver_approval_ticket
+      - archiveweaver_backup_verified
+      - archiveweaver_release_manifest_verified
+      - archiveweaver_product_stack_ready
+      - archiveweaver_operator
+      - archiveweaver_fixture_set
+      - archiveweaver_evidence_environment
+      - archiveweaver_evidence_publish_enabled
+      - archiveweaver_evidence_publish_command
+      - archiveweaver_evidence_verify_command
+      - archiveweaver_evidence_publish_command_sha256
+      - archiveweaver_evidence_publish_command_argv_sha256
+      - archiveweaver_evidence_verify_command_sha256
+      - archiveweaver_evidence_verify_command_argv_sha256
+      - archiveweaver_evidence_retention_days
+      - archiveweaver_evidence_immutable
+      - archiveweaver_evidence_access_logged
+      - archiveweaver_topology_design_approved
+      - archiveweaver_provider_bundle_sha256
+      - archiveweaver_kustomize_bundle_sha256
+      - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
+      - archiveweaver_health_url
+      - archiveweaver_execution_environment_digest
+    required_environment:
+      - ARCHIVEWEAVER_IMMUTABLE_REF
+      - ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
+      - ARCHIVEWEAVER_READINESS_MANIFEST_SHA256
+      - ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST
+      - ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256
+      - ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256
+    credential_binding: production-change-account
+    requires_approval: true
+    approval_node: production-bootstrap-approval
+    serial: 1
+    any_errors_fatal: true
+    resource_lock: archiveweaver-production
+    on_failure: stop
+  - id: readiness
+    depends_on:
+      - staging-rollback-drill
     working_directory: .
     commands:
       - >-
         python3 scripts/verify-readiness-manifest.py
         deploy/ansible/release-manifest.json
         "$ARCHIVEWEAVER_READINESS_MANIFEST_SHA256"
+        "$ARCHIVEWEAVER_IMMUTABLE_REF"
       - python3 -m archiveweaver readiness --manifest deploy/ansible/release-manifest.json --json
     environment:
       PYTHONPATH: src
+      PYTHONDONTWRITEBYTECODE: "1"
     required_environment:
       - ARCHIVEWEAVER_IMMUTABLE_REF
       - ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
@@ -348,12 +597,27 @@ workflow:
       - archiveweaver_backup_verified
       - archiveweaver_release_manifest_verified
       - archiveweaver_product_stack_ready
+      - archiveweaver_operator
+      - archiveweaver_fixture_set
+      - archiveweaver_evidence_environment
+      - archiveweaver_evidence_publish_enabled
+      - archiveweaver_evidence_publish_command
+      - archiveweaver_evidence_verify_command
+      - archiveweaver_evidence_publish_command_sha256
+      - archiveweaver_evidence_publish_command_argv_sha256
+      - archiveweaver_evidence_verify_command_sha256
+      - archiveweaver_evidence_verify_command_argv_sha256
+      - archiveweaver_evidence_retention_days
+      - archiveweaver_evidence_immutable
+      - archiveweaver_evidence_access_logged
       - archiveweaver_topology_design_approved
       - archiveweaver_single_node_production_approved
       - archiveweaver_provider_bundle_sha256
       - archiveweaver_product_stack_sha256
       - archiveweaver_kustomize_bundle_sha256
       - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
       - archiveweaver_health_url
       - archiveweaver_observe_enabled
       - archiveweaver_check_command
@@ -365,6 +629,7 @@ workflow:
       - ARCHIVEWEAVER_IMMUTABLE_REF
       - ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS
       - ARCHIVEWEAVER_READINESS_MANIFEST_SHA256
+      - ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST
     credential_binding: production-change-account
     requires_approval: true
     approval_node: production-approval
@@ -399,6 +664,8 @@ workflow:
       - archiveweaver_product_stack_sha256
       - archiveweaver_kustomize_bundle_sha256
       - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
       - archiveweaver_health_url
       - archiveweaver_execution_environment_digest
     required_environment:
@@ -437,6 +704,8 @@ workflow:
       - archiveweaver_product_stack_sha256
       - archiveweaver_kustomize_bundle_sha256
       - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
       - archiveweaver_health_url
       - archiveweaver_execution_environment_digest
     required_environment:
@@ -485,6 +754,8 @@ workflow:
       - archiveweaver_product_stack_sha256
       - archiveweaver_kustomize_bundle_sha256
       - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
       - archiveweaver_health_url
       - archiveweaver_execution_environment_digest
     required_environment:
@@ -546,6 +817,8 @@ workflow:
       - archiveweaver_product_stack_sha256
       - archiveweaver_kustomize_bundle_sha256
       - archiveweaver_kubeconfig
+      - archiveweaver_kubeconfig_sha256
+      - archiveweaver_kube_context
       - archiveweaver_health_url
       - archiveweaver_execution_environment_digest
     required_environment:
@@ -615,6 +888,8 @@ required_runtime_bindings:
     - archiveweaver_product_stack_sha256
     - archiveweaver_kustomize_bundle_sha256
     - archiveweaver_kubeconfig
+    - archiveweaver_kubeconfig_sha256
+    - archiveweaver_kube_context
     - archiveweaver_health_url
     - archiveweaver_observe_enabled
     - archiveweaver_check_command
@@ -629,18 +904,63 @@ required_runtime_bindings:
     - archiveweaver_backup_verified
     - archiveweaver_release_manifest_verified
     - archiveweaver_product_stack_ready
+    - archiveweaver_operator
+    - archiveweaver_fixture_set
+    - archiveweaver_evidence_environment
+    - archiveweaver_evidence_publish_enabled
+    - archiveweaver_evidence_publish_command
+    - archiveweaver_evidence_verify_command
+    - archiveweaver_evidence_publish_command_sha256
+    - archiveweaver_evidence_publish_command_argv_sha256
+    - archiveweaver_evidence_verify_command_sha256
+    - archiveweaver_evidence_verify_command_argv_sha256
+    - archiveweaver_evidence_retention_days
+    - archiveweaver_evidence_immutable
+    - archiveweaver_evidence_access_logged
     - archiveweaver_topology_design_approved
     - archiveweaver_single_node_production_approved
     - archiveweaver_provider_bundle_sha256
     - archiveweaver_product_stack_sha256
     - archiveweaver_kustomize_bundle_sha256
     - archiveweaver_kubeconfig
+    - archiveweaver_kubeconfig_sha256
+    - archiveweaver_kube_context
     - archiveweaver_health_url
     - archiveweaver_observe_enabled
     - archiveweaver_check_command
     - archiveweaver_check_command_sha256
     - archiveweaver_check_command_argv_sha256
     - archiveweaver_check_interval
+    - archiveweaver_execution_environment_digest
+  production_bootstrap_apply:
+    - archiveweaver_apply
+    - archiveweaver_bootstrap_apply
+    - archiveweaver_release
+    - archiveweaver_change_id
+    - archiveweaver_approval_ticket
+    - archiveweaver_backup_verified
+    - archiveweaver_release_manifest_verified
+    - archiveweaver_product_stack_ready
+    - archiveweaver_operator
+    - archiveweaver_fixture_set
+    - archiveweaver_evidence_environment
+    - archiveweaver_evidence_publish_enabled
+    - archiveweaver_evidence_publish_command
+    - archiveweaver_evidence_verify_command
+    - archiveweaver_evidence_publish_command_sha256
+    - archiveweaver_evidence_publish_command_argv_sha256
+    - archiveweaver_evidence_verify_command_sha256
+    - archiveweaver_evidence_verify_command_argv_sha256
+    - archiveweaver_evidence_retention_days
+    - archiveweaver_evidence_immutable
+    - archiveweaver_evidence_access_logged
+    - archiveweaver_topology_design_approved
+    - archiveweaver_provider_bundle_sha256
+    - archiveweaver_kustomize_bundle_sha256
+    - archiveweaver_kubeconfig
+    - archiveweaver_kubeconfig_sha256
+    - archiveweaver_kube_context
+    - archiveweaver_health_url
     - archiveweaver_execution_environment_digest
   production_repair:
     - archiveweaver_release
@@ -668,6 +988,8 @@ required_runtime_bindings:
     - archiveweaver_product_stack_sha256
     - archiveweaver_kustomize_bundle_sha256
     - archiveweaver_kubeconfig
+    - archiveweaver_kubeconfig_sha256
+    - archiveweaver_kube_context
     - archiveweaver_health_url
     - archiveweaver_execution_environment_digest
   production_rollback:
@@ -706,6 +1028,8 @@ required_runtime_bindings:
     - archiveweaver_product_stack_sha256
     - archiveweaver_kustomize_bundle_sha256
     - archiveweaver_kubeconfig
+    - archiveweaver_kubeconfig_sha256
+    - archiveweaver_kube_context
     - archiveweaver_health_url
     - archiveweaver_execution_environment_digest
   product_certification:

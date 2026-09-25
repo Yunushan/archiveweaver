@@ -6,16 +6,25 @@ repo_root="$(cd -- "${script_dir}/.." && pwd -P)"
 runner="${repo_root}/scripts/run-ansible-operational.sh"
 temporary_root="$(mktemp -d)"
 operator_inventory="${repo_root}/deploy/ansible/inventory/production/hosts.yml"
+staging_inventory="${repo_root}/deploy/ansible/inventory/staging/hosts.yml"
 created_operator_inventory=0
+created_staging_inventory=0
 if [[ ! -e "${operator_inventory}" && ! -L "${operator_inventory}" ]]; then
   cp -- "${operator_inventory}.example" "${operator_inventory}"
   created_operator_inventory=1
+fi
+if [[ ! -e "${staging_inventory}" && ! -L "${staging_inventory}" ]]; then
+  cp -- "${staging_inventory}.example" "${staging_inventory}"
+  created_staging_inventory=1
 fi
 
 cleanup() {
   rm -rf -- "${temporary_root}"
   if (( created_operator_inventory == 1 )); then
     rm -f -- "${operator_inventory}"
+  fi
+  if (( created_staging_inventory == 1 )); then
+    rm -f -- "${staging_inventory}"
   fi
 }
 trap cleanup EXIT
@@ -33,6 +42,7 @@ fake_ansible="${temporary_root}/bin/ansible-playbook"
   printf '%s\n' 'printf "ANSIBLE_CONNECTION=%s\\n" "${ANSIBLE_CONNECTION:-}"'
   printf '%s\n' 'printf "PYTHONPATH=%s\\n" "${PYTHONPATH:-}"'
   printf '%s\n' 'printf "PYTHONHOME=%s\\n" "${PYTHONHOME:-}"'
+  printf '%s\n' 'printf "PYTHONDONTWRITEBYTECODE=%s\\n" "${PYTHONDONTWRITEBYTECODE:-}"'
   printf '%s\n' 'printf "ARGS="'
   printf '%s\n' 'printf " <%s>" "$@"'
   printf '%s\n' 'printf "\\n"'
@@ -48,6 +58,7 @@ output="$(
   ANSIBLE_CONNECTION=local \
   PYTHONPATH=/tmp/untrusted-python \
   PYTHONHOME=/tmp/untrusted-pythonhome \
+  PYTHONDONTWRITEBYTECODE=0 \
   PATH="${temporary_root}/bin:${PATH}" \
   bash "${runner}" site.yml -i inventory/production/hosts.yml --check --diff
 )"
@@ -60,6 +71,7 @@ expected_ansible_root="${repo_root}/deploy/ansible"
 [[ "${output}" == *"ANSIBLE_CONNECTION="* ]]
 [[ "${output}" == *"PYTHONPATH="* ]]
 [[ "${output}" == *"PYTHONHOME="* ]]
+[[ "${output}" == *"PYTHONDONTWRITEBYTECODE=1"* ]]
 [[ "${output}" == *"ARGS= <-i> <inventory/production/hosts.yml> <--check> <--diff> <site.yml>"* ]]
 
 if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" unapproved.yml >/dev/null 2>&1; then
@@ -138,6 +150,67 @@ if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/p
   printf 'runner accepted a second unapproved extra-var binding\n' >&2
   exit 1
 fi
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" repair.yml -i inventory/production/hosts.yml -e archiveweaver_recovery_drill=true >/dev/null 2>&1; then
+  printf 'runner accepted a recovery drill against production inventory\n' >&2
+  exit 1
+fi
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/staging/hosts.yml -e archiveweaver_recovery_drill=true >/dev/null 2>&1; then
+  printf 'runner accepted a recovery drill with the deployment playbook\n' >&2
+  exit 1
+fi
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" repair.yml -i inventory/staging/hosts.yml -e archiveweaver_recovery_drill=false >/dev/null 2>&1; then
+  printf 'runner accepted a false recovery-drill override\n' >&2
+  exit 1
+fi
+drill_output="$(PATH="${temporary_root}/bin:${PATH}" bash "${runner}" repair.yml -i inventory/staging/hosts.yml -e archiveweaver_recovery_drill=true)"
+[[ "${drill_output}" == *"ARGS= <-i> <inventory/staging/hosts.yml> <-e> <archiveweaver_recovery_drill=true> <repair.yml>"* ]]
+
+bootstrap_digest="$(printf '%064d' 0)"
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_bootstrap_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted bootstrap without an independently protected authorization digest\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/staging/hosts.yml -e archiveweaver_apply=true -e archiveweaver_bootstrap_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted bootstrap against staging inventory\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml --check -e archiveweaver_apply=true -e archiveweaver_bootstrap_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted bootstrap in check mode\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_bootstrap_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted bootstrap without explicit apply intent\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_bootstrap_apply=false >/dev/null 2>&1; then
+  printf 'runner accepted a false bootstrap override\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_bootstrap_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted bootstrap without a protected production inventory digest\n' >&2
+  exit 1
+fi
+bootstrap_output="$(ARCHIVEWEAVER_BOOTSTRAP_AUTHORIZATION_SHA256="${bootstrap_digest}" ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_bootstrap_apply=true)"
+[[ "${bootstrap_output}" == *"ARGS= <-i> <inventory/production/hosts.yml> <-e> <archiveweaver_apply=true> <-e> <archiveweaver_bootstrap_apply=true> <site.yml>"* ]]
+
+if PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/staging/hosts.yml -e archiveweaver_apply=true -e archiveweaver_staging_seed_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted staging seed without independent authorization\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/staging/hosts.yml -e archiveweaver_apply=true -e archiveweaver_staging_seed_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted staging seed without protected inventory digest\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256="${bootstrap_digest}" ARCHIVEWEAVER_STAGING_INVENTORY_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/production/hosts.yml -e archiveweaver_apply=true -e archiveweaver_staging_seed_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted staging seed against production inventory\n' >&2
+  exit 1
+fi
+if ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256="${bootstrap_digest}" ARCHIVEWEAVER_STAGING_INVENTORY_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/staging/hosts.yml --check -e archiveweaver_apply=true -e archiveweaver_staging_seed_apply=true >/dev/null 2>&1; then
+  printf 'runner accepted staging seed in check mode\n' >&2
+  exit 1
+fi
+seed_output="$(ARCHIVEWEAVER_STAGING_SEED_AUTHORIZATION_SHA256="${bootstrap_digest}" ARCHIVEWEAVER_STAGING_INVENTORY_SHA256="${bootstrap_digest}" PATH="${temporary_root}/bin:${PATH}" bash "${runner}" site.yml -i inventory/staging/hosts.yml -e archiveweaver_apply=true -e archiveweaver_staging_seed_apply=true)"
+[[ "${seed_output}" == *"ARGS= <-i> <inventory/staging/hosts.yml> <-e> <archiveweaver_apply=true> <-e> <archiveweaver_staging_seed_apply=true> <site.yml>"* ]]
 
 if (( created_operator_inventory == 1 )); then
   rm -f -- "${operator_inventory}"

@@ -86,7 +86,7 @@ jobs:
           make quality
           python -m coverage run -m unittest discover -s tests
           python -m coverage report
-          bandit --quiet --recursive src scripts fuzz --severity-level medium --confidence-level medium
+          bandit --quiet --recursive src scripts fuzz deploy/ansible/filter_plugins --severity-level medium --confidence-level medium
           pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict
           pip-audit --no-deps --disable-pip -r requirements/release-tools.txt --strict
           bash scripts/validate-ansible.sh
@@ -352,8 +352,10 @@ jobs:
           verify-cert-identity: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
           verify-oidc-issuer: https://token.actions.githubusercontent.com
       - name: Attest package provenance
+        id: attest-package
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
+          create-storage-record: false
           subject-path: |
             dist/*
             archiveweaver.spdx.json
@@ -363,6 +365,49 @@ jobs:
             archiveweaver-ee.grype.json
             github-production-controls.json
             SHA256SUMS
+      - name: Export the signed package provenance statement
+        env:
+          PACKAGE_ATTESTATION_BUNDLE: ${{ steps.attest-package.outputs.bundle-path }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          bundle_path = Path(os.environ["PACKAGE_ATTESTATION_BUNDLE"])
+          if not bundle_path.is_file() or bundle_path.is_symlink():
+              raise SystemExit("package provenance action did not return a regular attestation bundle")
+          bundle_bytes = bundle_path.read_bytes()
+          if not bundle_bytes or len(bundle_bytes) > 16 * 1024 * 1024:
+              raise SystemExit("package provenance bundle has an invalid size")
+          bundle = json.loads(bundle_bytes)
+          if bundle.get("mediaType") != "application/vnd.dev.sigstore.bundle.v0.3+json":
+              raise SystemExit("package provenance bundle is not Sigstore v0.3")
+          envelope = bundle.get("dsseEnvelope")
+          if not isinstance(envelope, dict) or envelope.get("payloadType") != "application/vnd.in-toto+json":
+              raise SystemExit("package provenance bundle lacks an in-toto DSSE envelope")
+          encoded = envelope.get("payload")
+          if not isinstance(encoded, str):
+              raise SystemExit("package provenance bundle has no statement payload")
+          statement_bytes = base64.b64decode(encoded, validate=True)
+          statement = json.loads(statement_bytes)
+          controls_digest = hashlib.sha256(Path("github-production-controls.json").read_bytes()).hexdigest()
+          controls_subject = {
+              "name": "github-production-controls.json",
+              "digest": {"sha256": controls_digest},
+          }
+          if (
+              statement.get("_type") != "https://in-toto.io/Statement/v1"
+              or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+              or not isinstance(statement.get("subject"), list)
+              or controls_subject not in statement["subject"]
+          ):
+              raise SystemExit("package provenance does not bind the signed hosted-control report")
+          Path("archiveweaver-release.provenance.sigstore.json").write_bytes(bundle_bytes)
+          Path("archiveweaver-release.provenance.json").write_bytes(statement_bytes)
+          PY
       - name: Load and verify the transferred controller image
         env:
           ANSIBLE_EE_LOCAL_TAG: archiveweaver-ee:${{ github.ref_name }}
@@ -484,44 +529,6 @@ jobs:
           echo "name=${image_name}" >> "${GITHUB_OUTPUT}"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "reference=${image_name}@${digest}" >> "${GITHUB_OUTPUT}"
-      - name: Record the immutable controller-image publication
-        env:
-          IMAGE_NAME: ${{ steps.publish-ee.outputs.name }}
-          IMAGE_DIGEST: ${{ steps.publish-ee.outputs.digest }}
-          IMAGE_REFERENCE: ${{ steps.publish-ee.outputs.reference }}
-        run: |
-          set -euo pipefail
-          jq -n -S \
-            --arg base_image "${ANSIBLE_EE_BASE_IMAGE}" \
-            --arg image_name "${IMAGE_NAME}" \
-            --arg immutable_reference "${IMAGE_REFERENCE}" \
-            --arg local_image_id "$(jq -er '.local_image_id' archiveweaver-ee.metadata.json)" \
-            --arg registry_digest "${IMAGE_DIGEST}" \
-            --arg release_tag "${GITHUB_REF_NAME}" \
-            --arg source_revision "${GITHUB_SHA}" \
-            '{
-              schema_version: 1,
-              base_image: $base_image,
-              image_name: $image_name,
-              immutable_reference: $immutable_reference,
-              local_image_id: $local_image_id,
-              registry_digest: $registry_digest,
-              release_tag: $release_tag,
-              source_revision: $source_revision
-            }' > archiveweaver-ee.publication.json
-          jq -e '
-            type == "object" and
-            keys == ["base_image", "image_name", "immutable_reference", "local_image_id", "registry_digest", "release_tag", "schema_version", "source_revision"] and
-            .schema_version == 1 and
-            .base_image == env.ANSIBLE_EE_BASE_IMAGE and
-            .image_name == env.IMAGE_NAME and
-            .immutable_reference == env.IMAGE_REFERENCE and
-            .registry_digest == env.IMAGE_DIGEST and
-            .release_tag == env.GITHUB_REF_NAME and
-            .source_revision == env.GITHUB_SHA and
-            (.local_image_id | test("^sha256:[0-9a-f]{64}$")) and
-            (.registry_digest | test("^sha256:[0-9a-f]{64}$"))
-          ' archiveweaver-ee.publication.json >/dev/null
       - name: Install the integrity-verified Cosign client
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign, attest, and verify the controller image
@@ -542,11 +549,122 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${IMAGE_REFERENCE}" >/dev/null
       - name: Attest controller-image build provenance
+        id: attest-ee
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
+          create-storage-record: false
           subject-name: ${{ steps.publish-ee.outputs.name }}
           subject-digest: ${{ steps.publish-ee.outputs.digest }}
           push-to-registry: true
+      - name: Export the signed controller-image provenance statement
+        env:
+          EE_ATTESTATION_BUNDLE: ${{ steps.attest-ee.outputs.bundle-path }}
+          IMAGE_NAME: ${{ steps.publish-ee.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.publish-ee.outputs.digest }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          bundle_path = Path(os.environ["EE_ATTESTATION_BUNDLE"])
+          if not bundle_path.is_file() or bundle_path.is_symlink():
+              raise SystemExit("image provenance action did not return a regular attestation bundle")
+          bundle_bytes = bundle_path.read_bytes()
+          if not bundle_bytes or len(bundle_bytes) > 16 * 1024 * 1024:
+              raise SystemExit("image provenance bundle has an invalid size")
+          bundle = json.loads(bundle_bytes)
+          if bundle.get("mediaType") != "application/vnd.dev.sigstore.bundle.v0.3+json":
+              raise SystemExit("image provenance bundle is not Sigstore v0.3")
+          envelope = bundle.get("dsseEnvelope")
+          if not isinstance(envelope, dict) or envelope.get("payloadType") != "application/vnd.in-toto+json":
+              raise SystemExit("image provenance bundle lacks an in-toto DSSE envelope")
+          encoded = envelope.get("payload")
+          if not isinstance(encoded, str):
+              raise SystemExit("image provenance bundle has no statement payload")
+          statement_bytes = base64.b64decode(encoded, validate=True)
+          statement = json.loads(statement_bytes)
+          image_digest = os.environ["IMAGE_DIGEST"]
+          expected_subject = {
+              "name": os.environ["IMAGE_NAME"],
+              "digest": {"sha256": image_digest.removeprefix("sha256:")},
+          }
+          if (
+              statement.get("_type") != "https://in-toto.io/Statement/v1"
+              or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+              or statement.get("subject") != [expected_subject]
+          ):
+              raise SystemExit("image provenance does not name the published image digest")
+          Path("archiveweaver-ee.provenance.sigstore.json").write_bytes(bundle_bytes)
+          Path("archiveweaver-ee.provenance.json").write_bytes(statement_bytes)
+          PY
+      - name: Record the immutable controller-image publication
+        env:
+          IMAGE_NAME: ${{ steps.publish-ee.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.publish-ee.outputs.digest }}
+          IMAGE_REFERENCE: ${{ steps.publish-ee.outputs.reference }}
+        run: |
+          set -euo pipefail
+          sbom_hash="$(sha256sum archiveweaver-ee.spdx.json)"
+          sbom_hash="${sbom_hash%% *}"
+          provenance_hash="$(sha256sum archiveweaver-ee.provenance.json)"
+          provenance_hash="${provenance_hash%% *}"
+          if [[ ! "${sbom_hash}" =~ ^[0-9a-f]{64}$ ||
+                ! "${provenance_hash}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "controller-image SBOM or provenance did not expose a SHA-256 digest" >&2
+            exit 1
+          fi
+          export SBOM_DIGEST="sha256:${sbom_hash}"
+          export PROVENANCE_DIGEST="sha256:${provenance_hash}"
+          jq -n -S \
+            --arg artifact_digest "${IMAGE_DIGEST}" \
+            --arg base_image "${ANSIBLE_EE_BASE_IMAGE}" \
+            --arg image "${IMAGE_REFERENCE}" \
+            --arg image_name "${IMAGE_NAME}" \
+            --arg immutable_reference "${IMAGE_REFERENCE}" \
+            --arg local_image_id "$(jq -er '.local_image_id' archiveweaver-ee.metadata.json)" \
+            --arg provenance_sha256 "${PROVENANCE_DIGEST}" \
+            --arg registry_digest "${IMAGE_DIGEST}" \
+            --arg release_tag "${GITHUB_REF_NAME}" \
+            --arg sbom_sha256 "${SBOM_DIGEST}" \
+            --arg source_revision "${GITHUB_SHA}" \
+            '{
+              schema_version: 2,
+              artifact_digest: $artifact_digest,
+              base_image: $base_image,
+              image: $image,
+              image_name: $image_name,
+              immutable_reference: $immutable_reference,
+              local_image_id: $local_image_id,
+              provenance_sha256: $provenance_sha256,
+              registry_digest: $registry_digest,
+              release_tag: $release_tag,
+              sbom_sha256: $sbom_sha256,
+              source_revision: $source_revision,
+              verifier: "cosign"
+            }' > archiveweaver-ee.publication.json
+          jq -e '
+            type == "object" and
+            keys == ["artifact_digest", "base_image", "image", "image_name", "immutable_reference", "local_image_id", "provenance_sha256", "registry_digest", "release_tag", "sbom_sha256", "schema_version", "source_revision", "verifier"] and
+            .schema_version == 2 and
+            .artifact_digest == env.IMAGE_DIGEST and
+            .base_image == env.ANSIBLE_EE_BASE_IMAGE and
+            .image == env.IMAGE_REFERENCE and
+            .image_name == env.IMAGE_NAME and
+            .immutable_reference == env.IMAGE_REFERENCE and
+            .provenance_sha256 == env.PROVENANCE_DIGEST and
+            .registry_digest == env.IMAGE_DIGEST and
+            .release_tag == env.GITHUB_REF_NAME and
+            .sbom_sha256 == env.SBOM_DIGEST and
+            .source_revision == env.GITHUB_SHA and
+            .verifier == "cosign" and
+            .image == (.image_name + "@" + .artifact_digest) and
+            (.local_image_id | test("^sha256:[0-9a-f]{64}$")) and
+            (.provenance_sha256 | test("^sha256:[0-9a-f]{64}$")) and
+            (.registry_digest | test("^sha256:[0-9a-f]{64}$")) and
+            (.sbom_sha256 | test("^sha256:[0-9a-f]{64}$"))
+          ' archiveweaver-ee.publication.json >/dev/null
       - name: Sign and verify the immutable image publication record
         env:
           CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
@@ -562,7 +680,27 @@ jobs:
       - name: Attest the image publication record
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
+          create-storage-record: false
           subject-path: archiveweaver-ee.publication.json
+      - name: Record and sign late controller-image asset checksums
+        env:
+          CERTIFICATE_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          LC_ALL=C sha256sum \
+            archiveweaver-ee.provenance.json \
+            archiveweaver-ee.provenance.sigstore.json \
+            archiveweaver-ee.publication.json \
+            archiveweaver-ee.publication.json.sigstore.json \
+            > archiveweaver-ee.SHA256SUMS
+          cosign sign-blob --yes \
+            --bundle archiveweaver-ee.SHA256SUMS.sigstore.json \
+            archiveweaver-ee.SHA256SUMS
+          cosign verify-blob \
+            --bundle archiveweaver-ee.SHA256SUMS.sigstore.json \
+            --certificate-identity "${CERTIFICATE_IDENTITY}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            archiveweaver-ee.SHA256SUMS >/dev/null
       - name: Upload the complete release evidence set
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -579,10 +717,16 @@ jobs:
             archiveweaver-ee.spdx.json.sigstore.json
             archiveweaver-ee.grype.json
             archiveweaver-ee.grype.json.sigstore.json
+            archiveweaver-release.provenance.json
+            archiveweaver-release.provenance.sigstore.json
+            archiveweaver-ee.provenance.json
+            archiveweaver-ee.provenance.sigstore.json
             github-production-controls.json
             github-production-controls.json.sigstore.json
             archiveweaver-ee.publication.json
             archiveweaver-ee.publication.json.sigstore.json
+            archiveweaver-ee.SHA256SUMS
+            archiveweaver-ee.SHA256SUMS.sigstore.json
             SHA256SUMS
             SHA256SUMS.sigstore.json
           if-no-files-found: error
@@ -598,5 +742,10 @@ jobs:
             --tag "${RELEASE_TAG}" \
             --source-revision "${GITHUB_SHA}" \
             dist/* archiveweaver*.spdx.json* archiveweaver-ee.metadata.json* \
-            archiveweaver-ee.grype.json* archiveweaver-ee.publication.json* \
+            archiveweaver-ee.grype.json* archiveweaver-release.provenance.json* \
+            archiveweaver-release.provenance.sigstore.json \
+            archiveweaver-ee.provenance.json* \
+            archiveweaver-ee.provenance.sigstore.json \
+            archiveweaver-ee.publication.json* \
+            archiveweaver-ee.SHA256SUMS* \
             github-production-controls.json* SHA256SUMS*

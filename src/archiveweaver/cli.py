@@ -141,6 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument("--readiness-manifest", help="controller-side readiness manifest when --mode ansible is selected")
     repair_parser.add_argument("--namespace", default="archiveweaver")
     repair_parser.add_argument("--deployment")
+    repair_parser.add_argument("--kubeconfig", help="absolute Kubernetes credential file for a direct repair")
+    repair_parser.add_argument("--context", help="explicit Kubernetes context for a direct repair")
     repair_parser.add_argument("--unit")
     repair_parser.add_argument("--resource")
     repair_parser.add_argument("--allow-fencing-actions", action="store_true")
@@ -282,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if report["summary"]["status"] == "warn" else 0
 
         if args.command == "repair":
-            plan = build_repair_plan(catalog, args.solution, args.mode, service=args.service, compose_file=args.compose_file, playbook=args.playbook, inventory=args.inventory, readiness_manifest=args.readiness_manifest, namespace=args.namespace, deployment=args.deployment, unit=args.unit, resource=args.resource, allow_fencing_actions=args.allow_fencing_actions, underlying_mode=args.underlying_mode, operator=args.operator, fixture_set=args.fixture_set, execution_environment_digest=args.execution_environment_digest)
+            plan = build_repair_plan(catalog, args.solution, args.mode, service=args.service, compose_file=args.compose_file, playbook=args.playbook, inventory=args.inventory, readiness_manifest=args.readiness_manifest, namespace=args.namespace, deployment=args.deployment, kubeconfig=args.kubeconfig, context=args.context, unit=args.unit, resource=args.resource, allow_fencing_actions=args.allow_fencing_actions, underlying_mode=args.underlying_mode, operator=args.operator, fixture_set=args.fixture_set, execution_environment_digest=args.execution_environment_digest)
             result = apply_repair(plan, dry_run=not args.apply)
             repair_payload = {"plan": plan, "execution": result}
             _dump(repair_payload, args.json)

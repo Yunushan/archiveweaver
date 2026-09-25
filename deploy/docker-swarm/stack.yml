@@ -4,11 +4,8 @@ version: "3.9"
 services:
   app:
     image: "${ARCHIVEWEAVER_SOLUTION_IMAGE:?set an approved pinned image reference}"
-    ports:
-      - target: 8080
-        published: 8080
-        protocol: tcp
-        mode: ingress
+    # No routing-mesh port is published. Attach a reviewed TLS reverse proxy
+    # to this stack network and route to app:8080.
     environment:
       ARCHIVEWEAVER_SOLUTION_ID: "${ARCHIVEWEAVER_SOLUTION_ID:?set the catalog solution id}"
     volumes:
@@ -30,4 +27,3 @@ volumes:
 
 # The named external volume must use a tested distributed driver or otherwise
 # provide shared/replicated state. Verify restore behavior before scaling.
-

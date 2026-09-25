@@ -88,6 +88,8 @@ def _inspect_regular_file(
     label: str = "evidence",
 ) -> tuple[int, str, bytes | None]:
     """Inspect one stable regular file without following its final symlink."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise OSError(f"{label} path is not a regular file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     digest = hashlib.sha256()

@@ -29,6 +29,11 @@ inventory as well as the manifest fields. Every referenced artifact,
 signature, provenance file, test record, and runbook must be inside the
 index's directory and listed by that index; a merely existing file is not
 enough.
+For Paperless-ngx on production RKE2, every passing operational evidence
+record also carries a `run_receipt` and `run_hook`. The trusted-runner receipt
+must be indexed, signed by a controller-approved `operational-evidence`
+identity, and bound to the exact claim, target, command digests, release, and
+evidence bytes. See the [signed run receipt contract](signed-run-receipts.md).
 The CLI also rejects a manifest, evidence index, referenced file, or provider
 digest input whose path contains a symlink, Windows junction, or other reparse
 point, and rejects link-like entries while sealing a tree; containment is
@@ -61,14 +66,52 @@ inventory. The named release artifact must be the described SPDX package or
 the CycloneDX metadata component, not merely an unrelated dependency that
 happens to share a name.
 Each in-toto release-provenance `subject` must carry the exact manifest
-artifact/provider-bundle name together with the SHA-256 digest of every
-referenced product artifact and the reviewed Ansible provider bundle; the
-execution-environment provenance must carry the exact execution-environment
-name and digest of its immutable image. The release provenance's SLSA
+package/provider-bundle name together with the SHA-256 digest of every
+referenced package artifact and the reviewed Ansible provider bundle; the
+execution-environment provenance must carry the exact OCI image name and
+immutable image digest as its subject, and resolve the release source commit.
+The release provenance's SLSA
 `resolvedDependencies` must also name the canonical GitHub source repository
 and bind its `gitCommit` digest to `release.source_revision`. A passing boolean beside an empty,
 unrelated, or
 digest-mismatched file is not release proof.
+Set `release.provenance_bundle` to the indexed Sigstore v0.3 DSSE bundle
+that signs the exact bytes at `release.provenance`. The bundle must carry the
+in-toto payload, a signing certificate, and transparency-log material.
+Readiness runs the controller-pinned Cosign
+`verify-blob-attestation --new-bundle-format --offline` against the indexed
+hosted-control report, pins the approved release-workflow identity and GitHub
+OIDC issuer, and verifies that the signed DSSE payload equals the indexed
+statement. The statement's subject list must then cover the package,
+provider-bundle, and hosted-control digests. A hand-authored statement and
+`provenance_verified: true` cannot earn release points.
+The framework release publishes its package statement and original bundle as
+`archiveweaver-release.provenance.json` and
+`archiveweaver-release.provenance.sigstore.json`. A product release must
+publish a signed statement covering its own package and provider subjects;
+the framework package attestation alone cannot stand in for those artifacts.
+
+For Docker, Docker Swarm, and Kubernetes runtimes (including RKE2),
+`release.artifacts` must contain at least one OCI image row. Its `image` must
+be a unique, fully qualified
+`repository@sha256:<64 lowercase hex>` reference. The row's `digest` must equal
+that suffix. Its indexed `path` must contain the **raw OCI image-manifest JSON
+bytes** with that SHA-256, an OCI image config descriptor, and at least one
+layer. An OCI index, tar export, or locally rebuilt JSON file is not the pinned
+manifest. The SBOM's described SPDX package (or CycloneDX metadata component)
+must carry the row's `name` and the same SHA-256 in its checksum (or hash).
+
+Each image row also needs its own indexed `provenance` in-toto statement and
+`provenance_bundle` Sigstore v0.3 DSSE bundle. The signed statement must name
+the repository part of `image` and its exact SHA-256 as one subject. Readiness
+checks that the DSSE payload equals the indexed statement and runs offline
+`cosign verify-blob-attestation --new-bundle-format` against the raw image
+manifest bytes using the image row's approved signer identity. This proof is
+separate from `release.provenance`: ArchiveWeaver's package attestation cannot
+prove a third-party Paperless-ngx image. Missing image provenance fails release
+readiness even when the image digest and package attestation are present.
+Podman Quadlet image coverage is outside the current provider image verifier;
+operators must record and review its rendered image set separately.
 Release integrity also binds the code to its hosted GitHub enforcement. Set
 `release.source_repository` to the canonical `owner/repository` slug,
 `release.source_repository_id` to GitHub's positive numeric repository ID, and
@@ -89,9 +132,93 @@ SHA-256 digest, `signature` to its non-empty Sigstore bundle, and
 The certificate, signature bundle, and verification record must be three
 distinct files listed in the evidence index. The bundle must be canonical
 Sigstore v0.3 keyless blob-signing JSON with a certificate, transparency-log
-material, and an embedded SHA-256 digest matching the certificate bytes. The
+material, and an embedded SHA-256 digest matching the certificate bytes.
+Readiness also runs `cosign verify-blob --offline` against those indexed bytes.
+Configure `ARCHIVEWEAVER_COSIGN_PATH` as an absolute path to a trusted,
+controller-installed Cosign executable and `ARCHIVEWEAVER_COSIGN_SHA256` as its
+64-character lowercase SHA-256 from an independently approved installation
+record. Pin a reviewed Cosign v2.6.0 or later build whose CLI supports
+`verify-blob-attestation --new-bundle-format --offline --trusted-root`.
+An older or incompatible binary fails closed when verification runs. The same
+verifier checks each image row's separate DSSE bundle.
+Set `ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH` and
+`ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256` to an independently approved local
+Sigstore trusted-root JSON file and its digest. These files must be regular,
+non-symlink files that the readiness operator cannot modify. The gate makes no
+network request to Sigstore, TUF, or a container registry. Missing or mismatched
+verifier configuration fails release readiness. GitHub control verification
+requires the exact issuer `https://token.actions.githubusercontent.com` and
+the signer identity in the controller signing policy. That identity must name
+`https://github.com/<owner>/<repository>/.github/workflows/release.yml@refs/tags/v<framework-release-tag>`.
+The framework release tag can differ from the selected product's
+`release.version`.
+The manifest's `signature_verified` flag and evidence record cannot replace
+this cryptographic check. The
 release provenance must include the certificate filename and digest as a
-subject, alongside the product and provider artifacts.
+subject, alongside the package and provider artifacts.
+
+Every product release artifact, Ansible provider bundle, and rollback artifact
+must also have an indexed Sigstore v0.3 bundle over its exact artifact bytes.
+The release workflow exports the in-toto statement from the GitHub image
+attestation bundle as `archiveweaver-ee.provenance.json`. The statement and
+original bundle are published with the release. The execution-environment
+`signature` bundle signs the indexed JSON named by
+`signature_verification.evidence`; that JSON must contain both `artifact_digest`
+and the exact immutable `image` URI. The release workflow publishes this JSON as
+`archiveweaver-ee.publication.json`; the manifest's `signature_verification`
+reference retains the product-specific evidence metadata. Readiness compares
+the signed publication record's `provenance_sha256` and `sbom_sha256` with the
+exact indexed provenance and SBOM bytes. A hand-authored provenance statement,
+even with the correct image digest and `provenance_verified: true`, cannot earn
+release points without this approved-signer signature over its digest. The
+trusted signer identities for these
+proofs come from a controller-owned policy outside the readiness manifest and
+evidence bundle. Set `ARCHIVEWEAVER_SIGNING_POLICY_PATH` to its absolute path
+and `ARCHIVEWEAVER_SIGNING_POLICY_SHA256` to its independently approved digest.
+Use an exact JSON policy such as:
+
+```json
+{
+  "schema_version": 1,
+  "release_version": "2026.09.1",
+  "source_repository": "owner/repository",
+  "github_controls_identity": "https://github.com/owner/repository/.github/workflows/release.yml@refs/tags/v0.1.0",
+  "signers": [
+    {
+      "role": "release-artifact",
+      "name": "product-package",
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "identity": "https://github.com/owner/product/.github/workflows/release.yml@refs/tags/v2026.09.1",
+      "issuer": "https://token.actions.githubusercontent.com"
+    },
+    {
+      "role": "operational-evidence",
+      "name": "production-operations-runner",
+      "digest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "image": "ghcr.io/owner/operations-runner@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "identity": "https://github.com/owner/operations/.github/workflows/trusted-runner.yml@refs/heads/main",
+      "issuer": "https://token.actions.githubusercontent.com"
+    }
+  ]
+}
+```
+
+Add one entry per release artifact and entries with roles `provider-bundle`,
+`rollback-artifact`, and `execution-environment` as applicable. The
+execution-environment and OCI release-artifact entries also need an `image`
+field with the exact immutable URI. The policy pins each role, name, digest,
+and image reference. Add one `operational-evidence` entry for the independently
+controlled receipt runner; its `identity` must identify the dedicated trusted
+workflow, and its immutable `image` and digest must match every signed receipt.
+For Paperless RKE2 production, every passing operational evidence record also
+needs a `run_receipt` path, signature path, signer name, and `run_hook` digests
+in the manifest. The receipt signature is checked with the pinned Cosign binary
+and trusted Sigstore root. A `rollback-artifact` signer entry must also pin
+`release_version` equal to `recovery.rollback_release`; other signer roles
+must not set that field. Manifest-provided signer names
+cannot authorize themselves. A product using PGP or another signature system
+needs a separately reviewed verifier extension before its proof can earn
+readiness points.
 
 The certificate is bound to the authoritative repository name, stable
 repository ID and node ID, local `HEAD`, GitHub API version, and a UTC
@@ -113,7 +240,7 @@ observability and support on-call identifiers must agree.
 | Domain | Points | Required proof |
 | --- | ---: | --- |
 | Control baseline | 10 | Catalog validation, green CI, and change-control record |
-| Release integrity | 10 | Fresh, digest-bound, Sigstore-signed, source-bound 12-control GitHub production certificate; immutable version; verified product and provider-bundle artifact digests, SBOMs, signatures, and signature-verification records; provenance bound to every product and Ansible provider artifact; signed/SBOM-backed Ansible execution-environment image; and canonical staged-content `remote_digest` |
+| Release integrity | 10 | Fresh, digest-bound, Sigstore-signed, source-bound 12-control GitHub production certificate; immutable version; verified product and provider-bundle artifact digests, SBOMs, signatures, and signature-verification records; cryptographically verified DSSE provenance bound to every product and Ansible provider artifact; signed/SBOM-backed Ansible execution-environment image; and canonical staged-content `remote_digest` |
 | Product certification | 10 | Catalog-bound component/dependency/format coverage plus smoke, migration, and API matrix |
 | Resilience | 10 | Quorum/fencing review and recorded node, service, dependency, and storage failure tests |
 | Data protection | 10 | Immutable backup, successful restore, fixity verification, and measured RPO/RTO |
@@ -128,10 +255,38 @@ out-of-bundle, unindexed, tampered, or failed evidence keeps the result
 non-ready. Every domain must explicitly declare `status: pass`. The Ansible
 preflight role runs the same controller-side command before a mutation, so a
 manually changed boolean cannot bypass the score.
+For Paperless-ngx on production RKE2, the protected manifest has a
+`deployment_target` object with exactly `kube_context`, `kubeconfig_sha256`,
+`inventory_sha256`, `namespace`, `kube_system_namespace_uid`, and
+`application_namespace_uid`. Digests are bare lowercase 64-character SHA-256
+values; UIDs are the live canonical Kubernetes Namespace UUIDs. A complete,
+non-placeholder target is required for 100 points. The offline scorer compares
+passing operational evidence metadata and indexed JSON payloads with that
+target. Controller preflight hashes the selected production inventory and
+control-host kubeconfig, then asks the approved cluster for both live Namespace
+UIDs before an ordinary production apply or verify. The production inventory
+digest must also match the separately protected
+`ARCHIVEWEAVER_PRODUCTION_INVENTORY_SHA256` controller value. For the first
+production apply, `application_namespace_uid` may be `null` while
+observability is pending; the separate bootstrap authorization and empty
+Namespace checks still govern that first use. After creation, record the live
+application UID and reseal the manifest and evidence before a 100-point run.
+
+The current offline score still does not authenticate that a self-reported
+operational drill actually ran. An indexed outcome can describe a passing run
+without an independently signed run receipt. Treat 100/100 as a review gate,
+not as stand-alone proof of production certification; independently inspect
+the run history before approving production. A proposed [signed receipt contract](signed-run-receipts.md)
+must bind each operational result to the protected pre-run declaration, exact
+target cluster and namespace identities, approved command digest, runner
+identity, result artifact digest, and execution time before the score can
+serve as an independent production attestation.
 The controller workflow's standalone readiness node also verifies the
 protected `ARCHIVEWEAVER_READINESS_MANIFEST_SHA256` value before scoring, so
 promotion cannot score a different operator manifest from the one later
-accepted by operational preflight.
+accepted by operational preflight. It also requires `release.source_revision`
+to equal the signed checkout's `ARCHIVEWEAVER_IMMUTABLE_REF`; operational
+preflight repeats this binding before contacting managed hosts.
 For Ansible, the release section must also identify and hash the reviewed
 provider bundle. Its artifact `digest` is checked against the release bundle;
 its canonical `remote_digest` is compared with the staged remote Compose,
@@ -146,13 +301,46 @@ Every passing evidence record must carry a stable `name` and the exact manifest 
 `runtime`, `underlying_runtime` (for Ansible), `os_id`, `release`, and target
 `environment`, plus a timezone-qualified RFC 3339 `recorded_at`, an operator,
 and a fixture-set identifier. For Ansible, it must also carry the exact
-`release.execution_environment.digest` used by the controller. If a test runs in an isolated environment, record
-that location as `execution_environment` without changing the target environment.
+`release.execution_environment.digest` used by the controller. Every passing
+Paperless/RKE2 production operational record must carry the full matching
+`deployment_target` in both manifest metadata and its indexed JSON. Every
+passing operational record must explicitly state `execution_environment` as
+`production`, `staging`, `restore`, or `dr`; the top-level release record uses
+its structured execution-environment image object instead. If a test runs in
+an isolated environment, record that location without changing the target
+`environment`.
 JSON evidence targets must also contain a
 matching `status: pass` record; hashing an empty or semantically empty file is
 not sufficient. Every manifest claim in that record must be represented
 identically in the indexed JSON evidence, although the evidence may add further
-detail. Future-dated evidence is rejected. Governance approval and
+detail. A scored JSON record must add `claim` equal to its exact readiness
+location (for example, `data_protection.restore_test` or
+`product_certification.test_matrix.smoke`), `source_revision` equal to
+`release.source_revision`, and an `outcome` object with `status: pass`,
+`method` (`automated` or `manual`), a substantive `summary`, and an absolute
+`source` URI for the run or review record. Manual outcomes must also name a
+`reviewed_by` person distinct from the record's operator. A recorded `returncode`, including a named return code
+such as `restore_returncode`, must be the integer zero in the record and its
+outcome, including nested result objects. A failure-domain drill should record
+an intentionally induced fault as an observed condition; its reviewed drill
+hook still exits zero only after recovery and acceptance checks pass. Each named certification or failure test uses its own name in the
+claim, so another test's passing file cannot be substituted. These fields
+bind the stated result to the approved source and specific criterion; they do
+not independently authenticate a human assertion. Keep the referenced run
+history or reviewed manual material available for audit. The signed execution
+environment publication record follows its separate v2 schema.
+Existing indexed records without these outcome fields must be regenerated and
+the evidence index and manifest digest rebound before they can earn points.
+For the Paperless-ngx/RKE2 Ansible example manifest, the five certification
+files use `product_certification.test_matrix.<test name>` (for example,
+`product_certification.test_matrix.smoke`), and the four failure-domain files
+use `resilience.failure_tests.<failure name>` (for example,
+`resilience.failure_tests.storage`). The generated restore and fixity records
+use `data_protection.restore_test` and `data_protection.fixity_test`. The
+manifest's `pending` rows remain pending until actual runs have produced these
+claim-bound records with the approved source revision, and the rebuilt index
+has been bound into the operator manifest.
+Future-dated evidence is rejected. Governance approval and
 expiry must use the same timestamp
 form; approval cannot be future-dated, must still be current, and may cover at
 most 30 days. Reassess and reapprove rather than extending an old manifest.

@@ -9,6 +9,41 @@
   },
   "evidence_index": "evidence/evidence-index.json",
   "evidence_index_digest": "sha256:REPLACE_WITH_EVIDENCE_INDEX_DIGEST",
+  "deployment_target": {
+    "kube_context": "REPLACE_WITH_APPROVED_RKE2_CONTEXT",
+    "kubeconfig_sha256": "REPLACE_WITH_KUBECONFIG_DIGEST",
+    "inventory_sha256": "REPLACE_WITH_PRODUCTION_INVENTORY_DIGEST",
+    "namespace": "archiveweaver",
+    "kube_system_namespace_uid": "REPLACE_WITH_LIVE_KUBE_SYSTEM_NAMESPACE_UID",
+    "application_namespace_uid": null
+  },
+  "bootstrap_authorization": {
+    "schema_version": 1,
+    "purpose": "first-production-apply",
+    "service": {
+      "solution_id": "paperless-ngx",
+      "runtime": "ansible",
+      "underlying_runtime": "rke2",
+      "os_id": "ubuntu-24.04",
+      "environment": "production"
+    },
+    "release_version": "REPLACE_WITH_PINNED_RELEASE",
+    "source_repository": "REPLACE_WITH_GITHUB_OWNER_REPOSITORY",
+    "source_repository_id": 0,
+    "source_revision": "REPLACE_WITH_40_CHARACTER_COMMIT_SHA",
+    "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
+    "provider_bundle_digest": "sha256:REPLACE_WITH_PROVIDER_BUNDLE_DIGEST",
+    "kustomize_bundle_sha256": "REPLACE_WITH_KUSTOMIZE_BUNDLE_DIGEST",
+    "kubeconfig_sha256": "REPLACE_WITH_KUBECONFIG_DIGEST",
+    "inventory_sha256": "REPLACE_WITH_PRODUCTION_INVENTORY_DIGEST",
+    "kube_context": "REPLACE_WITH_APPROVED_RKE2_CONTEXT",
+    "namespace": "archiveweaver",
+    "change_ticket": "CHG-REPLACE",
+    "approval_ticket": "APP-REPLACE",
+    "approved_by": "REPLACE_WITH_INDEPENDENT_APPROVER",
+    "issued_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
+    "expires_at": "REPLACE_WITH_RFC3339_TIMESTAMP"
+  },
   "control": {
     "status": "pending",
     "solution": "paperless-ngx",
@@ -25,7 +60,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "control"
+    "name": "control",
+    "execution_environment": "production",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/control-0fcd568a.json",
+      "signature": "evidence/run-receipts/control-0fcd568a.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "release": {
     "status": "pending",
@@ -57,18 +102,23 @@
         "underlying_runtime": "rke2",
         "os_id": "ubuntu-24.04",
         "artifact_digest": "sha256:REPLACE_WITH_GITHUB_CONTROLS_REPORT_DIGEST",
-        "verifier": "REPLACE_WITH_SIGSTORE_IDENTITY_VERIFIER"
+        "verifier": "REPLACE_WITH_SIGSTORE_IDENTITY_VERIFIER",
+        "execution_environment": "production"
       }
     },
     "provenance": "REPLACE_WITH_PROVENANCE_ATTESTATION_PATH",
+    "provenance_bundle": "REPLACE_WITH_PROVENANCE_SIGSTORE_BUNDLE_PATH.sigstore.json",
     "provenance_verified": false,
     "artifacts": [
       {
-        "name": "REPLACE_WITH_PRODUCT_IMAGE_OR_PACKAGE",
-        "path": "REPLACE_WITH_RELEASE_ARTIFACT_PATH",
+        "name": "REPLACE_WITH_PRODUCT_IMAGE_NAME",
+        "image": "registry.example.org/paperless-ngx/paperless-ngx@sha256:REPLACE_WITH_64_HEX_MANIFEST_DIGEST",
+        "path": "REPLACE_WITH_RAW_OCI_IMAGE_MANIFEST_JSON_PATH",
         "digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "sbom": "REPLACE_WITH_SBOM_PATH",
         "signature": "REPLACE_WITH_SIGNATURE_PATH",
+        "provenance": "REPLACE_WITH_IMAGE_PROVENANCE_STATEMENT_PATH",
+        "provenance_bundle": "REPLACE_WITH_IMAGE_PROVENANCE_SIGSTORE_BUNDLE_PATH.sigstore.json",
         "signature_verified": false,
         "signature_verification": {
           "status": "pending",
@@ -83,7 +133,8 @@
           "solution": "paperless-ngx",
           "runtime": "ansible",
           "underlying_runtime": "rke2",
-          "os_id": "ubuntu-24.04"
+          "os_id": "ubuntu-24.04",
+          "execution_environment": "production"
         }
       }
     ],
@@ -108,7 +159,8 @@
         "solution": "paperless-ngx",
         "runtime": "ansible",
         "underlying_runtime": "rke2",
-        "os_id": "ubuntu-24.04"
+        "os_id": "ubuntu-24.04",
+        "execution_environment": "production"
       },
       "verification": {
         "status": "pending",
@@ -123,7 +175,8 @@
         "solution": "paperless-ngx",
         "runtime": "ansible",
         "underlying_runtime": "rke2",
-        "os_id": "ubuntu-24.04"
+        "os_id": "ubuntu-24.04",
+        "execution_environment": "production"
       }
     },
     "execution_environment": {
@@ -148,7 +201,8 @@
         "solution": "paperless-ngx",
         "runtime": "ansible",
         "underlying_runtime": "rke2",
-        "os_id": "ubuntu-24.04"
+        "os_id": "ubuntu-24.04",
+        "execution_environment": "production"
       }
     },
     "evidence": "evidence/release.json",
@@ -207,7 +261,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/dependencies-f78fc423.json",
+          "signature": "evidence/run-receipts/dependencies-f78fc423.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "smoke",
@@ -223,7 +286,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/smoke-f5c4201a.json",
+          "signature": "evidence/run-receipts/smoke-f5c4201a.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "migration",
@@ -239,7 +311,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/migration-901e5af7.json",
+          "signature": "evidence/run-receipts/migration-901e5af7.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "formats",
@@ -255,7 +336,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/formats-436dfade.json",
+          "signature": "evidence/run-receipts/formats-436dfade.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "api",
@@ -271,7 +361,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/api-4e0f5f19.json",
+          "signature": "evidence/run-receipts/api-4e0f5f19.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       }
     ],
     "evidence": "evidence/product-certification.json",
@@ -281,7 +380,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "product-certification"
+    "name": "product-certification",
+    "execution_environment": "staging",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/product-certification-075272a0.json",
+      "signature": "evidence/run-receipts/product-certification-075272a0.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "resilience": {
     "status": "pending",
@@ -306,7 +415,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/node-REPLACE_WITH_HOST-86ea21fe.json",
+          "signature": "evidence/run-receipts/node-REPLACE_WITH_HOST-86ea21fe.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "service",
@@ -322,7 +440,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/service-REPLACE_WITH_HOST-5392bc14.json",
+          "signature": "evidence/run-receipts/service-REPLACE_WITH_HOST-5392bc14.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "dependency",
@@ -338,7 +465,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/dependency-REPLACE_WITH_HOST-f0f139eb.json",
+          "signature": "evidence/run-receipts/dependency-REPLACE_WITH_HOST-f0f139eb.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       },
       {
         "name": "storage",
@@ -354,7 +490,16 @@
         "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
         "recorded_at": "REPLACE_WITH_RFC3339_TIMESTAMP",
         "operator": "REPLACE_WITH_OPERATOR",
-        "fixture_set": "REPLACE_WITH_FIXTURE_SET"
+        "fixture_set": "REPLACE_WITH_FIXTURE_SET",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/storage-REPLACE_WITH_HOST-a3eedb5e.json",
+          "signature": "evidence/run-receipts/storage-REPLACE_WITH_HOST-a3eedb5e.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       }
     ],
     "evidence": "evidence/resilience.json",
@@ -364,7 +509,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "resilience"
+    "name": "resilience",
+    "execution_environment": "staging",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/resilience-b8cbc700.json",
+      "signature": "evidence/run-receipts/resilience-b8cbc700.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "data_protection": {
     "status": "pending",
@@ -388,7 +543,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/backup-e7564dc1.json",
+        "signature": "evidence/run-receipts/backup-e7564dc1.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "restore_test": {
       "status": "pending",
@@ -404,7 +569,16 @@
       "runtime": "ansible",
       "underlying_runtime": "rke2",
       "os_id": "ubuntu-24.04",
-      "execution_environment": "restore"
+      "execution_environment": "restore",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/restore-REPLACE_WITH_HOST-e451168f.json",
+        "signature": "evidence/run-receipts/restore-REPLACE_WITH_HOST-e451168f.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "fixity_test": {
       "status": "pending",
@@ -420,7 +594,16 @@
       "runtime": "ansible",
       "underlying_runtime": "rke2",
       "os_id": "ubuntu-24.04",
-      "execution_environment": "restore"
+      "execution_environment": "restore",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/fixity-REPLACE_WITH_HOST-d4654b68.json",
+        "signature": "evidence/run-receipts/fixity-REPLACE_WITH_HOST-d4654b68.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "evidence": "evidence/data-protection.json",
     "release": "REPLACE_WITH_PINNED_RELEASE",
@@ -429,7 +612,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "data-protection"
+    "name": "data-protection",
+    "execution_environment": "production",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/data-protection-a5ad8e60.json",
+      "signature": "evidence/run-receipts/data-protection-a5ad8e60.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "security": {
     "status": "pending",
@@ -453,7 +646,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/security-sbom-6d02fa1b.json",
+        "signature": "evidence/run-receipts/security-sbom-6d02fa1b.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "tls_verification": {
       "status": "pending",
@@ -468,7 +671,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/tls-f6bbb330.json",
+        "signature": "evidence/run-receipts/tls-f6bbb330.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "secrets_provider_verification": {
       "status": "pending",
@@ -483,7 +696,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/secrets-provider-5cef44ab.json",
+        "signature": "evidence/run-receipts/secrets-provider-5cef44ab.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "vulnerability_scan": {
       "status": "pending",
@@ -498,7 +721,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/vulnerability-scan-e14f06be.json",
+        "signature": "evidence/run-receipts/vulnerability-scan-e14f06be.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "penetration_test": {
       "status": "pending",
@@ -513,7 +746,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/penetration-test-368c403b.json",
+        "signature": "evidence/run-receipts/penetration-test-368c403b.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "evidence": "evidence/security.json",
     "release": "REPLACE_WITH_PINNED_RELEASE",
@@ -522,7 +765,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "security"
+    "name": "security",
+    "execution_environment": "production",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/security-5d2d3ceb.json",
+      "signature": "evidence/run-receipts/security-5d2d3ceb.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "observability": {
     "status": "pending",
@@ -547,7 +800,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/metrics-245566d8.json",
+        "signature": "evidence/run-receipts/metrics-245566d8.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "alerts_verification": {
       "status": "pending",
@@ -562,7 +825,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/alerts-c6c3c450.json",
+        "signature": "evidence/run-receipts/alerts-c6c3c450.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "dashboards_verification": {
       "status": "pending",
@@ -577,7 +850,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/dashboards-d0bbdb34.json",
+        "signature": "evidence/run-receipts/dashboards-d0bbdb34.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "on_call_verification": {
       "status": "pending",
@@ -592,7 +875,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/on-call-874360c9.json",
+        "signature": "evidence/run-receipts/on-call-874360c9.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "alert_delivery_test": {
       "status": "pending",
@@ -607,7 +900,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/alert-delivery-d1aac561.json",
+        "signature": "evidence/run-receipts/alert-delivery-d1aac561.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "evidence": "evidence/observability.json",
     "release": "REPLACE_WITH_PINNED_RELEASE",
@@ -616,7 +919,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "observability"
+    "name": "observability",
+    "execution_environment": "production",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/observability-58ee0007.json",
+      "signature": "evidence/run-receipts/observability-58ee0007.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "recovery": {
     "status": "pending",
@@ -646,7 +959,17 @@
         "solution": "paperless-ngx",
         "runtime": "ansible",
         "underlying_runtime": "rke2",
-        "os_id": "ubuntu-24.04"
+        "os_id": "ubuntu-24.04",
+        "execution_environment": "staging",
+        "run_hook": {
+          "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+          "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+        },
+        "run_receipt": {
+          "path": "evidence/run-receipts/rollback-signature-verification-af9ef3d8.json",
+          "signature": "evidence/run-receipts/rollback-signature-verification-af9ef3d8.sigstore.json",
+          "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+        }
       }
     },
     "rollback_test": {
@@ -662,7 +985,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "staging",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/rollback-189ad9bb.json",
+        "signature": "evidence/run-receipts/rollback-189ad9bb.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "repair_test": {
       "status": "pending",
@@ -677,7 +1010,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "staging",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/repair-734607e5.json",
+        "signature": "evidence/run-receipts/repair-734607e5.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "evidence": "evidence/recovery.json",
     "release": "REPLACE_WITH_PINNED_RELEASE",
@@ -686,7 +1029,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "recovery"
+    "name": "recovery",
+    "execution_environment": "staging",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/recovery-8c585378.json",
+      "signature": "evidence/run-receipts/recovery-8c585378.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "governance": {
     "status": "pending",
@@ -714,7 +1067,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/retention-control-dc3d6f6b.json",
+        "signature": "evidence/run-receipts/retention-control-dc3d6f6b.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "risk_review": {
       "status": "pending",
@@ -729,7 +1092,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/risk-review-b5196952.json",
+        "signature": "evidence/run-receipts/risk-review-b5196952.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "evidence": "evidence/governance.json",
     "release": "REPLACE_WITH_PINNED_RELEASE",
@@ -738,7 +1111,17 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "governance"
+    "name": "governance",
+    "execution_environment": "production",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/governance-bf9422a2.json",
+      "signature": "evidence/run-receipts/governance-bf9422a2.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   },
   "support": {
     "status": "pending",
@@ -762,7 +1145,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/service-owner-e54a0039.json",
+        "signature": "evidence/run-receipts/service-owner-e54a0039.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "on_call_verification": {
       "status": "pending",
@@ -777,7 +1170,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/support-on-call-eac7ca91.json",
+        "signature": "evidence/run-receipts/support-on-call-eac7ca91.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "sla_verification": {
       "status": "pending",
@@ -792,7 +1195,17 @@
       "solution": "paperless-ngx",
       "runtime": "ansible",
       "underlying_runtime": "rke2",
-      "os_id": "ubuntu-24.04"
+      "os_id": "ubuntu-24.04",
+      "execution_environment": "production",
+      "run_hook": {
+        "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+        "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+      },
+      "run_receipt": {
+        "path": "evidence/run-receipts/sla-44ce8f44.json",
+        "signature": "evidence/run-receipts/sla-44ce8f44.sigstore.json",
+        "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+      }
     },
     "rpo_minutes": 60,
     "rto_minutes": 240,
@@ -806,6 +1219,16 @@
     "operator": "REPLACE_WITH_OPERATOR",
     "fixture_set": "REPLACE_WITH_FIXTURE_SET",
     "execution_environment_digest": "sha256:REPLACE_WITH_64_HEX_DIGEST",
-    "name": "support"
+    "name": "support",
+    "execution_environment": "production",
+    "run_hook": {
+      "executable_sha256": "REPLACE_WITH_APPROVED_HOOK_SHA256",
+      "argv_sha256": "REPLACE_WITH_APPROVED_ARGV_SHA256"
+    },
+    "run_receipt": {
+      "path": "evidence/run-receipts/support-a1860308.json",
+      "signature": "evidence/run-receipts/support-a1860308.sigstore.json",
+      "signer": "REPLACE_WITH_TRUSTED_OPERATIONAL_RUNNER"
+    }
   }
 }

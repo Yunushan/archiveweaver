@@ -190,6 +190,14 @@
       {{ {
         'name': item.item.name,
         'status': 'pass' if item.rc == 0 else 'fail',
+        'claim': 'product_certification.test_matrix.' ~ item.item.name,
+        'source_revision': lookup('ansible.builtin.env', 'ARCHIVEWEAVER_IMMUTABLE_REF') | lower,
+        'outcome': {
+          'status': 'pass' if item.rc == 0 else 'fail',
+          'method': 'automated',
+          'summary': 'Reviewed ' ~ item.item.name ~ ' certification hook completed with exit status ' ~ (item.rc | string),
+          'source': 'urn:archiveweaver:ansible:product-certification'
+        },
         'evidence': (archiveweaver_certification_evidence_dir
           | regex_replace('^' ~ (archiveweaver_bundle_root | regex_escape) ~ '/', ''))
           ~ '/' ~ item.item.name ~ '.json',
@@ -201,6 +209,7 @@
         'environment': archiveweaver_evidence_environment,
         'execution_environment': archiveweaver_certification_environment,
         'execution_environment_digest': archiveweaver_execution_environment_digest,
+        'deployment_target': hostvars['localhost'].archiveweaver_controller_preflight_readiness_identity.get('deployment_target', {}),
         'recorded_at': ansible_date_time.iso8601,
         'operator': archiveweaver_certification_operator,
         'fixture_set': archiveweaver_certification_fixture_set,

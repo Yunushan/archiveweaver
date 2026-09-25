@@ -98,7 +98,7 @@ def check_commands(commands: list[str], name: str = "commands") -> dict[str, Any
     return _result(name, "pass", "all required command(s) are present", {"commands": commands})
 
 
-def check_service(service: str) -> dict[str, Any]:
+def check_service(service: str, *, required: bool = True) -> dict[str, Any]:
     if not _safe_service_name(service):
         return _result(
             "service:<invalid>",
@@ -106,13 +106,25 @@ def check_service(service: str) -> dict[str, Any]:
             "service unit name is invalid or contains option/control syntax",
         )
     if shutil.which("systemctl") is None:
-        return _result(f"service:{service}", "skip", "systemctl is not available")
+        return _result(
+            f"service:{service}",
+            "fail" if required else "skip",
+            "systemctl is not available",
+        )
     code, stdout, stderr = _command("systemctl", "is-active", "--", service)
     if code == 0 and stdout == "active":
         return _result(f"service:{service}", "pass", "active", stdout)
     if code == 3 and stdout in {"inactive", "failed", "activating", "deactivating"}:
-        return _result(f"service:{service}", "warn", stdout, stderr or stdout)
-    return _result(f"service:{service}", "skip", "service unit not found or not queryable", stderr or stdout)
+        status = "fail" if required and stdout in {"inactive", "failed"} else (
+            "warn" if required else "skip"
+        )
+        return _result(f"service:{service}", status, stdout, stderr or stdout)
+    return _result(
+        f"service:{service}",
+        "fail" if required else "skip",
+        "service unit not found or not queryable",
+        stderr or stdout,
+    )
 
 
 def check_time_sync() -> dict[str, Any]:
@@ -287,16 +299,17 @@ def run_checks(
         catalog.runtime(mode)
         checks.append(check_commands(_runtime_commands(mode), f"runtime:{mode}"))
 
-    aliases = [service] if service else solution["health"]["service_aliases"]
-    service_results = [check_service(item) for item in aliases]
+    explicit_service = service is not None
+    aliases = [service] if service is not None else solution["health"]["service_aliases"]
+    service_results = [check_service(item, required=explicit_service) for item in aliases]
     if service_results:
-        if any(item["status"] == "pass" for item in service_results):
+        if explicit_service or any(item["status"] == "pass" for item in service_results):
             checks.extend(service_results)
         else:
             checks.append(_result("services", "skip", "no configured product service is active; pass --service for the exact unit"))
             checks.extend(service_results[:3])
 
-    if url:
+    if url is not None:
         checks.append(check_url(url))
     else:
         checks.append(_result("http", "skip", "no URL supplied; pass --url https://host/path for an endpoint probe"))
@@ -310,23 +323,27 @@ def run_checks(
     else:
         checks.append(_result("configuration", "skip", "no --config path supplied"))
 
-    warnings = [item for item in checks if item["status"] == "warn"]
-    failures = [item for item in checks if item["status"] == "fail"]
-    skipped = [item for item in checks if item["status"] == "skip"]
     meaningful_passes = [
         item
         for item in checks
         if item["status"] == "pass"
-        and (
-            item["name"].startswith("service:")
-            or item["name"].startswith("path:")
-            or item["name"] in {"http", "configuration"}
-        )
+        and (item["name"].startswith("service:") or item["name"] == "http")
     ]
+    if not meaningful_passes:
+        checks.append(
+            _result(
+                "product-health",
+                "warn",
+                "no product service or HTTP endpoint passed; provide the exact --service or --url",
+            )
+        )
+    warnings = [item for item in checks if item["status"] == "warn"]
+    failures = [item for item in checks if item["status"] == "fail"]
+    skipped = [item for item in checks if item["status"] == "skip"]
     summary_status = (
         "fail"
         if failures
-        else ("warn" if warnings or not meaningful_passes else "pass")
+        else ("warn" if warnings else "pass")
     )
     return {
         "solution": solution_id,

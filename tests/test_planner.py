@@ -26,6 +26,14 @@ class PlannerTests(unittest.TestCase):
         self.assertNotEqual(plan.status, "blocked")
         self.assertEqual(plan.topology_level, "supported")
         self.assertTrue(any("outside the scheduler" in item for item in plan.warnings))
+        self.assertTrue(any("not a Paperless-ngx stack" in item for item in plan.warnings))
+        self.assertTrue(any("Redis-compatible broker" in item for item in plan.prerequisites))
+        self.assertFalse(any("apply -k" in item for item in plan.commands))
+        self.assertFalse(any("rollout status" in item for item in plan.commands))
+
+    def test_generic_kubernetes_plan_does_not_lose_provider_commands(self) -> None:
+        plan = build_plan(self.catalog, "dspace", "rke2", "3", "ubuntu-24.04")
+        self.assertTrue(any("apply -k" in item for item in plan.commands))
 
     def test_three_node_swarm_requires_external_storage(self) -> None:
         plan = build_plan(
@@ -50,6 +58,27 @@ class PlannerTests(unittest.TestCase):
         )
         self.assertNotEqual(plan.status, "blocked")
         self.assertTrue(plan.external_storage)
+
+    def test_two_node_swarm_cannot_bypass_manager_quorum(self) -> None:
+        for mode, underlying_mode in (("docker-swarm", None), ("ansible", "docker-swarm")):
+            with self.subTest(mode=mode):
+                plan = build_plan(
+                    self.catalog,
+                    "paperless-ngx",
+                    mode,
+                    "2",
+                    "ubuntu-24.04",
+                    underlying_mode=underlying_mode,
+                    allow_conditional=True,
+                    external_datastore=True,
+                    external_storage=True,
+                )
+                self.assertEqual(plan.status, "blocked")
+                self.assertEqual(plan.topology_level, "not-recommended")
+                self.assertTrue(any("Two-node Docker Swarm cannot provide manager failover" in item for item in plan.blockers))
+                self.assertTrue(any("two managers lose quorum" in item for item in plan.blockers))
+                self.assertTrue(any("one manager and one worker" in item for item in plan.blockers))
+                self.assertFalse(any("documented exception is being used" in item for item in plan.warnings))
 
     def test_two_node_rke2_is_blocked_without_external_state(self) -> None:
         plan = build_plan(self.catalog, "paperless-ngx", "rke2", "2", "ubuntu-24.04")

@@ -1,0 +1,44 @@
+---
+- name: Inspect the Kubernetes release record before repair
+  ansible.builtin.stat:
+    path: "{{ archiveweaver_release_record }}"
+    follow: false
+  register: archiveweaver_repair_kube_release_record_stat
+  no_log: true
+  tags: [preflight, repair]
+
+- name: Require an intact Kubernetes release record before repair
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_repair_kube_release_record_stat.stat.exists
+      - archiveweaver_repair_kube_release_record_stat.stat.isreg | default(false) | bool
+      - not (archiveweaver_repair_kube_release_record_stat.stat.islnk | default(false) | bool)
+    fail_msg: "Kubernetes repair requires a regular non-symlink managed release record on every managed host."
+  no_log: true
+  tags: [preflight, repair]
+
+- name: Read the Kubernetes release record before repair
+  ansible.builtin.slurp:
+    src: "{{ archiveweaver_release_record }}"
+  register: archiveweaver_repair_kube_release_record_raw
+  no_log: true
+  tags: [preflight, repair]
+
+- name: Parse the Kubernetes release record before repair
+  ansible.builtin.set_fact:
+    archiveweaver_repair_kube_release_record: "{{ archiveweaver_repair_kube_release_record_raw.content | b64decode | from_yaml }}"
+  no_log: true
+  tags: [preflight, repair]
+
+- name: Bind Kubernetes repair to the recorded cluster target before mutation
+  ansible.builtin.assert:
+    that:
+      - archiveweaver_repair_kube_release_record is mapping
+      - archiveweaver_repair_kube_release_record.solution | default('') == archiveweaver_solution_id
+      - archiveweaver_repair_kube_release_record.runtime | default('') == archiveweaver_runtime
+      - archiveweaver_repair_kube_release_record.release | default('') == archiveweaver_release
+      - archiveweaver_repair_kube_release_record.kube_context | default('') == archiveweaver_kube_context
+      - archiveweaver_repair_kube_release_record.kubeconfig_sha256 | default('') == archiveweaver_kubeconfig_sha256
+    fail_msg: "Kubernetes repair target differs from a managed release record; apply a reviewed release before repair."
+  no_log: true
+  tags: [preflight, repair]
