@@ -3,8 +3,9 @@
 # Approved artifact scope: CPython 3.13 and 3.14 on Linux x86_64,
 # binary wheels only. Install with --require-hashes and --only-binary=:all:.
 #
-ansible-compat==26.8.0 \
-    --hash=sha256:cf23f3353c3b4179530eb589a0f6fb1c674d2b69660c14841de89f3688e0530a
+ansible-compat==26.9.0 \
+    --hash=sha256:6756ba0adee1a07d609ede35483fc563b9838df25ec70e57378ae8b564f185cf \
+    --hash=sha256:e101649196e4fffc810c3f9f4f185107cc1e5be0ef26d38ad9c4abfa22b0b183
     # via ansible-lint
 ansible-core==2.21.4 \
     --hash=sha256:ebe74d9c8fadcb41ad2151e031bf1e785e3098aaa015019b4e19a0a96f0dcc4f
@@ -12,8 +13,9 @@ ansible-core==2.21.4 \
     #   -r deploy/ansible/requirements.in
     #   ansible-compat
     #   ansible-lint
-ansible-lint==26.8.0 \
-    --hash=sha256:94e58501cc7fafaa505dd9daea3bddb4affa6e8efe8217323c06d7194a312f57
+ansible-lint==26.9.0 \
+    --hash=sha256:4d01903fca9c42f7ce2b366ea5503d0701a27b3c6fdf684276a72888eea57f50 \
+    --hash=sha256:cb3265888f30815de0dcf0964d34768b45c98bb4361eea7eb42c0342e81b51b4
     # via -r deploy/ansible/requirements.in
 ansible-runner==2.4.3 \
     --hash=sha256:cdac6daa151a50084ffda710e769db23fa975fc0507796191d7708831b286e37
@@ -50,9 +52,9 @@ distro==1.9.0 \
 dumb-init==1.2.5.post1 \
     --hash=sha256:5d6b1fe9b8efcdbbdcb670efe7a55f9117251ee9648d35ffd0c487fd79515ea5
     # via -r deploy/ansible/requirements.in
-filelock==4.0.1 \
-    --hash=sha256:481a321a27bef441e23c53371c6abc8d7d16e26b97090074ba44f7538a3fd55a \
-    --hash=sha256:fdefc3f3e87716d855ae2b732c1cfd521dd99799ef2b4d00e8c0d4dcdc7cc94b
+filelock==4.0.4 \
+    --hash=sha256:0df72be195ca7892216d16f2edce8d9b93a571f02402972020a8cff84c594c7b \
+    --hash=sha256:90999ed63a26ccf86b93b959ab10cf1017f422d816be454ed54cbed263e71ab5
     # via ansible-lint
 jinja2==3.1.6 \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -92,9 +94,9 @@ pathspec==1.1.1 \
 pexpect==4.9.0 \
     --hash=sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523
     # via ansible-runner
-platformdirs==4.11.12 \
-    --hash=sha256:b1ba966ac76153d9985a0787ffab951e7c18416189873d4e4ddb2c8a04a0a254 \
-    --hash=sha256:e8dc1cb58f1153fd7f61db1374317770baababec2480b37b8f01c6cc25b45267
+platformdirs==4.12.0 \
+    --hash=sha256:095be5c143382b1bee917c4f3e9987a0d8d6a582261f1d061ad0c403b7695b5b \
+    --hash=sha256:f6fb2960f2f2eb0870f820f7e49e49e6c0f0589c637f34d33b260b07591327c9
     # via black
 ptyprocess==0.7.0 \
     --hash=sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35
