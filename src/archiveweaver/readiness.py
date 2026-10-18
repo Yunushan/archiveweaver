@@ -100,7 +100,7 @@ SIGSTORE_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json"
 SIGSTORE_GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 MAX_COSIGN_BINARY_BYTES = 256 * 1024 * 1024
 MAX_SIGNING_POLICY_BYTES = 1024 * 1024
-MAX_SIGSTORE_TRUSTED_ROOT_BYTES = 16 * 1024 * 1024
+MAX_SIGSTORE_ROOT_BYTES = 16 * 1024 * 1024
 SIGNING_ROLES = frozenset(
     {
         "release-artifact",
@@ -1349,7 +1349,7 @@ def _github_release_certificate_identity(repository: Any, identity: Any) -> str 
     return identity if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", tag) else None
 
 
-def _trusted_cosign_binary() -> Path | None:
+def _pinned_cosign_binary() -> Path | None:
     """Require a controller-pinned executable, never a lookup through PATH."""
     return _controller_pinned_file(
         "ARCHIVEWEAVER_COSIGN_PATH",
@@ -1389,7 +1389,7 @@ def _controller_pinned_file(
     return binary if size > 0 and digest == digest_value else None
 
 
-def _trusted_file_bytes(
+def _pinned_file_bytes(
     path_variable: str,
     digest_variable: str,
     max_bytes: int,
@@ -1437,7 +1437,7 @@ def _oci_release_image_ref_ok(value: Any) -> bool:
 
 def _signing_policy(manifest: dict[str, Any]) -> dict[str, Any] | None:
     """Read a digest-pinned signer policy outside the manifest/evidence bundle."""
-    content = _trusted_file_bytes(
+    content = _pinned_file_bytes(
         "ARCHIVEWEAVER_SIGNING_POLICY_PATH",
         "ARCHIVEWEAVER_SIGNING_POLICY_SHA256",
         MAX_SIGNING_POLICY_BYTES,
@@ -1555,14 +1555,14 @@ def _verify_sigstore_bundle(
     """Verify indexed bytes with the controller's digest-pinned Cosign client."""
     candidate = _relative_candidate(value, root)
     bundle_content = _indexed_bytes(candidate, context)
-    binary = _trusted_cosign_binary()
-    trusted_root = _trusted_file_bytes(
+    binary = _pinned_cosign_binary()
+    root_bytes = _pinned_file_bytes(
         "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH",
         "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256",
-        MAX_SIGSTORE_TRUSTED_ROOT_BYTES,
+        MAX_SIGSTORE_ROOT_BYTES,
         "Sigstore trusted root",
     )
-    if bundle_content is None or binary is None or trusted_root is None:
+    if bundle_content is None or binary is None or root_bytes is None:
         return False
     # Cosign reads private copies of the bundle and trusted root. Indexed
     # artifact files are checked before and after verification.
@@ -1570,7 +1570,7 @@ def _verify_sigstore_bundle(
         with tempfile.TemporaryDirectory(prefix="archiveweaver-sigstore-") as scratch:
             report_path = Path(scratch) / "report.bin"
             bundle_path = Path(scratch) / "report.sigstore.json"
-            trusted_root_path = Path(scratch) / "trusted-root.json"
+            root_path = Path(scratch) / "trusted-root.json"
             if isinstance(signed_content, bytes):
                 report_path.write_bytes(signed_content)
             else:
@@ -1578,7 +1578,7 @@ def _verify_sigstore_bundle(
                     return False
                 report_path = signed_content
             bundle_path.write_bytes(bundle_content)
-            trusted_root_path.write_bytes(trusted_root)
+            root_path.write_bytes(root_bytes)
             environment = {
                 key: item
                 for key, item in os.environ.items()
@@ -1592,7 +1592,7 @@ def _verify_sigstore_bundle(
                 "--bundle",
                 str(bundle_path),
                 "--trusted-root",
-                str(trusted_root_path),
+                str(root_path),
                 "--certificate-identity",
                 certificate_identity,
                 "--certificate-oidc-issuer",
@@ -1611,7 +1611,7 @@ def _verify_sigstore_bundle(
             )
             return bool(
                 result.returncode == 0
-                and _trusted_cosign_binary() == binary
+                and _pinned_cosign_binary() == binary
                 and _indexed_bytes(candidate, context) == bundle_content
                 and (
                     not isinstance(signed_content, Path)
@@ -3677,12 +3677,12 @@ def assess_readiness(manifest_path: Path, catalog: Catalog) -> dict[str, Any]:
         isinstance(recovery_for_signatures, dict)
         and recovery_for_signatures.get("status") == "pass"
     ):
-        if _trusted_cosign_binary() is None:
+        if _pinned_cosign_binary() is None:
             errors.append("signature verification requires a controller-pinned Cosign executable")
-        if _trusted_file_bytes(
+        if _pinned_file_bytes(
             "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_PATH",
             "ARCHIVEWEAVER_SIGSTORE_TRUSTED_ROOT_SHA256",
-            MAX_SIGSTORE_TRUSTED_ROOT_BYTES,
+            MAX_SIGSTORE_ROOT_BYTES,
             "Sigstore trusted root",
         ) is None:
             errors.append("signature verification requires a controller-pinned Sigstore trusted root")

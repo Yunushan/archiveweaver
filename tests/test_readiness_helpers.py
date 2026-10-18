@@ -74,7 +74,7 @@ from archiveweaver.readiness import (
     _signed_artifact_ok,
     _spdx_packages,
     _structured_json_payload,
-    _trusted_file_bytes,
+    _pinned_file_bytes,
     _verify_sigstore_bundle,
     assess_readiness,
     validate_manifest,
@@ -514,7 +514,7 @@ class ReadinessHelperTests(unittest.TestCase):
                     trusted_file,
                 )
                 self.assertEqual(
-                    _trusted_file_bytes(
+                    _pinned_file_bytes(
                         path_variable, digest_variable, 1024, "trusted root"
                     ),
                     trusted_bytes,
@@ -539,7 +539,7 @@ class ReadinessHelperTests(unittest.TestCase):
                     side_effect=OSError("trust file replaced during read"),
                 ):
                     self.assertIsNone(
-                        _trusted_file_bytes(
+                        _pinned_file_bytes(
                             path_variable, digest_variable, 1024, "trusted root"
                         )
                     )
