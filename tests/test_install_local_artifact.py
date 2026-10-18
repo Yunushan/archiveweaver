@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -74,3 +77,38 @@ class InstallLocalArtifactTests(unittest.TestCase):
             completed = subprocess.CompletedProcess([], 19)
             with patch.object(MODULE["subprocess"], "run", return_value=completed):
                 self.assertEqual(install_artifact(artifact), 19)
+
+
+class InstallLocalArtifactMainTests(unittest.TestCase):
+    def test_negative_pip_status_maps_to_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "archiveweaver-0.1.0-py3-none-any.whl"
+            artifact.write_bytes(b"wheel")
+            completed = subprocess.CompletedProcess([], -9)
+            with patch.object(MODULE["subprocess"], "run", return_value=completed):
+                self.assertEqual(install_artifact(artifact), 1)
+
+    def test_main_installs_a_valid_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "archiveweaver-0.1.0-py3-none-any.whl"
+            artifact.write_bytes(b"wheel")
+            completed = subprocess.CompletedProcess([], 0)
+            with patch.object(MODULE["subprocess"], "run", return_value=completed):
+                self.assertEqual(MODULE["main"]([str(artifact)]), 0)
+
+    def test_main_reports_a_rejected_artifact(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(MODULE["main"](["missing-artifact.whl"]), 2)
+        self.assertIn("local artifact installation failed", stderr.getvalue())
+
+    def test_main_guard_exits_with_the_installation_status(self) -> None:
+        with patch.object(sys, "argv", ["install-local-artifact.py", "missing-artifact.whl"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    runpy.run_path("scripts/install-local-artifact.py", run_name="__main__")
+        self.assertEqual(caught.exception.code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
