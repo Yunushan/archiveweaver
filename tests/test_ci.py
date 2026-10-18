@@ -863,7 +863,12 @@ class CIWorkflowTests(unittest.TestCase):
                 workflow,
             )
             self.assertIn("language: python", workflow)
-            self.assertIn("security-events: write", workflow)
+            parsed = yaml.safe_load(workflow)
+            self.assertEqual(parsed["permissions"], {"contents": "read"})
+            self.assertEqual(
+                parsed["jobs"]["fuzz"]["permissions"],
+                {"contents": "read", "security-events": "write"},
+            )
             self.assertRegex(
                 workflow,
                 (
