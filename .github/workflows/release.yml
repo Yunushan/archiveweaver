@@ -106,7 +106,7 @@ jobs:
           python scripts/install-local-artifact.py dist/*.tar.gz
           python scripts/validate-installed-distribution.py
       - name: Inventory the validated distributions
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: dist
           format: spdx-json
@@ -124,14 +124,14 @@ jobs:
           python -m spdx_tools.spdx.clitools.pyspdxtools \
             -i archiveweaver-ansible-controller.spdx.json
       - name: Transfer validated distributions to the privileged job
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archiveweaver-validated-distributions
           path: dist/*
           if-no-files-found: error
           retention-days: 1
       - name: Transfer validated release SBOMs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archiveweaver-validated-sboms
           path: |
@@ -140,7 +140,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Transfer the reviewed release publisher
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archiveweaver-validated-release-publisher
           path: |
@@ -197,7 +197,7 @@ jobs:
           output-format: json
           output-file: archiveweaver-ee.grype.json
       - name: Generate the controller-image SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ env.ANSIBLE_EE_LOCAL_TAG }}
           format: spdx-json
@@ -265,7 +265,7 @@ jobs:
           set -euo pipefail
           docker image save "${ANSIBLE_EE_LOCAL_TAG}" | gzip -n -9 > archiveweaver-ee.tar.gz
       - name: Transfer the validated controller image and evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archiveweaver-validated-execution-environment
           path: |
@@ -294,7 +294,7 @@ jobs:
       ARCHIVEWEAVER_RELEASE_ACTORS_JSON: ${{ vars.ARCHIVEWEAVER_RELEASE_ACTORS_JSON }}
     steps:
       - name: Download the reviewed release authorization helpers
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: archiveweaver-validated-release-publisher
           path: .release-publisher
@@ -313,19 +313,19 @@ jobs:
           --source-revision "${GITHUB_SHA}"
           --json > github-production-controls.json
       - name: Download validated distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: archiveweaver-validated-distributions
           path: dist
           digest-mismatch: error
       - name: Download validated release SBOMs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: archiveweaver-validated-sboms
           path: .
           digest-mismatch: error
       - name: Download the validated controller image and evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: archiveweaver-validated-execution-environment
           path: .
@@ -702,7 +702,7 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             archiveweaver-ee.SHA256SUMS >/dev/null
       - name: Upload the complete release evidence set
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archiveweaver-release
           path: |
