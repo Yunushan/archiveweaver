@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import runpy
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -84,6 +85,44 @@ class ReleaseActorVerifierTests(unittest.TestCase):
         with redirect_stderr(diagnostic):
             self.assertEqual(self.verifier["main"](["unexpected"]), 2)
         self.assertIn("no arguments are accepted", diagnostic.getvalue())
+
+    def test_escaped_characters_inside_strings_are_ignored_by_depth_scanning(self) -> None:
+        self.verifier["_reject_excessive_json_nesting"]('"esc\\aped"')
+        self.verifier["_reject_excessive_json_nesting"]('"closing\\"bracket"')
+        with self.assertRaisesRegex(self.verifier["ReleaseActorError"], "invalid GitHub login"):
+            self.verifier["approved_actors"]('["a\\\\b"]')
+
+    def test_malformed_actor_logins_are_rejected(self) -> None:
+        for actor, triggering_actor in (("", "release-owner"), ("release-owner", "bad login")):
+            with self.subTest(actor=actor, triggering_actor=triggering_actor):
+                with self.assertRaisesRegex(self.verifier["ReleaseActorError"], "missing or malformed"):
+                    self.verifier["verify_release_actors"](
+                        '["release-owner"]', actor, triggering_actor
+                    )
+
+    def test_main_falls_back_to_process_arguments(self) -> None:
+        environment = {
+            "ARCHIVEWEAVER_RELEASE_ACTORS_JSON": '["release-owner"]',
+            "ARCHIVEWEAVER_RELEASE_ACTOR": "release-owner",
+            "ARCHIVEWEAVER_RELEASE_TRIGGERING_ACTOR": "release-owner",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch.object(sys, "argv", ["verify-release-actors.py"]):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.verifier["main"](None), 0)
+
+    def test_main_guard_exits_with_the_authorization_status(self) -> None:
+        environment = {
+            "ARCHIVEWEAVER_RELEASE_ACTORS_JSON": '["release-owner"]',
+            "ARCHIVEWEAVER_RELEASE_ACTOR": "release-owner",
+            "ARCHIVEWEAVER_RELEASE_TRIGGERING_ACTOR": "release-owner",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            with patch.object(sys, "argv", ["verify-release-actors.py"]):
+                with redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(caught.exception.code, 0)
 
 
 if __name__ == "__main__":
