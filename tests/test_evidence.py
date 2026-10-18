@@ -24,10 +24,9 @@ class EvidenceTests(unittest.TestCase):
             Path,
             "rglob",
             return_value=iter((root / "first", root / "second")),
-        ):
-            with patch("archiveweaver.evidence.MAX_EVIDENCE_BUNDLE_ENTRIES", 1):
-                with self.assertRaisesRegex(ValueError, "1-entry safety limit"):
-                    _bundle_paths(root)
+        ), patch("archiveweaver.evidence.MAX_EVIDENCE_BUNDLE_ENTRIES", 1):
+            with self.assertRaisesRegex(ValueError, "1-entry safety limit"):
+                _bundle_paths(root)
 
     def test_builder_rejects_missing_root_and_external_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -109,9 +108,8 @@ class EvidenceTests(unittest.TestCase):
             with patch(
                 "archiveweaver.evidence._stat_identity",
                 side_effect=[(1, 1, 1, 1, 1, 1), (2, 2, 2, 2, 2, 2)],
-            ):
-                with self.assertRaisesRegex(OSError, "changed while it was being measured"):
-                    _measure_regular_file(evidence)
+            ), self.assertRaisesRegex(OSError, "changed while it was being measured"):
+                _measure_regular_file(evidence)
 
     def test_index_round_trip_and_tamper_detection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

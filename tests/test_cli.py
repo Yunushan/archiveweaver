@@ -33,9 +33,8 @@ class CLITests(unittest.TestCase):
             with patch(
                 "archiveweaver.cli.has_symlink_component",
                 side_effect=(False, True),
-            ):
-                with self.assertRaisesRegex(ValueError, "symlink"):
-                    _write_render_output(output, "safe: true\n")
+            ), self.assertRaisesRegex(ValueError, "symlink"):
+                _write_render_output(output, "safe: true\n")
             self.assertEqual(list(root.glob(".rendered.yml.*.tmp")), [])
 
             with (

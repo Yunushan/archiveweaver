@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import runpy
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -205,6 +208,199 @@ class AnsibleSbomTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 atomic_write(link, b"replacement")
             self.assertEqual(target.read_bytes(), b"original")
+
+    def test_regular_file_reader_rejects_missing_and_symlinked_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(RuntimeError):
+                MODULE["read_regular_file"](root / "missing.txt", "input")
+            real = root / "real.txt"
+            real.write_bytes(b"payload")
+            self.assertEqual(
+                MODULE["read_regular_file"](real, "input"),
+                b"payload",
+            )
+            link = root / "link.txt"
+            try:
+                link.symlink_to(real)
+            except OSError:
+                self.skipTest("file symlink creation is unavailable")
+            with self.assertRaises(RuntimeError):
+                MODULE["read_regular_file"](link, "input")
+
+    def test_source_epoch_rejects_out_of_range_timestamp(self) -> None:
+        with self.assertRaises(RuntimeError):
+            source_epoch(str(10**20))
+
+    def test_spdx_identifier_rejects_unrepresentable_names(self) -> None:
+        with self.assertRaises(RuntimeError):
+            MODULE["spdx_id"]("-._-")
+
+    def test_atomic_writer_creates_and_replaces_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "nested" / "output.json"
+            atomic_write(target, b"first")
+            self.assertEqual(target.read_bytes(), b"first")
+            atomic_write(target, b"second")
+            self.assertEqual(target.read_bytes(), b"second")
+
+    def test_atomic_writer_rejects_directory_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "output"
+            directory.mkdir()
+            with self.assertRaises(RuntimeError):
+                atomic_write(directory, b"content")
+
+    def test_atomic_writer_propagates_creation_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "output.json"
+            with mock.patch.object(
+                MODULE["tempfile"],
+                "NamedTemporaryFile",
+                side_effect=OSError("boom"),
+            ), self.assertRaises(OSError):
+                atomic_write(target, b"content")
+            self.assertFalse(target.exists())
+
+    def test_atomic_writer_skips_cleanup_without_named_temporary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "output.json"
+            handler = mock.Mock()
+            handler.name = None
+            handler.fileno.return_value = 0
+            script_globals = atomic_write.__globals__
+            original_path = script_globals["Path"]
+            fake_path = mock.Mock()
+            script_globals["Path"] = fake_path
+            try:
+                with (
+                    mock.patch.object(
+                        MODULE["tempfile"],
+                        "NamedTemporaryFile",
+                        return_value=contextlib.nullcontext(handler),
+                    ),
+                    mock.patch.object(MODULE["os"], "fsync"),
+                ):
+                    atomic_write(target, b"content")
+            finally:
+                script_globals["Path"] = original_path
+            handler.write.assert_called_once_with(b"content")
+            fake_path.assert_called_once_with(None)
+
+    def test_generate_reads_repository_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "requirements.txt"
+            lock.write_text(
+                "example==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            project = root / "pyproject.toml"
+            project.write_text('[project]\nversion = "9.9.9"\n', encoding="utf-8")
+            rendered, package_count, artifact_count = generate(lock, project, 0)
+            self.assertEqual(package_count, 1)
+            self.assertEqual(artifact_count, 1)
+            self.assertEqual(
+                json.loads(rendered)["name"],
+                "archiveweaver-ansible-controller-9.9.9",
+            )
+
+    def test_generate_rejects_non_utf8_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "requirements.txt"
+            lock.write_text(
+                "example==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            project = root / "pyproject.toml"
+            project.write_text('[project]\nversion = "1"\n', encoding="utf-8")
+            bad = root / "bad.txt"
+            bad.write_bytes(b"\xff\xfe\x00")
+            with self.assertRaisesRegex(RuntimeError, "valid UTF-8"):
+                generate(bad, project, 0)
+            with self.assertRaisesRegex(RuntimeError, "valid UTF-8"):
+                generate(lock, bad, 0)
+
+    def test_main_generates_checks_and_reports_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "requirements.txt"
+            lock.write_text(
+                "example==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            project = root / "pyproject.toml"
+            project.write_text('[project]\nversion = "1"\n', encoding="utf-8")
+            output = root / "output.json"
+            base = [
+                "generate-ansible-sbom.py",
+                "--lock",
+                str(lock),
+                "--project",
+                str(project),
+                "--output",
+                str(output),
+                "--source-date-epoch",
+                "0",
+            ]
+            with mock.patch.object(sys, "argv", base):
+                self.assertEqual(MODULE["main"](), 0)
+            self.assertTrue(output.is_file())
+
+            with mock.patch.object(sys, "argv", [*base, "--check"]):
+                self.assertEqual(MODULE["main"](), 0)
+
+            output.write_text("{}\n", encoding="utf-8")
+            with mock.patch.object(sys, "argv", [*base, "--check"]):
+                self.assertEqual(MODULE["main"](), 1)
+
+            stderr = io.StringIO()
+            missing = [
+                "generate-ansible-sbom.py",
+                "--lock",
+                str(root / "missing.txt"),
+                "--project",
+                str(project),
+                "--output",
+                str(output),
+                "--source-date-epoch",
+                "0",
+            ]
+            with (
+                mock.patch.object(sys, "argv", missing),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(MODULE["main"](), 1)
+            self.assertIn("Ansible SBOM error", stderr.getvalue())
+
+    def test_module_entrypoint_runs_main_under_main_guard(self) -> None:
+        script = ROOT / "scripts/generate-ansible-sbom.py"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "requirements.txt"
+            lock.write_text(
+                "example==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
+                encoding="utf-8",
+            )
+            project = root / "pyproject.toml"
+            project.write_text('[project]\nversion = "1"\n', encoding="utf-8")
+            argv = [
+                str(script),
+                "--lock",
+                str(lock),
+                "--project",
+                str(project),
+                "--output",
+                str(root / "output.json"),
+                "--source-date-epoch",
+                "0",
+            ]
+            with mock.patch.object(sys, "argv", argv):
+                with self.assertRaises(SystemExit) as caught:
+                    runpy.run_path(str(script), run_name="__main__")
+            self.assertEqual(caught.exception.code, 0)
 
 
 if __name__ == "__main__":

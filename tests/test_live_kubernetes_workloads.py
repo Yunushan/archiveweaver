@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import builtins
 import copy
 import importlib.util
 import io
 import json
+import runpy
 import sys
 import unittest
+import yaml
 from pathlib import Path
 from unittest.mock import patch
 
@@ -255,6 +258,212 @@ class LiveKubernetesWorkloadTests(unittest.TestCase):
         stream = type("Input", (), {"buffer": io.BytesIO(envelope)})()
         with patch.object(sys, "stdin", stream), patch.object(sys, "stderr", io.StringIO()):
             self.assertEqual(live.main(["verify-live-kubernetes-workloads.py", NAMESPACE]), 2)
+
+    def test_module_without_pyyaml_fails_deterministically(self) -> None:
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "yaml":
+                raise ImportError("PyYAML is not installed")
+            return real_import(name, *args, **kwargs)
+
+        spec = importlib.util.spec_from_file_location("verify_live_kubernetes_workloads_noyaml", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        with patch.object(builtins, "__import__", fake_import):
+            assert spec is not None and spec.loader is not None
+            spec.loader.exec_module(module)
+        self.assertIsNone(module.yaml)
+        self.assertFalse(hasattr(module, "_StrictLoader"))
+        with self.assertRaises(module.InvalidInput):
+            module._rendered_documents("{}")
+
+    def test_strict_loader_rejects_non_mapping_node(self) -> None:
+        loader = live._StrictLoader("a: 1")
+        node = yaml.ScalarNode("tag:yaml.org,2002:str", "scalar")
+        with self.assertRaises(live.InvalidInput):
+            loader.construct_mapping(node)
+
+    def test_rejects_yaml_alias_and_non_string_key(self) -> None:
+        expected = workload("Deployment", "paperless")
+        with self.assertRaises(live.InvalidInput):
+            live.verify("a: &anchor 1\nb: *anchor", live_list(expected), NAMESPACE)
+        with self.assertRaises(live.InvalidInput):
+            live.verify("{1: 2}", live_list(expected), NAMESPACE)
+
+    def test_rendered_document_guards(self) -> None:
+        expected = workload("Deployment", "paperless")
+        with self.assertRaises(live.InvalidInput):
+            live.verify("", live_list(expected), NAMESPACE)
+        with self.assertRaises(live.InvalidInput):
+            live.verify("- 1", live_list(expected), NAMESPACE)
+        with self.assertRaises(live.InvalidInput):
+            live.verify("a: b: c", live_list(expected), NAMESPACE)
+        with patch.object(live, "MAX_RENDERED_BYTES", 4):
+            with self.assertRaises(live.InvalidInput):
+                live.verify(model(expected), live_list(expected), NAMESPACE)
+        with patch.object(live, "MAX_OBJECTS", 1):
+            with self.assertRaises(live.InvalidInput):
+                live.verify(model(expected, workload("Deployment", "other")), live_list(expected), NAMESPACE)
+
+    def test_rejects_malformed_rendered_workload_specs(self) -> None:
+        def rendered(pod_spec: object) -> dict:
+            resource = workload("Deployment", "paperless")
+            resource["spec"]["template"]["spec"] = pod_spec
+            return resource
+
+        invalid_pod_specs = (
+            "not-an-object",
+            {},
+            {"containers": [{"name": "paperless", "image": IMAGE}], "initContainers": "bad"},
+            {"containers": ["not-an-object"]},
+        )
+        for pod_spec in invalid_pod_specs:
+            with self.subTest(pod_spec=pod_spec), self.assertRaises(live.WorkloadMismatch):
+                live.verify(model(rendered(pod_spec)), live_list(), NAMESPACE)
+        bad_template = workload("Deployment", "paperless")
+        bad_template["spec"]["template"] = "not-an-object"
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(bad_template), live_list(), NAMESPACE)
+
+    def test_rejects_extra_image_field_and_workload_free_model(self) -> None:
+        expected = workload("Deployment", "paperless")
+        expected["spec"]["template"]["spec"]["image"] = "stray"
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(expected), live_list(), NAMESPACE)
+        configmap = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "settings"}}
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(configmap), live_list(), NAMESPACE)
+
+    def test_rejects_malformed_live_resource_identity(self) -> None:
+        expected = workload("Deployment", "paperless")
+        bad_live = (
+            42,
+            {},
+            {"apiVersion": "v1", "kind": "Secret"},
+        )
+        for resource in bad_live:
+            with self.subTest(resource=resource), self.assertRaises(live.InvalidInput):
+                live.verify(model(expected), live_list(resource), NAMESPACE)
+        rendered_out_of_namespace = workload("Deployment", "paperless")
+        rendered_out_of_namespace["metadata"]["namespace"] = "other"
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(rendered_out_of_namespace), live_list(expected), NAMESPACE)
+
+    def test_accepts_registry_with_valid_port(self) -> None:
+        image = "registry.example.org:5000/docs/paperless@sha256:" + "a" * 64
+        expected = workload("Deployment", "paperless", image)
+        live.verify(model(expected), live_list(expected), NAMESPACE)
+
+    def test_rejects_reference_with_invalid_digest_and_registry_label(self) -> None:
+        invalid_images = (
+            "registry.example.org/docs/paperless@sha256:short",
+            "Registry.example.org/docs/paperless@sha256:" + "a" * 64,
+            "example.org-/docs/paperless@sha256:" + "a" * 64,
+        )
+        for image in invalid_images:
+            expected = workload("Deployment", "paperless", image)
+            with self.subTest(image=image), self.assertRaises(live.WorkloadMismatch):
+                live.verify(model(expected), live_list(expected), NAMESPACE)
+
+    def test_cronjob_child_template_metadata_guards(self) -> None:
+        deployment = workload("Deployment", "paperless")
+        live_cronjob = workload("CronJob", "consume", BROKER_IMAGE)
+        live_cronjob["metadata"]["uid"] = CRONJOB_UID
+
+        not_a_mapping = generated_job(live_cronjob)
+        not_a_mapping["spec"]["template"]["metadata"] = []
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(deployment, live_cronjob), live_list(deployment, live_cronjob, not_a_mapping), NAMESPACE)
+
+        bad_labels = generated_job(live_cronjob)
+        bad_labels["spec"]["template"]["metadata"] = {"labels": []}
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(deployment, live_cronjob), live_list(deployment, live_cronjob, bad_labels), NAMESPACE)
+
+    def test_accepts_cronjob_child_with_matching_creation_timestamp(self) -> None:
+        deployment = workload("Deployment", "paperless")
+        reviewed_cronjob = workload("CronJob", "consume", BROKER_IMAGE)
+        reviewed_cronjob["spec"]["jobTemplate"]["spec"]["template"]["metadata"] = {
+            "labels": {"app": "consume"},
+            "creationTimestamp": "2020-01-01T00:00:00Z",
+        }
+        live_cronjob = copy.deepcopy(reviewed_cronjob)
+        live_cronjob["metadata"]["uid"] = CRONJOB_UID
+        child = generated_job(live_cronjob)
+        live.verify(
+            model(deployment, reviewed_cronjob),
+            live_list(deployment, live_cronjob, child),
+            NAMESPACE,
+        )
+
+    def test_rejects_cronjob_child_without_unique_owner(self) -> None:
+        deployment = workload("Deployment", "paperless")
+        live_cronjob = workload("CronJob", "consume", BROKER_IMAGE)
+        live_cronjob["metadata"]["uid"] = CRONJOB_UID
+        child = generated_job(live_cronjob)
+        child["metadata"].pop("uid")
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(deployment, live_cronjob), live_list(deployment, live_cronjob, child), NAMESPACE)
+
+    def test_rejects_cronjob_child_with_invalid_owner_name(self) -> None:
+        deployment = workload("Deployment", "paperless")
+        live_cronjob = workload("CronJob", "consume", BROKER_IMAGE)
+        live_cronjob["metadata"]["uid"] = CRONJOB_UID
+        child = generated_job(live_cronjob)
+        child["metadata"]["ownerReferences"][0]["name"] = ""
+        with self.assertRaises(live.WorkloadMismatch):
+            live.verify(model(deployment, live_cronjob), live_list(deployment, live_cronjob, child), NAMESPACE)
+
+    def test_verify_rejects_invalid_namespace(self) -> None:
+        with self.assertRaises(live.InvalidInput):
+            live.verify("x", {}, "Bad_Namespace")
+
+    def test_cli_usage_and_input_guards(self) -> None:
+        stderr = io.StringIO()
+        with patch.object(sys, "stderr", stderr):
+            self.assertEqual(live.main(["verify-live-kubernetes-workloads.py"]), 2)
+        empty = type("Input", (), {"buffer": io.BytesIO(b"")})()
+        with patch.object(sys, "stdin", empty), patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(live.main(["verify-live-kubernetes-workloads.py", NAMESPACE]), 2)
+        oversized = type("Input", (), {"buffer": io.BytesIO(b"x" * 16)})()
+        with patch.object(live, "MAX_INPUT_BYTES", 4), patch.object(sys, "stdin", oversized), \
+                patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(live.main(["verify-live-kubernetes-workloads.py", NAMESPACE]), 2)
+
+    def test_cli_envelope_validation_and_exit_codes(self) -> None:
+        expected = workload("Deployment", "paperless")
+        rendered = model(expected)
+
+        def stderr_and_exit(raw: bytes) -> tuple[str, int]:
+            stream = type("Input", (), {"buffer": io.BytesIO(raw)})()
+            stderr = io.StringIO()
+            with patch.object(sys, "stdin", stream), patch.object(sys, "stderr", stderr):
+                code = live.main(["verify-live-kubernetes-workloads.py", NAMESPACE])
+            return stderr.getvalue(), code
+
+        _, invalid_shape = stderr_and_exit(json.dumps({"only": 1}).encode())
+        self.assertEqual(invalid_shape, 2)
+        _, not_string = stderr_and_exit(
+            json.dumps({"rendered_yaml": 5, "live_json": live_list(expected)}).encode()
+        )
+        self.assertEqual(not_string, 2)
+        _, success = stderr_and_exit(
+            json.dumps({"rendered_yaml": rendered, "live_json": live_list(expected)}).encode()
+        )
+        self.assertEqual(success, 0)
+        _, drift = stderr_and_exit(
+            json.dumps({"rendered_yaml": rendered, "live_json": live_list()}).encode()
+        )
+        self.assertEqual(drift, 1)
+
+    def test_main_guard_runs_and_exits(self) -> None:
+        stream = type("Input", (), {"buffer": io.BytesIO(b"")})()
+        with patch.object(sys, "argv", ["verify-live-kubernetes-workloads.py"]), \
+                patch.object(sys, "stdin", stream), patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

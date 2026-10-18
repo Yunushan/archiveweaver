@@ -117,10 +117,9 @@ class RepairTests(unittest.TestCase):
             patch(
                 "archiveweaver.repair.distribution",
                 side_effect=PackageNotFoundError("archiveweaver"),
-            ),
+            ),self.assertRaisesRegex(ValueError, "could not locate")
         ):
-            with self.assertRaisesRegex(ValueError, "could not locate"):
-                _find_ansible_root()
+            _find_ansible_root()
 
         empty_distribution = type("Distribution", (), {"files": ()})()
         with (
@@ -147,10 +146,9 @@ class RepairTests(unittest.TestCase):
                 "is_symlink",
                 autospec=True,
                 side_effect=lambda candidate: candidate == target,
-            ),
+            ),self.assertRaisesRegex(ValueError, "must not resolve through a symlink")
         ):
-            with self.assertRaisesRegex(ValueError, "must not resolve through a symlink"):
-                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+            _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
 
         with (
             patch("archiveweaver.repair.has_symlink_component", return_value=False),
@@ -176,17 +174,15 @@ class RepairTests(unittest.TestCase):
         with patch(
             "archiveweaver.repair.has_symlink_component",
             side_effect=lambda path: Path(path) == root,
-        ):
-            with self.assertRaisesRegex(ValueError, "symlinked Ansible bundle"):
-                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+        ), self.assertRaisesRegex(ValueError, "symlinked Ansible bundle"):
+            _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
 
         unresolved = root / "repair.yml"
         with patch(
             "archiveweaver.repair.has_symlink_component",
             side_effect=lambda path: Path(path) == unresolved,
-        ):
-            with self.assertRaisesRegex(ValueError, "must not resolve through a symlink"):
-                _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
+        ), self.assertRaisesRegex(ValueError, "must not resolve through a symlink"):
+            _resolve_ansible_bundle_path("repair.yml", root, "--playbook")
 
     def test_readiness_manifest_requires_the_ansible_directory_after_resolution(self) -> None:
         root = Path(__file__).resolve().parents[1] / "deploy" / "ansible"
@@ -194,9 +190,8 @@ class RepairTests(unittest.TestCase):
         with patch(
             "archiveweaver.repair._resolve_ansible_bundle_path",
             return_value=outside,
-        ):
-            with self.assertRaisesRegex(ValueError, "Ansible playbook directory"):
-                _resolve_readiness_manifest_path("outside.json", root)
+        ), self.assertRaisesRegex(ValueError, "Ansible playbook directory"):
+            _resolve_readiness_manifest_path("outside.json", root)
 
     def test_applied_repair_results_redact_command_output(self) -> None:
         plan = build_repair_plan(self.catalog, "paperless-ngx", "raw")
@@ -587,9 +582,8 @@ class RepairTests(unittest.TestCase):
         with patch(
             "archiveweaver.repair.has_symlink_component",
             side_effect=lambda path: Path(path).name == runner_name,
-        ):
-            with self.assertRaisesRegex(ValueError, "runner is missing or unsafe"):
-                build_repair_plan(self.catalog, "paperless-ngx", "ansible")
+        ), self.assertRaisesRegex(ValueError, "runner is missing or unsafe"):
+            build_repair_plan(self.catalog, "paperless-ngx", "ansible")
 
     def test_ansible_repair_rejects_unsafe_readiness_path(self) -> None:
         with self.assertRaises(ValueError):

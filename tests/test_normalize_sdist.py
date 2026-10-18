@@ -87,7 +87,7 @@ class FakeArchive:
     def __init__(self, members: list[FakeMember]) -> None:
         self._members = members
 
-    def __enter__(self) -> "FakeArchive":
+    def __enter__(self) -> FakeArchive:
         return self
 
     def __exit__(self, *exc_info) -> bool:
@@ -162,7 +162,7 @@ class EpochValidationTests(unittest.TestCase):
             validated_epoch("not-a-number")
 
     def test_epoch_must_be_within_the_gzip_range(self) -> None:
-        for value in ("-1", str((1 << 32))):
+        for value in ("-1", str(1 << 32)):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, "build epoch must be between"):
                     validated_epoch(value)

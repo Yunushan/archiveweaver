@@ -15,7 +15,7 @@ class HookDigestTests(unittest.TestCase):
         canonical = json.dumps(argv, ensure_ascii=True, separators=(",", ":"))
         self.assertEqual(canonical_hook_argv(argv), canonical)
         self.assertEqual(digest_hook_argv(argv), hashlib.sha256(canonical.encode()).hexdigest())
-        self.assertNotEqual(digest_hook_argv(argv), digest_hook_argv(argv + ["--force"]))
+        self.assertNotEqual(digest_hook_argv(argv), digest_hook_argv([*argv, "--force"]))
 
     def test_inspection_binds_executable_bytes_and_argv(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

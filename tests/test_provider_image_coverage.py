@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib.util
 import io
 import json
+import runpy
 import sys
 import types
 import unittest
@@ -218,6 +220,199 @@ metadata:
         coverage.verify(manifest(PAPERLESS), "kubernetes", kube)
         compose = f"services:\n  web:\n    image: {PAPERLESS}\n".encode()
         coverage.verify(manifest(PAPERLESS), "docker", compose)
+
+
+    def test_manifest_rejects_empty_oversized_and_malformed_documents(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "empty or exceeds"):
+            coverage._manifest_images(b"")
+        too_many = b"x" * (coverage.MAX_MANIFEST_BYTES + 1)
+        with self.assertRaisesRegex(coverage.InvalidInput, "empty or exceeds"):
+            coverage._manifest_images(too_many)
+        with self.assertRaisesRegex(coverage.InvalidInput, "release section"):
+            coverage._manifest_images(b"[]")
+        with self.assertRaisesRegex(coverage.InvalidInput, "release section"):
+            coverage._manifest_images(b'{"release": "not-an-object"}')
+        with self.assertRaisesRegex(coverage.InvalidInput, "release artifacts"):
+            coverage._manifest_images(b'{"release": {}}')
+        with self.assertRaisesRegex(coverage.InvalidInput, "release artifacts"):
+            coverage._manifest_images(b'{"release": {"artifacts": []}}')
+        with self.assertRaisesRegex(coverage.InvalidInput, "not an object"):
+            coverage._manifest_images(b'{"release": {"artifacts": [1]}}')
+
+    def test_manifest_without_any_image_artifact_is_rejected(self) -> None:
+        packages_only = b'{"release": {"artifacts": [{"name": "pkg", "digest": "sha256:' + b"c" * 64 + b'"}]}}'
+        with self.assertRaisesRegex(coverage.CoverageFailure, "no approved OCI image"):
+            coverage._manifest_images(packages_only)
+
+    def test_image_reference_with_non_digest_suffix_is_mutable(self) -> None:
+        self.assertFalse(coverage._immutable_image("registry.example.org/docs/app@sha256:not-a-digest"))
+        self.assertFalse(coverage._immutable_image("registry.example.org/docs/app@sha256:" + "A" * 64))
+
+    def test_kubernetes_real_workload_shapes_are_recognized(self) -> None:
+        def pod(kind: str, api_version: str, pod_spec: dict, name: str) -> dict:
+            if kind == "Pod":
+                return {"apiVersion": api_version, "kind": kind, "metadata": {"name": name}, "spec": pod_spec}
+            if kind == "CronJob":
+                return {
+                    "apiVersion": api_version,
+                    "kind": kind,
+                    "metadata": {"name": name},
+                    "spec": {"jobTemplate": {"spec": {"template": {"spec": pod_spec}}}},
+                }
+            if kind == "ReplicationController":
+                return {
+                    "apiVersion": api_version,
+                    "kind": kind,
+                    "metadata": {"name": name},
+                    "spec": {"template": {"spec": pod_spec}},
+                }
+            return {
+                "apiVersion": api_version,
+                "kind": kind,
+                "metadata": {"name": name},
+                "spec": {"template": {"spec": pod_spec}},
+            }
+
+        spec = {"containers": [{"name": "web", "image": PAPERLESS}]}
+        resources = [
+            pod("Pod", "v1", spec, "pod"),
+            pod("ReplicationController", "v1", spec, "rc"),
+            pod("Deployment", "apps/v1", spec, "deploy"),
+            pod("StatefulSet", "apps/v1", spec, "statefulset"),
+            pod("DaemonSet", "apps/v1", spec, "daemonset"),
+            pod("ReplicaSet", "apps/v1", spec, "replicaset"),
+            pod("Job", "batch/v1", spec, "job"),
+            pod("CronJob", "batch/v1", spec, "cronjob"),
+        ]
+        self.assertEqual(coverage._kubernetes_images(resources), {PAPERLESS})
+
+    def test_kubernetes_rejects_malformed_resource_headers(self) -> None:
+        good = deployment(("web", PAPERLESS))
+        for bad in (
+            {**good, "apiVersion": ""},
+            {**good, "kind": None},
+            {"apiVersion": "apps/v1", "kind": "Deployment"},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": ""}},
+            {**good, "metadata": {"name": "named", "namespace": 7}},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(coverage.InvalidInput):
+                coverage._kubernetes_images([bad])
+
+    def test_kubernetes_rejects_models_without_workloads(self) -> None:
+        with self.assertRaisesRegex(coverage.CoverageFailure, "no supported workloads"):
+            coverage._kubernetes_images([{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "svc"}}])
+
+    def test_kubernetes_rejects_broken_pod_specifications(self) -> None:
+        missing_spec = deployment(("web", PAPERLESS))
+        missing_spec["spec"] = None
+        with self.assertRaisesRegex(coverage.CoverageFailure, "no pod specification"):
+            coverage._kubernetes_images([missing_spec])
+        no_containers = deployment(("web", PAPERLESS))
+        no_containers["spec"] = {"template": {"spec": {}}}
+        with self.assertRaisesRegex(coverage.CoverageFailure, "no containers"):
+            coverage._kubernetes_images([no_containers])
+        bad_list = deployment(("web", PAPERLESS))
+        bad_list["spec"]["template"]["spec"]["initContainers"] = "not-a-list"
+        with self.assertRaisesRegex(coverage.CoverageFailure, "invalid initContainers list"):
+            coverage._kubernetes_images([bad_list])
+        non_object = deployment(("web", PAPERLESS))
+        non_object["spec"]["template"]["spec"]["initContainers"] = ["not-an-object"]
+        with self.assertRaisesRegex(coverage.CoverageFailure, "non-object container"):
+            coverage._kubernetes_images([non_object])
+
+    def test_compose_rejects_multi_document_and_missing_services(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "exactly one document"):
+            coverage._compose_images([{}, {}])
+        with self.assertRaisesRegex(coverage.CoverageFailure, "no services"):
+            coverage._compose_images([{"name": "model"}])
+        with self.assertRaisesRegex(coverage.CoverageFailure, "no services"):
+            coverage._compose_images([{"services": {}}])
+
+    def test_compose_rejects_invalid_service_entries(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "invalid service"):
+            coverage._compose_images([{"services": {"web": "not-an-object"}}])
+        with self.assertRaisesRegex(coverage.InvalidInput, "invalid service"):
+            coverage._compose_images([{"services": {"": {"image": PAPERLESS}}}])
+        with self.assertRaisesRegex(coverage.CoverageFailure, "missing or mutable image"):
+            coverage._compose_images([{"services": {"web": {}}}])
+        nested = {"services": {"web": {"image": PAPERLESS, "configs": [{"image": POSTGRES}]}}}
+        with self.assertRaisesRegex(coverage.CoverageFailure, "outside its service image"):
+            coverage._compose_images([nested])
+        outside = {"services": {"web": {"image": PAPERLESS}}, "volumes": {"vol": {"image": POSTGRES}}}
+        with self.assertRaisesRegex(coverage.CoverageFailure, "image fields outside services"):
+            coverage._compose_images([outside])
+
+    def test_verify_rejects_unknown_runtime(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "unsupported provider runtime"):
+            coverage.verify(manifest(PAPERLESS), "nomad", b"rendered")
+
+    def test_manifest_read_requires_absolute_path_and_fails_closed(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "absolute and contain no symlinks"):
+            coverage._read_manifest("relative-manifest.json", "a" * 64)
+        with patch.object(coverage, "_read_stable_bytes", side_effect=RuntimeError("boom")):
+            with self.assertRaisesRegex(coverage.InvalidInput, "stable regular file"):
+                coverage._read_manifest(str(Path(__file__).resolve()), "a" * 64)
+
+    def test_load_yaml_rejects_empty_invalid_and_nonobject_documents(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "empty or exceeds"):
+            coverage._load_yaml(b"")
+        with self.assertRaisesRegex(coverage.InvalidInput, "empty or exceeds"):
+            coverage._load_yaml(b"x" * (coverage.MAX_MODEL_BYTES + 1))
+        with self.assertRaisesRegex(coverage.InvalidInput, "unambiguous UTF-8 YAML"):
+            coverage._load_yaml(b"\xff\xfe\x00")
+        with self.assertRaisesRegex(coverage.InvalidInput, "nonempty YAML objects"):
+            coverage._load_yaml(b"- 1\n")
+        with self.assertRaisesRegex(coverage.InvalidInput, "nonempty YAML objects"):
+            coverage._load_yaml(b"---\n")
+
+    @unittest.skipIf(coverage.yaml is None, "PyYAML is unavailable")
+    def test_strict_yaml_rejects_non_string_keys(self) -> None:
+        with self.assertRaisesRegex(coverage.InvalidInput, "non-string YAML mapping key"):
+            coverage._load_yaml(b"1: value\n")
+
+    @unittest.skipIf(coverage.yaml is None, "PyYAML is unavailable")
+    def test_strict_loader_rejects_non_mapping_node(self) -> None:
+        loader = coverage._StrictLoader("")
+        node = coverage.yaml.ScalarNode("tag:yaml.org,2002:str", "value")
+        with self.assertRaisesRegex(coverage.InvalidInput, "invalid YAML mapping"):
+            loader.construct_mapping(node)
+
+    def test_load_yaml_requires_pyyaml_when_unavailable(self) -> None:
+        with patch.object(coverage, "yaml", None):
+            with self.assertRaisesRegex(coverage.InvalidInput, "PyYAML is required"):
+                coverage._load_yaml(b"services: {}\n")
+
+    def test_module_imports_without_pyyaml(self) -> None:
+        spec = importlib.util.spec_from_file_location("verify_provider_image_coverage_no_yaml", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        original_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name == "yaml":
+                raise ImportError("PyYAML deliberately unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=blocked):
+            spec.loader.exec_module(module)
+        self.assertIsNone(module.yaml)
+
+    def test_cli_reports_invalid_input_for_relative_manifest(self) -> None:
+        args = [str(SCRIPT), "relative-manifest.json", "docker", "a" * 64]
+        fake_stdin = types.SimpleNamespace(buffer=io.BytesIO(b"rendered"))
+        with patch.object(coverage.sys, "stdin", fake_stdin), patch.object(
+            coverage.sys, "stderr", io.StringIO()
+        ) as stderr:
+            self.assertEqual(coverage.main(args), 2)
+        self.assertIn("input invalid", stderr.getvalue())
+
+    def test_main_guard_exits_with_usage_code(self) -> None:
+        with patch.object(sys, "argv", ["verify-provider-image-coverage.py"]), patch.object(
+            sys, "stderr", io.StringIO()
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(caught.exception.code, 2)
 
 
 if __name__ == "__main__":

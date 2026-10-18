@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import runpy
 import sys
 import unittest
 from pathlib import Path
@@ -482,6 +483,466 @@ class PaperlessRKE2ModelTests(unittest.TestCase):
         with patch.object(sys, "stdin", bad), patch.object(sys, "stderr", io.StringIO()):
             self.assertEqual(paperless.main(["verify-paperless-rke2-model.py", NAMESPACE]), 2)
         self.assertEqual(paperless.main(["verify-paperless-rke2-model.py"]), 2)
+
+    def test_import_without_pyyaml_fails_deterministically(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "verify_paperless_rke2_model_no_yaml", SCRIPT
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"yaml": None}):
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                sys.modules.pop(spec.name, None)
+        self.assertIsNone(module.yaml)
+        with self.assertRaises(module.InvalidInput):
+            module._documents(b"kind: ConfigMap\n")
+
+    def test_secret_data_decoding_limits_and_ambiguity(self) -> None:
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._decode_secret_data(None)
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._decode_secret_data("a" * (paperless.MAX_SECRET_VALUE_BYTES * 2 + 1))
+        oversized = base64.b64encode(b"a" * (paperless.MAX_SECRET_VALUE_BYTES + 1)).decode()
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._decode_secret_data(oversized)
+
+        objects = {("Secret", "s"): {
+            "apiVersion": "v1", "data": {"k": encoded("one")}, "stringData": {"k": "one"},
+        }}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._secret_material(objects, "s", "k", "label")
+
+        objects = {("Secret", "s"): {"apiVersion": "v1", "stringData": {"k": "material"}}}
+        self.assertEqual(paperless._secret_material(objects, "s", "k", "label"), b"material")
+        with patch.object(paperless, "MAX_SECRET_VALUE_BYTES", 4):
+            objects = {("Secret", "s"): {"apiVersion": "v1", "stringData": {"k": "longer"}}}
+            with self.assertRaises(paperless.ModelRejected):
+                paperless._secret_material(objects, "s", "k", "label")
+
+    def test_yaml_loader_and_structure_limits(self) -> None:
+        loader = paperless._StrictLoader("")
+        node = paperless.yaml.ScalarNode("tag:yaml.org,2002:str", "value")
+        with self.assertRaises(paperless.InvalidInput):
+            loader.construct_mapping(node)
+        loader.dispose()
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._documents(b"1: value\n")
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._documents(b"")
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._documents(b"# only a comment\n")
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._documents(b"a: [b\n")
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._documents(b"\xff\xfe")
+        documents = b"a: 1\n" + b"---\na: 1\n" * paperless.MAX_DOCUMENTS
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._documents(documents)
+        with patch.object(paperless, "MAX_NODES", 0):
+            with self.assertRaises(paperless.InvalidInput):
+                paperless._documents(rendered(base_model()))
+        with patch.object(paperless, "MAX_DEPTH", -1):
+            with self.assertRaises(paperless.InvalidInput):
+                paperless._documents(rendered(base_model()))
+        secret = {"apiVersion": "v1", "kind": "Secret",
+                  "metadata": {"name": "s", "namespace": NAMESPACE}, "data": []}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._documents(rendered([secret]))
+
+    def test_object_identity_and_heading_validation(self) -> None:
+        bad_identity = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {}}
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._objects([bad_identity], NAMESPACE)
+        wrong_namespace = {"apiVersion": "v1", "kind": "Namespace",
+                           "metadata": {"name": "other"}}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._objects([wrong_namespace], NAMESPACE)
+        namespaced = {"apiVersion": "v1", "kind": "Namespace",
+                      "metadata": {"name": NAMESPACE, "namespace": NAMESPACE}}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._objects([namespaced], NAMESPACE)
+        duplicate = {"apiVersion": "v1", "kind": "ConfigMap",
+                     "metadata": {"name": "duplicate", "namespace": NAMESPACE}}
+        with self.assertRaises(paperless.InvalidInput):
+            paperless._objects([duplicate, copy.deepcopy(duplicate)], NAMESPACE)
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._mapping([], "label")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._list(None, "label")
+
+        model = base_model()
+        app(model)["env"].append({"value": "missing-name"})
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        app(model)["env"].append({"name": "PAPERLESS_URL", "value": "duplicate"})
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        app(model)["env"].append({
+            "name": "PAPERLESS_EXTRA", "value": "x",
+            "valueFrom": {"configMapKeyRef": {"name": "paperless-config", "key": "x"}},
+        })
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+    def test_static_value_reference_rejections(self) -> None:
+        def set_reference(model: list[dict], reference: object) -> None:
+            entry = env(model, "PAPERLESS_DBENGINE")
+            entry.pop("value")
+            entry["valueFrom"] = reference
+
+        changes = {
+            "wrong reference source": lambda model: set_reference(
+                model, {"unknownSource": {"name": "paperless-secrets", "key": "db-engine"}}
+            ),
+            "optional config reference": lambda model: set_reference(
+                model, {"configMapKeyRef": {
+                    "name": "paperless-config", "key": "db-engine", "optional": True
+                }}
+            ),
+            "unnamed config reference": lambda model: set_reference(
+                model, {"configMapKeyRef": {"name": "", "key": "db-engine"}}
+            ),
+        }
+        for label, change in changes.items():
+            model = base_model()
+            change(model)
+            with self.subTest(label=label), self.assertRaises(paperless.ModelRejected):
+                paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        set_reference(model, {"configMapKeyRef": {
+            "name": "absent-config", "key": "db-engine"
+        }})
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        set_reference(model, {"configMapKeyRef": {
+            "name": "postgres-ca", "key": "db-engine"
+        }})
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+    def test_secret_string_data_and_projected_keys(self) -> None:
+        model = base_model()
+        model[3]["stringData"] = {"secret-key": TEST_SECRET_KEY}
+        model[3]["data"].pop("secret-key")
+        paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model[3]["stringData"] = {"secret-key": ""}
+        model[3]["data"].pop("secret-key")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._projected_key({}, "../escape", "label")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._projected_key({}, "nested/file", "label")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._projected_key({"items": "not-a-list"}, "file", "label")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._projected_key({"items": [{"path": "file", "key": 1}]}, "file", "label")
+
+    def test_review_secret_volume_error_paths(self) -> None:
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._review_secret_references({}, {"volumes": [1]}, {})
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._review_secret_references(
+                {}, {"volumes": [{"name": "v", "secret": {"secretName": 1}}]}, {}
+            )
+        secret = {"apiVersion": "v1", "kind": "Secret",
+                  "metadata": {"name": "s", "namespace": NAMESPACE},
+                  "data": {"k": encoded("value")}}
+        objects = {("Secret", "s"): secret}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._review_secret_references(
+                {}, {"volumes": [{"name": "v", "secret": {"secretName": "s", "items": []}}]},
+                objects,
+            )
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._review_secret_references(
+                {}, {"volumes": [{"name": "v", "secret": {"secretName": "s", "items": [1]}}]},
+                objects,
+            )
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._review_secret_references(
+                {}, {"volumes": [{"name": "v", "secret": {
+                    "secretName": "s", "items": [{"key": 1}]
+                }}]}, objects,
+            )
+        paperless._review_secret_references(
+            {}, {"volumes": [{"name": "v", "secret": {
+                "secretName": "s", "items": [{"key": "k"}]
+            }}]}, objects,
+        )
+
+    def test_absolute_path_and_mount_validation(self) -> None:
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._absolute_path("/", "label")
+        container = {"volumeMounts": [{"name": "v", "mountPath": "/data"}]}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._covering_mount("/data/file", container, {"volumes": [1]}, "label")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._covering_mount(
+                "/data/file", container,
+                {"volumes": [{"name": "v"}, {"name": "v"}]}, "label",
+            )
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._covering_mount("/data/file", {"volumeMounts": [1]},
+                                      {"volumes": [{"name": "v"}]}, "label")
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._covering_mount(
+                "/data/file", {"volumeMounts": [{"name": "other", "mountPath": "/data"}]},
+                {"volumes": [{"name": "v"}]}, "label",
+            )
+
+    def test_secret_file_error_paths(self) -> None:
+        model = base_model()
+        app_container = app(model)
+        app_container["env"] = [
+            item for item in app_container["env"] if item["name"] != "PAPERLESS_SECRET_KEY"
+        ]
+        app_container["env"].append({
+            "name": "PAPERLESS_SECRET_KEY_FILE",
+            "valueFrom": {"secretKeyRef": {"name": "paperless-secrets", "key": "secret-key"}},
+        })
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        for path, optional in (
+            ("/run/secrets/paperless", False),
+            ("/run/secrets/paperless/secret-key", True),
+        ):
+            model = base_model()
+            app_container = app(model)
+            app_container["env"] = [
+                item for item in app_container["env"]
+                if item["name"] != "PAPERLESS_SECRET_KEY"
+            ]
+            app_container["env"].append(
+                {"name": "PAPERLESS_SECRET_KEY_FILE", "value": path}
+            )
+            app_container["volumeMounts"].append({
+                "name": "secret-key", "mountPath": "/run/secrets/paperless", "readOnly": True
+            })
+            model[1]["spec"]["template"]["spec"]["volumes"].append({
+                "name": "secret-key",
+                "secret": {"secretName": "paperless-secrets", "optional": optional},
+            })
+            with self.subTest(path=path, optional=optional), \
+                    self.assertRaises(paperless.ModelRejected):
+                paperless.verify(rendered(model), NAMESPACE)
+
+    def test_secret_key_source_and_encoding_failures(self) -> None:
+        model = base_model()
+        app(model)["env"].append({
+            "name": "PAPERLESS_SECRET_KEY_FILE",
+            "value": "/run/secrets/paperless/secret-key",
+        })
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        app(model)["env"] = [
+            item for item in app(model)["env"]
+            if item["name"] != "PAPERLESS_SECRET_KEY"
+        ]
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model[3]["data"]["secret-key"] = base64.b64encode(b"\xff" * 40).decode()
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+    def test_url_and_database_tls_error_paths(self) -> None:
+        for value in (
+            "",
+            "https://documents.acme.internal ",
+            "https://replace_with_host",
+            "https://documents.acme.internal:not-a-port",
+        ):
+            model = base_model()
+            env(model, "PAPERLESS_URL")["value"] = value
+            with self.subTest(value=value), self.assertRaises(paperless.ModelRejected):
+                paperless.verify(rendered(model), NAMESPACE)
+
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._database_tls(
+                {"PAPERLESS_DB_OPTIONS_FILE": {"value": "/run/secrets/options"}},
+                {}, {}, {},
+            )
+
+        model = base_model()
+        env(model, "PAPERLESS_DB_OPTIONS")["value"] = (
+            "sslmode=verify-full,sslrootcert=/certs/ca.pem/"
+        )
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        env(model, "PAPERLESS_DB_OPTIONS")["value"] = (
+            "sslmode=verify-full,sslrootcert=/certs"
+        )
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+    def test_broker_rejects_both_direct_and_file_sources(self) -> None:
+        with self.assertRaises(paperless.ModelRejected):
+            paperless._broker(
+                {
+                    "PAPERLESS_REDIS": {"value": "redis://broker:6379"},
+                    "PAPERLESS_REDIS_FILE": {"value": "/run/secrets/redis"},
+                },
+                {}, {}, {},
+            )
+
+    def test_configmap_ca_missing_key_and_binary_data(self) -> None:
+        model = base_model()
+        ca_volume = model[1]["spec"]["template"]["spec"]["volumes"][2]
+        ca_volume.pop("secret")
+        ca_volume["configMap"] = {"name": "postgres-ca"}
+        model.append({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": "postgres-ca", "namespace": NAMESPACE},
+            "data": {"other": "value"},
+        })
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        ca_volume = model[1]["spec"]["template"]["spec"]["volumes"][2]
+        ca_volume.pop("secret")
+        ca_volume["configMap"] = {"name": "postgres-ca"}
+        model.append({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {"name": "postgres-ca", "namespace": NAMESPACE},
+            "binaryData": {"ca.pem": encoded("synthetic-ca-only")},
+        })
+        paperless.verify(rendered(model), NAMESPACE)
+
+    def test_app_container_and_port_shape_errors(self) -> None:
+        model = base_model()
+        pod = model[1]["spec"]["template"]["spec"]
+        pod["containers"].insert(0, {"name": "sidecar", "image": DB_IMAGE})
+        paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model[1]["spec"]["template"]["spec"]["containers"].append(1)
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        duplicate = copy.deepcopy(app(model))
+        model[1]["spec"]["template"]["spec"]["containers"].append(duplicate)
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        app(model)["ports"].append(1)
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        app(model)["ports"].append({"containerPort": 8000, "protocol": "TCP"})
+        paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model[1]["spec"]["template"]["metadata"]["labels"] = {}
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model[2]["spec"] = "not-a-mapping"
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model[2]["spec"]["ports"] = "not-a-list"
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+    def test_secondary_workload_shape_errors(self) -> None:
+        model = base_model()
+        model.append({
+            "apiVersion": "autoscaling/v2", "kind": "HorizontalPodAutoscaler",
+            "metadata": {"name": "other-hpa", "namespace": NAMESPACE},
+            "spec": {"scaleTargetRef": {"kind": "Deployment", "name": "other"}},
+        })
+        paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model.append({
+            "apiVersion": "apps/v1", "kind": "StatefulSet",
+            "metadata": {"name": "other", "namespace": NAMESPACE},
+            "spec": {"template": {"spec": []}},
+        })
+        paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model.append({
+            "apiVersion": "apps/v1", "kind": "StatefulSet",
+            "metadata": {"name": "other", "namespace": NAMESPACE},
+            "spec": {"template": {"spec": {"containers": [1]}}},
+        })
+        paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model.append({
+            "apiVersion": "apps/v1", "kind": "StatefulSet",
+            "metadata": {"name": "other", "namespace": NAMESPACE,
+                         "labels": {"app": "paperless-ngx"}},
+            "spec": {"template": {"spec": {"containers": []}}},
+        })
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+        model = base_model()
+        model.append({
+            "apiVersion": "apps/v1", "kind": "StatefulSet",
+            "metadata": {"name": "other", "namespace": NAMESPACE},
+            "spec": {"template": {"metadata": {"labels": {"k8s-app": "paperless-ngx"}},
+                                  "spec": {"containers": []}}},
+        })
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+
+    def test_verify_rejects_missing_deployment_and_bad_host(self) -> None:
+        model = base_model()
+        model.pop(1)
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        model[1]["apiVersion"] = "apps/v1beta1"
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        app(model)["image"] = "registry.acme.internal/archive/paperless:latest"
+        with self.assertRaises(paperless.ModelRejected):
+            paperless.verify(rendered(model), NAMESPACE)
+        for host in ("", "replace_with_db_host", "example.invalid"):
+            model = base_model()
+            env(model, "PAPERLESS_DBHOST")["value"] = host
+            with self.subTest(host=host), self.assertRaises(paperless.ModelRejected):
+                paperless.verify(rendered(model), NAMESPACE)
+        model = base_model()
+        app(model)["env"].append({
+            "name": "PAPERLESS_ADMIN_PASSWORD",
+            "valueFrom": {"secretKeyRef": {"name": "paperless-secrets", "key": "db-password"}},
+        })
+        paperless.verify(rendered(model), NAMESPACE)
+
+    def test_module_main_guard(self) -> None:
+        stdin = type("Input", (), {"buffer": io.BytesIO(rendered(base_model()))})()
+        with patch.object(sys, "argv", ["verify-paperless-rke2-model.py", NAMESPACE]), \
+                patch.object(sys, "stdin", stdin), patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(raised.exception.code, 0)
 
 
 if __name__ == "__main__":

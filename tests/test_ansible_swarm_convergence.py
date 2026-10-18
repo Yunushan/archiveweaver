@@ -115,6 +115,47 @@ class SwarmConvergenceTests(unittest.TestCase):
         for argument in ("- service", "- ps", "- --no-trunc", "- --filter", "- desired-state=running", "- --format", "{{ '{{json .}}' }}"):
             self.assertIn(argument, tasks_block)
         self.assertIn("archiveweaver_swarm_tasks_converged", tasks_block)
+    def test_guards_reject_malformed_model_spec_and_task_shapes(self) -> None:
+        for model in (
+            None,
+            {"services": []},
+            {"services": {"": {"image": IMAGE, "deploy": {"replicas": 1}}}},
+            {"services": {"app": "not-a-mapping"}},
+            {"services": {"app": {"image": IMAGE, "deploy": "not-a-mapping"}}},
+            {"services": {"bad name!": {"image": IMAGE, "deploy": {"replicas": 1}}}},
+            {"services": {"app": {"image": 7, "deploy": {"replicas": 1}}}},
+        ):
+            with self.subTest(model=model), self.assertRaises(ValueError):
+                swarm_targets(model)
+        self.assertFalse(swarm_service_spec_matches(service_spec(), SERVICE, "registry.example.org/app:latest", 2))
+        self.assertFalse(swarm_service_spec_matches(service_spec(), SERVICE, IMAGE, 0))
+        self.assertFalse(swarm_service_spec_matches(json.dumps([]), SERVICE, IMAGE, 1))
+        self.assertFalse(swarm_service_spec_matches(json.dumps(["not-a-mapping"]), SERVICE, IMAGE, 1))
+        self.assertFalse(swarm_service_spec_matches(json.dumps([{"Spec": "not-a-mapping"}]), SERVICE, IMAGE, 1))
+        self.assertFalse(
+            swarm_service_spec_matches(
+                json.dumps([{"Spec": {"Name": SERVICE, "Mode": {"Replicated": {"Replicas": 2}}, "TaskTemplate": {"ContainerSpec": {"Image": IMAGE}}}, "UpdateStatus": "not-a-mapping"}]),
+                SERVICE,
+                IMAGE,
+                2,
+            )
+        )
+        self.assertFalse(swarm_tasks_converged(7, SERVICE, IMAGE, 1))
+        self.assertFalse(swarm_tasks_converged(json.dumps(task(1)), SERVICE, IMAGE, 0))
+        self.assertFalse(swarm_tasks_converged(json.dumps(task(1)), SERVICE, "registry.example.org/app:latest", 1))
+        self.assertFalse(swarm_tasks_converged(json.dumps(["not-a-mapping"]), SERVICE, IMAGE, 1))
+
+    def test_filter_module_exposes_the_three_reviewed_filters(self) -> None:
+        from archiveweaver_swarm import FilterModule
+
+        self.assertEqual(
+            set(FilterModule().filters()),
+            {
+                "archiveweaver_swarm_targets",
+                "archiveweaver_swarm_service_spec_matches",
+                "archiveweaver_swarm_tasks_converged",
+            },
+        )
 
 
 if __name__ == "__main__":

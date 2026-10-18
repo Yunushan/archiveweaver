@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import io
 import json
+import runpy
 import sys
 import unittest
 from pathlib import Path
@@ -333,6 +334,235 @@ class LiveKubernetesResourceTests(unittest.TestCase):
             with patch.object(sys, "stdin", stream), patch.object(sys, "stderr", io.StringIO()):
                 self.assertEqual(inventory.main(["verify-live-kubernetes-resources.py", NAMESPACE]),
                                  expected_exit)
+
+    def test_workload_verifier_unavailable_when_spec_is_missing(self) -> None:
+        spec = importlib.util.spec_from_file_location("verify_live_kubernetes_resources_noloader", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        with patch("importlib.util.spec_from_file_location", return_value=None):
+            with self.assertRaises(RuntimeError):
+                assert spec is not None and spec.loader is not None
+                spec.loader.exec_module(module)
+
+    def test_rejects_malformed_live_resource_objects(self) -> None:
+        reviewed, observed = base()
+        for resource in (42, {"apiVersion": "v1", "kind": "Secret"}, {"apiVersion": "v1", "kind": "Secret", "metadata": {}}):
+            with self.subTest(resource=resource), self.assertRaises(inventory.InvalidInput):
+                inventory.verify(model(*reviewed), live_list(*observed, resource), NAMESPACE)
+
+    def test_rejects_rendered_namespace_that_is_not_approved(self) -> None:
+        reviewed, observed = base()
+        other_namespace = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "other"}}
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(other_namespace, *reviewed[1:]), live_list(*observed), NAMESPACE)
+
+    def test_translates_workload_verifier_mismatch(self) -> None:
+        reviewed, observed = base()
+        reviewed[-1]["spec"]["template"]["spec"]["image"] = "stray"
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed), NAMESPACE)
+
+    def test_model_rejects_duplicate_rendered_resources(self) -> None:
+        duplicate = resource("v1", "Secret", "shared")
+        with patch.object(inventory.workloads, "_rendered_documents", return_value=[duplicate, copy.deepcopy(duplicate)]), \
+                patch.object(inventory.workloads, "_workload_map", return_value={}):
+            with self.assertRaises(inventory.InvalidInput):
+                inventory._model("ignored", NAMESPACE)
+
+    def test_rejects_rendered_unsupported_namespaced_resource(self) -> None:
+        reviewed, observed = base()
+        endpoints = resource("v1", "Endpoints", "rogue")
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed, endpoints), live_list(*observed), NAMESPACE)
+
+    def test_rejects_malformed_live_list_and_unsupported_live_resource(self) -> None:
+        reviewed, observed = base()
+        with self.assertRaises(inventory.InvalidInput):
+            inventory.verify(model(*reviewed), "not-a-list", NAMESPACE)
+        endpoints = resource("v1", "Endpoints", "rogue")
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, endpoints), NAMESPACE)
+
+    def test_rejects_observed_workload_image_anomalies(self) -> None:
+        reviewed, observed = base()
+        with_extra_image = copy.deepcopy(observed)
+        with_extra_image[-1]["spec"]["template"]["spec"]["image"] = "stray"
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*with_extra_image), NAMESPACE)
+        without_containers = copy.deepcopy(observed)
+        without_containers[-1]["spec"]["template"]["spec"] = {}
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*without_containers), NAMESPACE)
+
+    def test_rejects_replica_set_ownership_anomalies(self) -> None:
+        reviewed, observed = base()
+        cases = []
+        missing_uid = generated_replica_set(observed[-1])
+        missing_uid["metadata"].pop("uid")
+        cases.append(missing_uid)
+        wrong_owner_kind = generated_replica_set(observed[-1])
+        wrong_owner_kind["metadata"]["ownerReferences"][0]["kind"] = "DaemonSet"
+        cases.append(wrong_owner_kind)
+        missing_parent = generated_replica_set(observed[-1])
+        missing_parent["metadata"]["ownerReferences"][0]["name"] = "missing"
+        cases.append(missing_parent)
+        for replica_set in cases:
+            with self.subTest(replica_set=replica_set), self.assertRaises(inventory.InventoryMismatch):
+                inventory.verify(model(*reviewed), live_list(*observed, replica_set), NAMESPACE)
+
+    def test_rejects_replica_set_template_anomalies(self) -> None:
+        reviewed, observed = base()
+        cases = []
+        bad_template = generated_replica_set(observed[-1])
+        bad_template["spec"]["template"] = "not-an-object"
+        cases.append(bad_template)
+        bad_metadata = generated_replica_set(observed[-1])
+        bad_metadata["spec"]["template"] = {"metadata": []}
+        cases.append(bad_metadata)
+        bad_labels = generated_replica_set(observed[-1])
+        bad_labels["spec"]["template"] = {"metadata": {"labels": []}}
+        cases.append(bad_labels)
+        no_hash = generated_replica_set(observed[-1])
+        no_hash["spec"]["template"]["metadata"]["labels"].pop("pod-template-hash")
+        cases.append(no_hash)
+        name_mismatch = generated_replica_set(observed[-1])
+        name_mismatch["spec"]["template"]["metadata"]["labels"]["pod-template-hash"] = "zzzzz"
+        cases.append(name_mismatch)
+        parent_labels_mismatch = generated_replica_set(observed[-1])
+        parent_labels_mismatch["metadata"]["labels"]["pod-template-hash"] = "zzzzz"
+        cases.append(parent_labels_mismatch)
+        for replica_set in cases:
+            with self.subTest(replica_set=replica_set), self.assertRaises(inventory.InventoryMismatch):
+                inventory.verify(model(*reviewed), live_list(*observed, replica_set), NAMESPACE)
+
+    def test_rejects_replica_set_and_pod_name_mismatch(self) -> None:
+        reviewed, observed = base()
+        replica_set = generated_replica_set(observed[-1])
+        replica_set["metadata"]["name"] = "other-abcde"
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, replica_set), NAMESPACE)
+        replica_set = generated_replica_set(observed[-1])
+        pod = generated_pod(replica_set)
+        pod["metadata"]["name"] = "rogue"
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, replica_set, pod), NAMESPACE)
+
+    def test_reviewed_pods_isolated_guards(self) -> None:
+        identity = ("apps/v1", "Deployment", NAMESPACE, "paperless")
+        non_object_spec = {identity: {"spec": {"template": {"spec": "not-an-object"}}}}
+        self.assertFalse(inventory._reviewed_pods_isolated(non_object_spec))
+        cases = []
+        automount_enabled = copy.deepcopy(non_object_spec)
+        automount_enabled[identity] = {"spec": {"template": {"spec": {
+            "serviceAccountName": "paperless", "automountServiceAccountToken": True,
+        }}}}
+        cases.append(automount_enabled)
+        bad_volumes = copy.deepcopy(automount_enabled)
+        bad_volumes[identity]["spec"]["template"]["spec"]["automountServiceAccountToken"] = False
+        bad_volumes[identity]["spec"]["template"]["spec"]["volumes"] = "not-a-list"
+        cases.append(bad_volumes)
+        root_ca_volume = copy.deepcopy(bad_volumes)
+        root_ca_volume[identity]["spec"]["template"]["spec"]["volumes"] = [
+            {"name": "ca", "configMap": {"name": "kube-root-ca.crt"}}
+        ]
+        cases.append(root_ca_volume)
+        for model_state in cases:
+            with self.subTest(model=model_state):
+                self.assertFalse(inventory._reviewed_pods_isolated(model_state))
+
+    def test_pod_matches_template_direct_guards(self) -> None:
+        self.assertFalse(inventory._pod_matches_template({}, {"spec": {"template": "not-an-object"}}))
+        self.assertFalse(inventory._pod_matches_template({}, {"spec": {"template": {"spec": "not-an-object"}}}))
+        self.assertFalse(inventory._pod_matches_template(
+            {"spec": {}}, {"spec": {"template": {"spec": {"initContainers": "not-a-list"}}}}))
+        self.assertFalse(inventory._pod_matches_template(
+            {"spec": {"initContainers": [{"name": "a"}, {"name": "b"}]}},
+            {"spec": {"template": {"spec": {"initContainers": [{"name": "a"}]}}}}))
+        self.assertFalse(inventory._pod_matches_template(
+            {"spec": {"initContainers": [1]}},
+            {"spec": {"template": {"spec": {"initContainers": [1]}}}}))
+
+    def test_rejects_generated_pod_default_and_placement_anomalies(self) -> None:
+        reviewed, observed = base()
+        replica_set = generated_replica_set(observed[-1])
+        cases = []
+        empty_node = generated_pod(replica_set)
+        empty_node["spec"]["nodeName"] = ""
+        cases.append(empty_node)
+        bad_alias = generated_pod(replica_set)
+        bad_alias["spec"]["serviceAccount"] = "other"
+        cases.append(bad_alias)
+        custom_toleration = generated_pod(replica_set)
+        custom_toleration["spec"]["tolerations"] = [{"key": "custom"}]
+        cases.append(custom_toleration)
+        for pod in cases:
+            with self.subTest(pod=pod), self.assertRaises(inventory.InventoryMismatch):
+                inventory.verify(model(*reviewed), live_list(*observed, replica_set, pod), NAMESPACE)
+
+    def test_rejects_system_exception_owner_and_label_mutations(self) -> None:
+        reviewed, observed = base()
+        owned = resource("v1", "ServiceAccount", "default")
+        owned["metadata"]["ownerReferences"] = [{"kind": "Role"}]
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, owned), NAMESPACE)
+        mislabeled = resource("v1", "ServiceAccount", "default")
+        mislabeled["metadata"]["labels"] = {"attacker.example/role": "trusted"}
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, mislabeled), NAMESPACE)
+
+    def test_rejects_unreviewed_cronjob_child_template_and_missing_owner(self) -> None:
+        reviewed, observed = base()
+        cronjob, job, _ = cronjob_chain()
+        reviewed.append(copy.deepcopy(cronjob))
+        observed.append(cronjob)
+        drifted = copy.deepcopy(job)
+        drifted["spec"]["template"]["spec"]["containers"][0]["command"] = ["unexpected"]
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, drifted), NAMESPACE)
+        orphan_job = copy.deepcopy(job)
+        orphan_job["metadata"]["ownerReferences"][0]["name"] = "unreviewed"
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed, orphan_job), NAMESPACE)
+
+    def test_rejects_job_without_reviewed_cronjob_parent(self) -> None:
+        reviewed, observed = base()
+        cronjob, job, _ = cronjob_chain()
+        observed.append(cronjob)
+        observed.append(job)
+        with self.assertRaises(inventory.InventoryMismatch):
+            inventory.verify(model(*reviewed), live_list(*observed), NAMESPACE)
+
+    def test_verify_rejects_invalid_namespace(self) -> None:
+        with self.assertRaises(inventory.InvalidInput):
+            inventory.verify("x", {}, "Bad_Namespace")
+
+    def test_cli_usage_and_input_guards(self) -> None:
+        with patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(inventory.main(["verify-live-kubernetes-resources.py"]), 2)
+        empty = type("Input", (), {"buffer": io.BytesIO(b"")})()
+        with patch.object(sys, "stdin", empty), patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(inventory.main(["verify-live-kubernetes-resources.py", NAMESPACE]), 2)
+        oversized = type("Input", (), {"buffer": io.BytesIO(b"x" * 16)})()
+        with patch.object(inventory, "MAX_INPUT_BYTES", 4), patch.object(sys, "stdin", oversized), \
+                patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(inventory.main(["verify-live-kubernetes-resources.py", NAMESPACE]), 2)
+
+    def test_cli_envelope_shape_and_rendered_type(self) -> None:
+        def run(raw: bytes) -> int:
+            stream = type("Input", (), {"buffer": io.BytesIO(raw)})()
+            with patch.object(sys, "stdin", stream), patch.object(sys, "stderr", io.StringIO()):
+                return inventory.main(["verify-live-kubernetes-resources.py", NAMESPACE])
+
+        self.assertEqual(run(json.dumps({"only": 1}).encode()), 2)
+        self.assertEqual(run(json.dumps({"rendered_yaml": 5, "live_json": {}}).encode()), 2)
+
+    def test_main_guard_runs_and_exits(self) -> None:
+        stream = type("Input", (), {"buffer": io.BytesIO(b"")})()
+        with patch.object(sys, "argv", ["verify-live-kubernetes-resources.py"]), \
+                patch.object(sys, "stdin", stream), patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

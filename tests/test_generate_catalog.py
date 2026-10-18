@@ -100,7 +100,7 @@ class CatalogHelperTests(unittest.TestCase):
 
 
 class CatalogMainTests(unittest.TestCase):
-    def _sandbox(self, source_repos: list[str], **solution_kwargs) -> tuple[Path, "tempfile.TemporaryDirectory"]:
+    def _sandbox(self, source_repos: list[str], **solution_kwargs) -> tuple[Path, tempfile.TemporaryDirectory]:
         directory = tempfile.TemporaryDirectory()
         root = Path(directory.name)
         data = fixture_catalog(source_repos, **solution_kwargs)

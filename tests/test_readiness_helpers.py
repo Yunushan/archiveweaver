@@ -1024,15 +1024,14 @@ class ReadinessHelperTests(unittest.TestCase):
 
                 with mock.patch.dict(
                     "os.environ", {"ARCHIVEWEAVER_COSIGN_SHA256": "0" * 64}
-                ):
-                    with mock.patch("archiveweaver.readiness.subprocess.run") as process:
-                        self.assertFalse(
-                            _verify_sigstore_bundle(
-                                bundle.name, b"hosted controls", identity,
-                                "https://token.actions.githubusercontent.com", root, context
-                            )
+                ), mock.patch("archiveweaver.readiness.subprocess.run") as process:
+                    self.assertFalse(
+                        _verify_sigstore_bundle(
+                            bundle.name, b"hosted controls", identity,
+                            "https://token.actions.githubusercontent.com", root, context
                         )
-                        process.assert_not_called()
+                    )
+                    process.assert_not_called()
 
     def test_release_provenance_requires_exact_signed_dsse_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

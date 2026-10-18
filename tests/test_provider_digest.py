@@ -86,9 +86,8 @@ class ProviderDigestTests(unittest.TestCase):
             with patch(
                 "archiveweaver.provider_digest._measure_regular_file",
                 side_effect=mutate_after_network,
-            ):
-                with self.assertRaisesRegex(OSError, "Quadlet directory changed"):
-                    digest_quadlet(root, "paperless-ngx")
+            ), self.assertRaisesRegex(OSError, "Quadlet directory changed"):
+                digest_quadlet(root, "paperless-ngx")
 
     def test_provider_digest_rejects_symlinked_directory_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -189,9 +188,8 @@ class ProviderDigestTests(unittest.TestCase):
             with patch(
                 "archiveweaver.provider_digest._measure_regular_file",
                 side_effect=mutate_after_first,
-            ):
-                with self.assertRaisesRegex(OSError, "tree changed"):
-                    digest_tree(root)
+            ), self.assertRaisesRegex(OSError, "tree changed"):
+                digest_tree(root)
 
     def test_provider_digest_rejects_hard_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

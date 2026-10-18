@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import runpy
+import stat
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
-from typing import Any, Sequence
-from unittest.mock import patch
+from typing import Any
+from collections.abc import Sequence
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +38,7 @@ class FakeGitHub:
         self.settings_results = [True]
         self.settings_calls = 0
         self.publish_as_immutable = True
+        self.edit_keeps_draft = False
 
     @staticmethod
     def release_payload(
@@ -107,12 +114,15 @@ class FakeGitHub:
                     ),
                 )
             if endpoint == f"repos/{REPOSITORY}/immutable-releases":
-                if not self._settings_enabled():
+                result = self._settings_enabled()
+                if result is False:
                     return self._completed(
                         argv,
                         returncode=1,
                         stderr="gh: Not Found (HTTP 404)",
                     )
+                if isinstance(result, dict):
+                    return self._completed(argv, stdout=json.dumps(result))
                 return self._completed(
                     argv,
                     stdout=json.dumps(
@@ -148,8 +158,9 @@ class FakeGitHub:
         if argv[:3] == ["gh", "release", "edit"]:
             if self.release is None:
                 return self._completed(argv, returncode=1, stderr="missing release")
-            self.release["draft"] = False
-            self.release["immutable"] = self.publish_as_immutable
+            if not self.edit_keeps_draft:
+                self.release["draft"] = False
+                self.release["immutable"] = self.publish_as_immutable
             return self._completed(argv)
         return self._completed(argv, returncode=1, stderr="unexpected fake command")
 
@@ -227,11 +238,10 @@ class ReleasePublisherTests(unittest.TestCase):
             self.publisher["subprocess"],
             "run",
             side_effect=subprocess.TimeoutExpired(["gh", "api"], 60),
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "timed out"
         ):
-            with self.assertRaisesRegex(
-                self.publisher["ReleasePublicationError"], "timed out"
-            ):
-                self.publisher["_run_gh"](("api", "repos/example/archiveweaver"))
+            self.publisher["_run_gh"](("api", "repos/example/archiveweaver"))
 
     def test_github_api_json_rejects_duplicate_keys_and_non_finite_numbers(self) -> None:
         for payload in (
@@ -250,12 +260,11 @@ class ReleasePublisherTests(unittest.TestCase):
                     payload,
                     "",
                 ),
+            ), self.assertRaisesRegex(
+                self.publisher["ReleasePublicationError"],
+                "malformed or ambiguous JSON",
             ):
-                with self.assertRaisesRegex(
-                    self.publisher["ReleasePublicationError"],
-                    "malformed or ambiguous JSON",
-                ):
-                    self.publisher["_api_object"]("repos/example/archiveweaver")
+                self.publisher["_api_object"]("repos/example/archiveweaver")
 
     def test_github_api_json_rejects_oversized_responses(self) -> None:
         with patch.dict(
@@ -269,11 +278,10 @@ class ReleasePublisherTests(unittest.TestCase):
                 "{}",
                 "",
             ),
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "oversized JSON"
         ):
-            with self.assertRaisesRegex(
-                self.publisher["ReleasePublicationError"], "oversized JSON"
-            ):
-                self.publisher["_api_object"]("repos/example/archiveweaver")
+            self.publisher["_api_object"]("repos/example/archiveweaver")
 
     def test_exact_existing_immutable_release_is_read_only(self) -> None:
         fake = FakeGitHub()
@@ -579,6 +587,410 @@ class ReleasePublisherTests(unittest.TestCase):
                 self.publish(FakeGitHub(), assets=[self.checksums.as_posix()])
         finally:
             publisher_globals.update(limits)
+
+
+    def publish_with_api(
+        self,
+        api: Any,
+        *,
+        run: Any = None,
+        repository: str = REPOSITORY,
+        tag: str = TAG,
+        source_revision: str = SOURCE_REVISION,
+        asset_paths: Sequence[str] | None = None,
+        settings_token: str | None = "settings-token",
+    ) -> str:
+        publish = self.publisher["publish_release"]
+        runner = run or (lambda *args, **kwargs: "")
+        with patch.dict(
+            publish.__globals__, {"_api_object": api, "_run_gh": runner}
+        ):
+            return publish(
+                repository=repository,
+                tag=tag,
+                source_revision=source_revision,
+                asset_paths=list(asset_paths or self.asset_paths),
+                settings_token=settings_token,
+            )
+
+    @staticmethod
+    def api_tag_objects() -> Any:
+        def api(endpoint: str, *, allow_not_found: bool = False, token: Any = None) -> Any:
+            if "/git/ref/tags/" in endpoint:
+                return {"object": {"type": "tag", "sha": TAG_OBJECT_SHA}}
+            if "/git/tags/" in endpoint:
+                return {
+                    "tag": TAG,
+                    "verification": {"verified": True},
+                    "object": {"type": "commit", "sha": SOURCE_REVISION},
+                }
+            raise AssertionError(endpoint)
+
+        return api
+
+    def test_json_nesting_rejects_escapes_and_accepts_trailing_closing(self) -> None:
+        reject = self.publisher["_reject_excessive_json_nesting"]
+        reject(r'{"a": "x\\y"}')
+        reject("]")
+
+    def test_run_gh_reports_missing_cli(self) -> None:
+        with patch.object(
+            self.publisher["subprocess"], "run", side_effect=OSError("no gh")
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"],
+            "cannot execute the GitHub CLI",
+        ):
+            self.publisher["_run_gh"](("api", "repos/example/archiveweaver"))
+
+    def test_api_object_rejects_non_object_and_bounds_numbers(self) -> None:
+        api = self.publisher["_api_object"]
+
+        def with_payload(payload: str) -> Any:
+            return patch.object(
+                self.publisher["subprocess"],
+                "run",
+                return_value=subprocess.CompletedProcess(["gh", "api"], 0, payload, ""),
+            )
+
+        with with_payload("[]"), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "non-object API response"
+        ):
+            api("repos/example/archiveweaver")
+        with with_payload('{"value": 1.5}'):
+            self.assertEqual(api("repos/example/archiveweaver"), {"value": 1.5})
+        with with_payload('{"value": 1.' + "0" * 4300 + "}"):
+            with self.assertRaisesRegex(
+                self.publisher["ReleasePublicationError"],
+                "malformed or ambiguous JSON",
+            ):
+                api("repos/example/archiveweaver")
+
+    def test_immutable_settings_malformed_shape_blocks_creation(self) -> None:
+        tag_api = self.api_tag_objects()
+
+        def api(endpoint: str, *, allow_not_found: bool = False, token: Any = None) -> Any:
+            if endpoint.endswith("/immutable-releases"):
+                return {"enabled": True, "enforced_by_owner": "yes"}
+            if "/releases/tags/" in endpoint:
+                return None
+            return tag_api(endpoint, allow_not_found=allow_not_found, token=token)
+
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"],
+            "malformed or disabled immutable-release settings",
+        ):
+            self.publish_with_api(api)
+
+    def test_signed_tag_verification_rejects_unavailable_and_malformed_objects(self) -> None:
+        validate = self.publisher["_verify_signed_annotated_tag"]
+        error = self.publisher["ReleasePublicationError"]
+
+        def run_with(responses: list[Any]) -> None:
+            iterator = iter(responses)
+
+            def api(endpoint: str, *, allow_not_found: bool = False, token: Any = None) -> Any:
+                return next(iterator)
+
+            with patch.dict(validate.__globals__, {"_api_object": api}):
+                validate(REPOSITORY, TAG, SOURCE_REVISION)
+
+        with self.assertRaisesRegex(error, "reference is unavailable"):
+            run_with([None])
+        with self.assertRaisesRegex(error, "annotated, not lightweight"):
+            run_with([{"object": {"type": "commit", "sha": TAG_OBJECT_SHA}}])
+        with self.assertRaisesRegex(error, "invalid identity"):
+            run_with([{"object": {"type": "tag", "sha": "not-a-sha"}}])
+        with self.assertRaisesRegex(error, "tag object is unavailable"):
+            run_with([{"object": {"type": "tag", "sha": TAG_OBJECT_SHA}}, None])
+
+    def test_symlink_component_inspection_failure_is_reported(self) -> None:
+        with patch.object(
+            self.publisher["Path"], "lstat", side_effect=OSError("nope")
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"],
+            "cannot inspect release asset path",
+        ):
+            self.publisher["_has_symlink_component"](Path("some-asset.whl"))
+
+    def test_hash_asset_open_failure_is_reported(self) -> None:
+        with patch.object(
+            self.publisher["os"], "open", side_effect=OSError("denied")
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "cannot open release asset"
+        ):
+            self.publisher["_hash_asset"](Path("x.whl"))
+
+    def test_hash_asset_requires_a_regular_file(self) -> None:
+        directory = Path("asset-directory")
+        directory.mkdir()
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "not a regular file"
+        ):
+            self.publisher["_hash_asset"](directory)
+
+    def test_hash_asset_rejects_stream_growth_beyond_limit(self) -> None:
+        hash_asset = self.publisher["_hash_asset"]
+        with patch.dict(
+            hash_asset.__globals__, {"MAX_RELEASE_ASSET_BYTES": 100}
+        ), patch.object(
+            self.publisher["os"], "read", side_effect=[b"x" * 200, b""]
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "byte safety limit"
+        ):
+            hash_asset(self.wheel)
+
+    def test_hash_asset_measurement_oserror_is_reported(self) -> None:
+        with patch.object(
+            self.publisher["os"], "fstat", side_effect=OSError("bad fd")
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"],
+            "cannot measure release asset safely",
+        ):
+            self.publisher["_hash_asset"](self.wheel)
+
+    def test_hash_asset_detects_change_during_hashing(self) -> None:
+        before = types.SimpleNamespace(
+            st_dev=1,
+            st_ino=2,
+            st_mode=stat.S_IFREG | 0o644,
+            st_nlink=1,
+            st_size=12,
+            st_mtime_ns=100,
+        )
+        after = types.SimpleNamespace(
+            st_dev=1,
+            st_ino=2,
+            st_mode=stat.S_IFREG | 0o644,
+            st_nlink=1,
+            st_size=20,
+            st_mtime_ns=100,
+        )
+        with patch.object(
+            self.publisher["os"], "read", return_value=b""
+        ), patch.object(
+            self.publisher["os"], "fstat", side_effect=[before, after]
+        ), patch.object(
+            self.publisher["os"], "stat", return_value=after
+        ), self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"],
+            "changed while it was being hashed",
+        ):
+            self.publisher["_hash_asset"](self.wheel)
+
+    def test_local_assets_reject_unsafe_names_and_empty_sets(self) -> None:
+        local_assets = self.publisher["_local_assets"]
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "name is unsafe"
+        ):
+            local_assets(["-bad"])
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "at least one release asset"
+        ):
+            local_assets([])
+
+    def test_release_identity_validation_rejects_bad_states(self) -> None:
+        validate = self.publisher["_validate_release_identity"]
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "identity or state is malformed"
+        ):
+            validate(
+                {
+                    "tag_name": "other",
+                    "name": TAG,
+                    "draft": False,
+                    "prerelease": False,
+                    "immutable": True,
+                    "assets": [],
+                },
+                TAG,
+            )
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "impossible immutable state"
+        ):
+            validate(
+                {
+                    "tag_name": TAG,
+                    "name": TAG,
+                    "draft": True,
+                    "prerelease": False,
+                    "immutable": True,
+                    "assets": [],
+                },
+                TAG,
+            )
+
+    def test_remote_assets_reject_malformed_and_unsafe_records(self) -> None:
+        remote_assets = self.publisher["_remote_assets"]
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "malformed asset record"
+        ):
+            remote_assets({"assets": [1]})
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "unsafe or duplicate asset name"
+        ):
+            remote_assets({"assets": [{"name": "has space"}]})
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "unsafe or duplicate asset name"
+        ):
+            remote_assets({"assets": [{"name": "same"}, {"name": "same"}]})
+
+    def test_publish_release_rejects_invalid_arguments(self) -> None:
+        publish = self.publisher["publish_release"]
+        error = self.publisher["ReleasePublicationError"]
+        with self.assertRaisesRegex(error, "owner/name slug"):
+            publish(
+                repository="not-a-slug",
+                tag=TAG,
+                source_revision=SOURCE_REVISION,
+                asset_paths=self.asset_paths,
+            )
+        with self.assertRaisesRegex(error, "canonical v-prefixed"):
+            publish(
+                repository=REPOSITORY,
+                tag="1.2.3",
+                source_revision=SOURCE_REVISION,
+                asset_paths=self.asset_paths,
+            )
+        with self.assertRaisesRegex(error, "full lowercase"):
+            publish(
+                repository=REPOSITORY,
+                tag=TAG,
+                source_revision="NOT-A-SHA",
+                asset_paths=self.asset_paths,
+            )
+
+    def test_created_release_that_cannot_be_read_back_fails(self) -> None:
+        tag_api = self.api_tag_objects()
+
+        def api(endpoint: str, *, allow_not_found: bool = False, token: Any = None) -> Any:
+            if endpoint.endswith("/immutable-releases"):
+                return {"enabled": True, "enforced_by_owner": False}
+            if "/releases/tags/" in endpoint:
+                return None
+            return tag_api(endpoint, allow_not_found=allow_not_found, token=token)
+
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "could not be read back"
+        ):
+            self.publish_with_api(api)
+
+    def test_release_state_change_before_verification_fails(self) -> None:
+        tag_api = self.api_tag_objects()
+        release_reads = {"count": 0}
+
+        def api(endpoint: str, *, allow_not_found: bool = False, token: Any = None) -> Any:
+            if endpoint.endswith("/immutable-releases"):
+                return {"enabled": True, "enforced_by_owner": False}
+            if "/releases/tags/" in endpoint:
+                release_reads["count"] += 1
+                if release_reads["count"] == 1:
+                    return None
+                if release_reads["count"] == 2:
+                    return FakeGitHub.release_payload(
+                        draft=True, immutable=False, assets=[]
+                    )
+                return FakeGitHub.release_payload(
+                    draft=False, immutable=True, assets=[]
+                )
+            return tag_api(endpoint, allow_not_found=allow_not_found, token=token)
+
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"],
+            "changed state before verification",
+        ):
+            self.publish_with_api(api)
+
+    def test_release_that_remains_draft_after_edit_fails(self) -> None:
+        fake = FakeGitHub()
+        fake.edit_keeps_draft = True
+        with self.assertRaisesRegex(
+            self.publisher["ReleasePublicationError"], "did not become published"
+        ):
+            self.publish(fake)
+
+    def test_parser_reads_environment_defaults(self) -> None:
+        parser = self.publisher["_parser"]
+        with patch.dict(
+            os.environ,
+            {
+                "GITHUB_REPOSITORY": REPOSITORY,
+                "GITHUB_REF_NAME": TAG,
+                "GITHUB_SHA": SOURCE_REVISION,
+            },
+        ):
+            args = parser().parse_args(["a.whl"])
+        self.assertEqual(
+            (args.repository, args.tag, args.source_revision, args.assets),
+            (REPOSITORY, TAG, SOURCE_REVISION, ["a.whl"]),
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            args = parser().parse_args(["b.whl"])
+        self.assertIsNone(args.repository)
+
+    def test_main_requires_token_and_reports_failures(self) -> None:
+        main = self.publisher["main"]
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                main(
+                    [
+                        "--repository",
+                        REPOSITORY,
+                        "--tag",
+                        TAG,
+                        "--source-revision",
+                        SOURCE_REVISION,
+                        "asset.whl",
+                    ]
+                ),
+                1,
+            )
+        error = self.publisher["ReleasePublicationError"]("boom")
+        with patch.dict(os.environ, {"GH_TOKEN": "token"}), patch.dict(
+            main.__globals__, {"publish_release": Mock(side_effect=error)}
+        ), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                main(
+                    [
+                        "--tag",
+                        TAG,
+                        "--source-revision",
+                        SOURCE_REVISION,
+                        "asset.whl",
+                    ]
+                ),
+                1,
+            )
+
+    def test_main_reports_success(self) -> None:
+        main = self.publisher["main"]
+        fake = Mock(return_value="published ok")
+        output = io.StringIO()
+        with patch.dict(os.environ, {"GH_TOKEN": "token"}), patch.dict(
+            main.__globals__, {"publish_release": fake}
+        ), contextlib.redirect_stdout(output):
+            self.assertEqual(
+                main(
+                    [
+                        "--repository",
+                        REPOSITORY,
+                        "--tag",
+                        TAG,
+                        "--source-revision",
+                        SOURCE_REVISION,
+                        "asset.whl",
+                    ]
+                ),
+                0,
+            )
+        self.assertIn("published ok", output.getvalue())
+        self.assertEqual(fake.call_args.kwargs["repository"], REPOSITORY)
+
+    def test_main_guard_runs_and_exits_without_token(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            sys, "argv", [str(SCRIPT), "asset.whl"]
+        ), self.assertRaises(SystemExit) as context:
+            runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(context.exception.code, 1)
 
 
 if __name__ == "__main__":

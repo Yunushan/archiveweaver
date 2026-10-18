@@ -197,9 +197,7 @@ def _check_closure(files: dict[str, bytes], file_modes: dict[str, str]) -> None:
                 if not isinstance(entries, list):
                     raise InvalidBundle(f"{key} must be a list")
                 for entry in entries:
-                    if key == "patchesStrategicMerge" and isinstance(entry, str):
-                        file_ref(directory, entry, key)
-                    elif isinstance(entry, dict):
+                    if isinstance(entry, dict):
                         if "path" in entry:
                             file_ref(directory, entry["path"], key)
                         elif key != "replacements" and "patch" not in entry:
@@ -315,7 +313,7 @@ def verify(envelope: Any, expected_digest: str) -> None:
         if not isinstance(entry, dict):
             raise InvalidBundle("Kustomize tree has a malformed entry")
         path = _entry_path(root, entry.get("path"))
-        if path in all_paths or path not in files and path not in dir_paths:
+        if path in all_paths or (path not in files and path not in dir_paths):
             raise InvalidBundle("Kustomize tree contains a duplicate or special entry")
         if path in files and entry.get("isreg") is not True:
             raise InvalidBundle("Kustomize tree file became a non-file")
