@@ -228,7 +228,7 @@ SOURCE_ENVIRONMENT = [
     "ARCHIVEWEAVER_IMMUTABLE_REF",
     "ARCHIVEWEAVER_TRUSTED_SIGNER_FINGERPRINTS",
 ]
-OPERATIONAL_ENVIRONMENT = SOURCE_ENVIRONMENT + ["ARCHIVEWEAVER_READINESS_MANIFEST_SHA256"]
+OPERATIONAL_ENVIRONMENT = [*SOURCE_ENVIRONMENT, "ARCHIVEWEAVER_READINESS_MANIFEST_SHA256"]
 WORKFLOW_BINDING_KEYS = {
     "production-bootstrap-apply": "production_bootstrap_apply",
     "production-apply": "production_apply",
@@ -1274,7 +1274,7 @@ def main() -> int:
         # that the custom loader preserves SafeLoader's non-object semantics.
         contract = yaml.load(  # nosec B506
             CONTRACT_PATH.read_text(encoding="utf-8"),
-            Loader=UniqueKeyLoader,
+            Loader=UniqueKeyLoader,  # noqa: S506
         )
     except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
         print(f"controller contract invalid: {exc}", file=sys.stderr)

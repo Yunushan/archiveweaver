@@ -25,7 +25,7 @@ import posixpath
 import re
 import sys
 from collections.abc import Hashable
-from typing import Any
+from typing import Any, Literal, overload
 from urllib.parse import urlsplit
 
 try:
@@ -211,6 +211,26 @@ def _env(container: dict[str, Any]) -> dict[str, dict[str, Any]]:
         ):
             raise ModelRejected("Paperless reviewed setting has an unchecked file override")
     return result
+
+
+@overload
+def _static_value(
+    environment: dict[str, dict[str, Any]],
+    name: str,
+    objects: dict[tuple[str, str], dict[str, Any]],
+    *,
+    required: Literal[True] = True,
+) -> str: ...
+
+
+@overload
+def _static_value(
+    environment: dict[str, dict[str, Any]],
+    name: str,
+    objects: dict[tuple[str, str], dict[str, Any]],
+    *,
+    required: Literal[False],
+) -> str | None: ...
 
 
 def _static_value(
@@ -453,12 +473,13 @@ def _broker(
 ) -> None:
     direct = environment.get("PAPERLESS_REDIS")
     file = environment.get("PAPERLESS_REDIS_FILE")
-    if (direct is None) == (file is None):
-        raise ModelRejected("Paperless must have exactly one explicit broker URL source")
     if file is not None:
+        if direct is not None:
+            raise ModelRejected("Paperless must have exactly one explicit broker URL source")
         _secret_file(environment, "PAPERLESS_REDIS_FILE", container, pod_spec, objects)
         return
-    assert direct is not None
+    if direct is None:
+        raise ModelRejected("Paperless must have exactly one explicit broker URL source")
     _secret_reference(direct, "PAPERLESS_REDIS")
 
 
@@ -485,7 +506,6 @@ def _database_tls(
     if "PAPERLESS_DB_OPTIONS_FILE" in environment:
         raise ModelRejected("Paperless database TLS options must have a reviewable value")
     value = _static_value(environment, "PAPERLESS_DB_OPTIONS", objects)
-    assert value is not None
     options: dict[str, str] = {}
     for option in value.split(","):
         key, separator, option_value = option.partition("=")
@@ -505,11 +525,12 @@ def _database_tls(
         raise ModelRejected("PostgreSQL root CA must be a file below its mount directory")
     secret = volume.get("secret")
     config = volume.get("configMap")
-    if (isinstance(secret, dict)) == (isinstance(config, dict)):
+    if isinstance(secret, dict) and not isinstance(config, dict):
+        source, source_name = secret, secret.get("secretName")
+    elif isinstance(config, dict) and secret is None:
+        source, source_name = config, config.get("name")
+    else:
         raise ModelRejected("PostgreSQL root CA must come from one Secret or ConfigMap")
-    source = secret if isinstance(secret, dict) else config
-    assert isinstance(source, dict)
-    source_name = source.get("secretName") if secret is not None else source.get("name")
     if (
         not isinstance(source_name, str) or not source_name
         or source.get("optional", False) is not False
@@ -527,9 +548,9 @@ def _database_tls(
             not isinstance(config_map, dict) or config_map.get("apiVersion") != "v1"
             or not isinstance(data, dict) or not isinstance(binary_data, dict)
             or (key not in data and key not in binary_data)
-            or key in data and key in binary_data
-            or key in data and (not isinstance(data[key], str) or not data[key])
-            or key in binary_data and (not isinstance(binary_data[key], str) or not binary_data[key])
+            or (key in data and key in binary_data)
+            or (key in data and (not isinstance(data[key], str) or not data[key]))
+            or (key in binary_data and (not isinstance(binary_data[key], str) or not binary_data[key]))
         ):
             raise ModelRejected("PostgreSQL root CA is absent from the rendered ConfigMap")
         if key in binary_data:
@@ -702,7 +723,6 @@ def verify(raw: bytes, namespace: str) -> None:
     _database_tls(environment, objects, app, pod_spec)
     _broker(environment, app, pod_spec, objects)
     public_url = _static_value(environment, "PAPERLESS_URL", objects)
-    assert public_url is not None
     _url(public_url, "https", "PAPERLESS_URL", origin_only=True)
     if "PAPERLESS_ADMIN_PASSWORD" in environment:
         _secret_reference(environment["PAPERLESS_ADMIN_PASSWORD"], "PAPERLESS_ADMIN_PASSWORD")

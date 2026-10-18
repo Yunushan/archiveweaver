@@ -240,9 +240,8 @@ def _job_template_metadata(value: Any, *, job_name: str | None = None, job_uid: 
     labels = dict(labels)
     if job_name is not None and job_uid is not None:
         for label, field in GENERATED_JOB_LABELS.items():
-            if label in labels:
-                if labels.pop(label) != (job_uid if field == "uid" else job_name):
-                    raise WorkloadMismatch("CronJob child has mismatched Job controller labels")
+            if label in labels and labels.pop(label) != (job_uid if field == "uid" else job_name):
+                raise WorkloadMismatch("CronJob child has mismatched Job controller labels")
         if not any(label in value.get("labels", {}) for label in (
             "batch.kubernetes.io/controller-uid", "controller-uid"
         )) or not any(label in value.get("labels", {}) for label in (

@@ -207,7 +207,7 @@ def check_url(url: str, timeout: int = 8) -> dict[str, Any]:
         return _result("http", "fail", "URL could not be parsed", {"url": reported_url, "error": type(exc).__name__})
     try:
         hostname = parsed.hostname
-        parsed.port
+        _ = parsed.port
     except ValueError as exc:
         return _result("http", "fail", "URL host or port could not be parsed", {"url": reported_url, "error": type(exc).__name__})
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
@@ -269,7 +269,7 @@ def check_url(url: str, timeout: int = 8) -> dict[str, Any]:
 def _runtime_commands(mode: str) -> list[str]:
     if mode == "raw":
         return ["systemctl"]
-    if mode == "docker" or mode == "docker-swarm":
+    if mode in {"docker", "docker-swarm"}:
         return ["docker"]
     if mode == "podman-quadlet":
         return ["podman", "systemctl"]

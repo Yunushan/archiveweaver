@@ -83,24 +83,23 @@ def normalize_sdist(path: Path, epoch: int) -> str:
                 compresslevel=9,
                 fileobj=raw_output,
                 mtime=epoch,
-            ) as compressed:
-                with tarfile.open(
-                    fileobj=compressed,
-                    mode="w",
-                    format=tarfile.PAX_FORMAT,
-                ) as normalized:
-                    for member, payload in sorted(entries, key=lambda item: item[0].name):
-                        canonical = copy.copy(member)
-                        canonical.uid = 0
-                        canonical.gid = 0
-                        canonical.uname = ""
-                        canonical.gname = ""
-                        canonical.mtime = epoch
-                        canonical.pax_headers = {}
-                        normalized.addfile(
-                            canonical,
-                            io.BytesIO(payload) if payload is not None else None,
-                        )
+            ) as compressed, tarfile.open(
+                fileobj=compressed,
+                mode="w",
+                format=tarfile.PAX_FORMAT,
+            ) as normalized:
+                for member, payload in sorted(entries, key=lambda item: item[0].name):
+                    canonical = copy.copy(member)
+                    canonical.uid = 0
+                    canonical.gid = 0
+                    canonical.uname = ""
+                    canonical.gname = ""
+                    canonical.mtime = epoch
+                    canonical.pax_headers = {}
+                    normalized.addfile(
+                        canonical,
+                        io.BytesIO(payload) if payload is not None else None,
+                    )
             raw_output.flush()
             os.fsync(raw_output.fileno())
         os.chmod(temporary_path, original_mode)

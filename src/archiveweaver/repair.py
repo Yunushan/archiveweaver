@@ -502,7 +502,6 @@ def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, An
                 break
         try:
             run_options: dict[str, Any] = {
-                "check": False,
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
                 "timeout": item["timeout_seconds"],
@@ -511,7 +510,7 @@ def apply_repair(plan: dict[str, Any], *, dry_run: bool = False) -> dict[str, An
                 environment = os.environ.copy()
                 environment.update({str(key): str(value) for key, value in item["environment"].items()})
                 run_options["env"] = environment
-            completed = subprocess.run(command, **run_options)
+            completed = subprocess.run(command, check=False, **run_options)
             results.append({
                 "name": item["name"],
                 "status": "pass" if completed.returncode == 0 else "fail",

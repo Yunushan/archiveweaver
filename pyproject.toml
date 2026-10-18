@@ -46,15 +46,53 @@ where = ["src"]
 [tool.setuptools.package-data]
 archiveweaver = ["data/*.json"]
 
-[tool.pytest.ini_options]
-addopts = "-q"
-testpaths = ["tests"]
-
 [tool.ruff]
 target-version = "py39"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+# Families added incrementally (plan D4). The PLR complexity and magic-value families are enabled; production
+# exceptions are listed per file below with the reason for each.
+select = ["E4", "E7", "E9", "F", "B", "UP", "RUF", "SIM102", "SIM103", "SIM105", "SIM117", "PLW1510", "PLR1714", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917", "PLR2004", "S101", "S105", "S107", "S310", "S506", "S603"]
+
+[tool.ruff.lint.per-file-ignores]
+# Unit tests use assert, fixtures use credential-named literals and fixture-sized numbers, long end-to-end scenarios exceed statement limits, subprocess tests invoke the repo's own scripts, and nested with-blocks interleave setup with patches.
+"tests/**" = ["S101", "S105", "S107", "S603", "SIM117", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004"]
+# Intentional unsafe-loader test: asserts that UniqueKeyLoader rejects duplicate keys.
+"tests/test_controller_contract.py" = ["S506"]
+# Intentional fullwidth-digit inputs: asserts that non-ASCII digit lookalikes are rejected.
+"tests/test_ansible_sbom.py" = ["RUF001"]
+# Health and upstream URLs are fixed http(s) endpoints; the scheme is validated before opening.
+"src/archiveweaver/checks.py" = ["S310", "S603", "PLR0913", "PLR0917", "PLR2004", "PLR0911"]
+# GitHub API base is a fixed https constant and repository slugs are validated before use.
+"scripts/validate-upstream-repositories.py" = ["S310", "PLR0913", "PLR0917", "PLR2004", "PLR0912", "PLR0915"]
+# Subprocess calls pass argv lists (no shell) to fixed or operator-bound executables.
+"src/archiveweaver/readiness.py" = ["S603", "PLR0912", "PLR0911", "PLR2004", "PLR0913", "PLR0917", "PLR0915"]
+"src/archiveweaver/repair.py" = ["S603", "PLR0912", "PLR2004", "PLR0913", "PLR0915"]
+"scripts/audit-github-production-controls.py" = ["S603", "PLR2004", "PLR0911"]
+"scripts/compile-ansible-lock.py" = ["S603"]
+"scripts/compile-release-tools-lock.py" = ["S603"]
+"scripts/install-local-artifact.py" = ["S603"]
+"scripts/publish-github-release.py" = ["S603"]
+# Credential-named identifiers (token, password) in the contract are field names, not literal secrets.
+"scripts/validate-controller-contract.py" = ["S105", "PLR0912", "PLR0915"]
+# Remaining per-file PLR exceptions: PLR2004 covers protocol, spec, and policy literals (ports, HTTP statuses, byte limits, digest sizes); PLR09xx and PLR091x cover linear fail-closed rule sequences and wide internal signatures that tests and callers depend on. Splitting them would scatter the reviewed rules across helpers.
+"scripts/normalize-sdist.py" = ["PLR2004"]
+"scripts/validate-installed-distribution.py" = ["PLR2004"]
+"scripts/verify-bootstrap-authorization.py" = ["PLR2004", "PLR0913", "PLR0917", "PLR0911"]
+"scripts/verify-staging-seed-authorization.py" = ["PLR2004", "PLR0913", "PLR0917", "PLR0911"]
+"scripts/verify-kustomize-bundle.py" = ["PLR0915", "PLR0912", "PLR2004"]
+"scripts/verify-live-kubernetes-resources.py" = ["PLR0911", "PLR0912", "PLR0915", "PLR2004"]
+"scripts/verify-live-kubernetes-workloads.py" = ["PLR2004"]
+"scripts/verify-paperless-rke2-model.py" = ["PLR0912", "PLR2004"]
+"scripts/verify-provider-image-coverage.py" = ["PLR2004"]
+"scripts/verify-readiness-manifest.py" = ["PLR0911", "PLR2004"]
+"src/archiveweaver/catalog_source.py" = ["PLR0913", "PLR0917"]
+"src/archiveweaver/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
+"src/archiveweaver/evidence.py" = ["PLR0911", "PLR0912", "PLR0915"]
+"src/archiveweaver/planner.py" = ["PLR2004", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR0917"]
+"src/archiveweaver/render.py" = ["PLR0913", "PLR0917"]
+"src/archiveweaver/schema.py" = ["PLR0912", "PLR0915", "PLR2004"]
+
 
 [tool.mypy]
 # Mypy 2.x supports 3.10+; CI still executes the package on Python 3.9.
@@ -63,7 +101,7 @@ strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["archiveweaver"]
+source = ["archiveweaver", "scripts", "deploy/ansible/filter_plugins"]
 
 [tool.coverage.report]
 fail_under = 100

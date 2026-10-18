@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -71,10 +72,8 @@ def _write_render_output(path: Path, content: str) -> None:
         temporary_name = None
     finally:
         if temporary_name is not None:
-            try:
+            with contextlib.suppress(OSError):
                 Path(temporary_name).unlink()
-            except OSError:
-                pass
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> str:

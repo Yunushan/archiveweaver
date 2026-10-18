@@ -203,7 +203,7 @@ def build_document(
 
     lock_digest = hashlib.sha256(lock_bytes).hexdigest()
     identity = hashlib.sha256(
-        f"{version}\0{epoch}\0{lock_digest}".encode("utf-8")
+        f"{version}\0{epoch}\0{lock_digest}".encode()
     ).hexdigest()
     root_id = "SPDXRef-Package-archiveweaver-ansible-controller"
     lock_id = "SPDXRef-File-ansible-requirements-lock"

@@ -1683,15 +1683,13 @@ def _sigstore_bundle_binds_digest(
     if not isinstance(message_signature, dict):
         return False
     message_digest = message_signature.get("messageDigest")
-    if (
+    return not (
         not isinstance(message_digest, dict)
         or message_digest.get("algorithm") != "SHA2_256"
         or _decoded_base64(message_digest.get("digest"))
         != bytes.fromhex(expected_sha256)
         or _decoded_base64(message_signature.get("signature")) is None
-    ):
-        return False
-    return True
+    )
 
 
 def _github_controls_ok(
@@ -1987,7 +1985,7 @@ def _indexed_dsse_statement_ok(
         return False
     verification_material = bundle.get("verificationMaterial")
     envelope = bundle.get("dsseEnvelope")
-    if (
+    return not (
         bundle.get("mediaType") != SIGSTORE_BUNDLE_MEDIA_TYPE
         or not isinstance(verification_material, dict)
         or not isinstance(verification_material.get("certificate"), dict)
@@ -2010,9 +2008,7 @@ def _indexed_dsse_statement_ok(
             isinstance(item, dict) and _decoded_base64(item.get("sig")) is not None
             for item in envelope["signatures"]
         )
-    ):
-        return False
-    return True
+    )
 
 
 def _release_provenance_signature_ok(
@@ -2708,7 +2704,7 @@ def _release_ok(manifest: dict[str, Any], root: Path, context: EvidenceContext |
     image_refs = [item["image"] for item in image_artifacts]
     if (
         len(image_refs) != len(set(image_refs))
-        or selected_runtime in OCI_PROOF_RUNTIME_IDS and not image_artifacts
+        or (selected_runtime in OCI_PROOF_RUNTIME_IDS and not image_artifacts)
     ):
         return False
     release_proof_path_entries = _release_proof_path_entries(section)

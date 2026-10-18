@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -210,10 +211,8 @@ def build_evidence_index(directory: Path, output: Path) -> dict[str, Any]:
         temporary_name = None
     finally:
         if temporary_name is not None:
-            try:
+            with contextlib.suppress(OSError):
                 Path(temporary_name).unlink()
-            except OSError:
-                pass
     return index
 
 

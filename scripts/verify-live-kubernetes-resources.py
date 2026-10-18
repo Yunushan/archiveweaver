@@ -452,12 +452,11 @@ def verify(rendered_yaml: str, live_json: Any, namespace: str) -> None:
         )
         if parent_identity not in admitted or parent_identity in stale_replicas:
             raise InventoryMismatch("Pod is not a current descendant of a reviewed controller")
-        if parent_identity[:2] in {("apps/v1", "ReplicaSet"), ("batch/v1", "Job")}:
-            if (
-                not identity[3].startswith(parent_identity[3] + "-")
-                or resource["metadata"].get("generateName") != parent_identity[3] + "-"
-            ):
-                raise InventoryMismatch("generated Pod name does not match its controller")
+        if parent_identity[:2] in {("apps/v1", "ReplicaSet"), ("batch/v1", "Job")} and (
+            not identity[3].startswith(parent_identity[3] + "-")
+            or resource["metadata"].get("generateName") != parent_identity[3] + "-"
+        ):
+            raise InventoryMismatch("generated Pod name does not match its controller")
         if parent_identity[:2] == ("apps/v1", "ReplicaSet"):
             path = ("spec", "template", "spec")
         elif parent_identity[:2] == ("apps/v1", "StatefulSet"):

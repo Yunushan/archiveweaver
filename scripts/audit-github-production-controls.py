@@ -13,7 +13,8 @@ import subprocess  # nosec B404
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 from urllib.parse import quote
 
 
