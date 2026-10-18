@@ -526,9 +526,11 @@ jobs:
             exit 1
           fi
           docker manifest inspect "${image_name}@${digest}" >/dev/null
-          echo "name=${image_name}" >> "${GITHUB_OUTPUT}"
-          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
-          echo "reference=${image_name}@${digest}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "name=${image_name}"
+            echo "digest=${digest}"
+            echo "reference=${image_name}@${digest}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Install the integrity-verified Cosign client
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign, attest, and verify the controller image

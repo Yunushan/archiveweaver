@@ -48,7 +48,7 @@ shell-lint: lint-tools
 	$(LINT_BIN)/shellcheck -S warning scripts/*.sh tests/*.sh
 
 workflow-lint: lint-tools
-	$(LINT_BIN)/actionlint .github/workflows/*.yml
+	$(LINT_BIN)/actionlint -shellcheck=$(LINT_BIN)/shellcheck .github/workflows/*.yml
 
 container-lint: lint-tools
 	$(LINT_BIN)/hadolint .clusterfuzzlite/Dockerfile deploy/ansible/execution-environment/Containerfile
