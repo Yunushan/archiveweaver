@@ -380,6 +380,26 @@ not proof by themselves. Each dedicated claim record and each named
 certification or failure-domain test must point to its own indexed evidence
 file; duplicating one file across claims or test rows cannot satisfy the gate.
 
+## Repo-owned and operator-owned evidence
+
+The repository proves the first column in CI. The second column needs
+operator-produced, signed evidence bound to one release and environment.
+
+| Domain | Repo-owned (CI-proven) | Operator-owned |
+| --- | --- | --- |
+| Control baseline | `make test`, `make quality`, catalog validation | change-control record |
+| Release integrity | release-tools lock, SBOM validation | hosted controls report, signatures, provenance |
+| Product certification | catalog and provider-image coverage tests | product smoke, migration, and API matrix |
+| Resilience | planner and renderer policy tests | quorum and failure drill records |
+| Data protection | evidence freshness tests | backup, restore, fixity, RPO/RTO measurements |
+| Security | strict YAML and Bandit policy checks | TLS, secret-provider, and penetration records |
+| Observability | readiness schema tests | metrics, alert, dashboard, on-call records |
+| Recovery | repair plan-only and gate tests | rollback and repair drill records |
+| Governance | release actor verifier | approvals, retention controls |
+| Support | documentation drift test | service owner, on-call, SLA records |
+
+Operator-owned evidence keeps the CLI non-ready until it is supplied.
+
 ## Operational ownership
 
 The release owner supplies product-specific manifests and test evidence. The

@@ -9,7 +9,7 @@ ArchiveWeaver is designed for operators who need one consistent operational mode
 - **Project name:** ArchiveWeaver
 - **Repository name:** `archiveweaver`
 - **Recommended URL:** `https://github.com/Yunushan/archiveweaver`
-- **Short description:** `Production deployment, health-check, and safe-repair automation for open digital archiving platforms.`
+- **Short description:** `Alpha: deployment planning, health-check, and safe-repair automation for open digital archiving platforms.`
 - **License:** 0BSD
 
 `archiveweaver` matches the naming style of the companion automation projects and is short enough for CLI commands, package names, and deployment labels.
@@ -25,7 +25,7 @@ ArchiveWeaver is designed for operators who need one consistent operational mode
 - plan-only and explicitly gated repair actions;
 - a fail-closed 100-point production-readiness evaluator and tamper-evident evidence index;
 - safe provider envelopes for systemd, Docker, Podman Quadlet, Swarm, and Kubernetes-family runtimes;
-- English default documentation plus Turkish README and operations summaries;
+- English default documentation plus a Turkish README (`README.tr.md`);
 - HLD, LLD, ADRs, deployment patterns, backup/restore, security, and full format-family catalog;
 - stdlib unit tests and GitHub Actions CI.
 

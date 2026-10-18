@@ -9,7 +9,11 @@ versioning once a release is published; until then, the package remains alpha.
   immutable image handling, Ansible controller boundaries, and the evidence-
   backed production readiness gate.
 - Add strict duplicate-key YAML validation and raise enforced branch coverage
-  to 90%, with explicit malformed-evidence and release-gate tests.
+  to 100%, with explicit malformed-evidence and release-gate tests.
+- Python 3.9 remains supported but is deprecated for removal in a future
+  release. Mypy 2.x rejects `--python-version 3.9`, so the strict type gate
+  targets 3.10; Python 3.9 compatibility is enforced by ruff `target-version =
+  "py39"` and the CI 3.9 test job.
 - Add a deterministic, SPDX-validated Ansible controller SBOM and a complete
   wheel-only hash lock for the 51-package release validation toolchain.
 - Reject skeletal or subject-confused SBOM/provenance evidence by enforcing

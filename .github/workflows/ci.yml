@@ -71,6 +71,12 @@ jobs:
         run: python scripts/validate-yaml.py
       - name: Shell syntax
         run: bash -n scripts/*.sh tests/*.sh
+      - name: Shell static analysis
+        run: make shell-lint
+      - name: GitHub workflow static analysis
+        run: make workflow-lint
+      - name: Container build file static analysis
+        run: make container-lint
       - name: Operational runner behavior
         run: bash tests/test-operational-runner.sh
       - name: Execution-environment builder policy

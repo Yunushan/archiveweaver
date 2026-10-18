@@ -14,6 +14,21 @@ production systems without written authorization. If the private form is not
 available, do not fall back to a public issue; use the private contact recorded
 for the deployment's named security owner.
 
+## Supported versions
+
+| Version | Supported |
+| --- | --- |
+| 0.1.0 (unreleased, alpha) | No security fixes until a 1.0 release is published |
+
+Until 1.0, only the default branch receives security fixes. Deployment owners
+may set their own support policy for artifacts they operate.
+
+## Response targets
+
+- Acknowledgement of a private report: within 2 business days.
+- Coordinated disclosure: 90 days from acknowledgement, unless the parties agree
+  otherwise in writing.
+
 ## Operational response
 
 Treat a leaked credential, unsigned release, failed fixity check, evidence

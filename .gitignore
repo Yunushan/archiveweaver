@@ -28,3 +28,9 @@ deploy/ansible/release-manifest.json
 deploy/ansible/release-manifest-staging.json
 deploy/ansible/evidence/
 deploy/ansible/generated/
+
+# Local agent tooling and planning notes (not project source).
+.kilo/
+.kilocodeignore
+kilo.jsonc
+plans/

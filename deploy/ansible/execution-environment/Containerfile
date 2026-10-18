@@ -2,6 +2,8 @@
 # validates the digest before the engine resolves FROM; this check remains as
 # defense in depth inside the image build.
 ARG BASE_IMAGE
+# DL3006: BASE_IMAGE must be a digest reference, validated by the RUN check below.
+# hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
 
 ARG BASE_IMAGE
@@ -15,8 +17,14 @@ LABEL org.opencontainers.image.title="ArchiveWeaver Ansible execution environmen
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.base.name="${BASE_IMAGE}" \
       ansible-execution-environment="true"
+# DL4006: the pipe is a single printf-to-python validation; a failed printf is caught by the same check.
+# hadolint ignore=DL4006
 RUN if ! printf '%s\n' "$BASE_IMAGE" | python3 -c "import re,sys; sys.exit(0 if re.fullmatch(r'[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)+@sha256:[0-9a-f]{64}', sys.stdin.read().strip()) else 1)"; then echo 'BASE_IMAGE must be a fully qualified lowercase OCI repository with a 64-character SHA-256 digest' >&2; exit 1; fi
+# DL4006: the pipe is a single printf-to-python validation; a failed printf is caught by the same check.
+# hadolint ignore=DL4006
 RUN if ! printf '%s\n' "$RELEASE_VERSION" | python3 -c "import re,sys; value=sys.stdin.read().strip(); sys.exit(0 if re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', value) and value.lower() != 'latest' and 'replace_with' not in value.lower() else 1)"; then echo 'RELEASE_VERSION must be a safe immutable release label' >&2; exit 1; fi
+# DL4006: the pipe is a single printf-to-python validation; a failed printf is caught by the same check.
+# hadolint ignore=DL4006
 RUN if ! printf '%s\n' "$SOURCE_REVISION" | python3 -c "import re,sys; sys.exit(0 if re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', sys.stdin.read().strip()) else 1)"; then echo 'SOURCE_REVISION must be a full lowercase commit SHA' >&2; exit 1; fi
 RUN python3 -c "import platform,sys; sys.exit(0 if sys.version_info[:2] in ((3,13),(3,14)) and platform.system() == 'Linux' and platform.machine() == 'x86_64' else 'ArchiveWeaver EE requires CPython 3.13/3.14 on Linux x86_64')"
 

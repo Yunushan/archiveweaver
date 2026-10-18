@@ -80,3 +80,9 @@ jobs:
         run: pip-audit --no-deps --disable-pip -r deploy/ansible/requirements.txt --strict
       - name: Audit pinned release validation dependencies
         run: pip-audit --no-deps --disable-pip -r requirements/release-tools.txt --strict
+      - name: Shell static analysis
+        run: make shell-lint
+      - name: GitHub workflow static analysis
+        run: make workflow-lint
+      - name: Container build file static analysis
+        run: make container-lint

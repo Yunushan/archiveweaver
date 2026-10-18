@@ -1,10 +1,16 @@
-.PHONY: help generate validate test lint quality smoke upstream-audit github-audit yaml-validate ansible-lock ansible-sbom release-tools-lock release-tools-check ansible-validate controller-validate
+.PHONY: help generate validate test lint quality smoke upstream-audit github-audit yaml-validate ansible-lock ansible-sbom release-tools-lock release-tools-check ansible-validate controller-validate lint-tools shell-lint workflow-lint container-lint
+
+LINT_BIN := $(or $(ARCHIVEWEAVER_LINT_TOOL_DIR),$(HOME)/.cache/archiveweaver-lint)/bin
 
 help:
 	@printf '%s\n' 'make generate  - regenerate catalog JSON and reference pages' \
 	              'make validate  - validate catalog and compile Python' \
 	              'make test      - run validation, runner, contract, and unit tests' \
 	              'make quality   - run Ruff and strict mypy checks' \
+	              'make lint-tools - install pinned shellcheck and actionlint (SHA-256 verified)' \
+	              'make shell-lint - run shellcheck at warning severity' \
+	              'make workflow-lint - run actionlint over GitHub workflows' \
+	              'make container-lint - run hadolint over container build files' \
 	              'make upstream-audit - verify cataloged GitHub repositories online' \
 	              'make github-audit - read and verify hosted production controls' \
 	              'make yaml-validate - strictly parse all repository YAML' \
@@ -34,6 +40,18 @@ lint:
 quality:
 	python3 -m ruff check src tests scripts fuzz setup.py deploy/ansible/filter_plugins
 	PYTHONPATH=src python3 -m mypy --strict src/archiveweaver scripts deploy/ansible/filter_plugins
+
+lint-tools:
+	bash scripts/install-lint-tools.sh
+
+shell-lint: lint-tools
+	$(LINT_BIN)/shellcheck -S warning scripts/*.sh tests/*.sh
+
+workflow-lint: lint-tools
+	$(LINT_BIN)/actionlint .github/workflows/*.yml
+
+container-lint: lint-tools
+	$(LINT_BIN)/hadolint .clusterfuzzlite/Dockerfile deploy/ansible/execution-environment/Containerfile
 
 upstream-audit:
 	python3 scripts/validate-upstream-repositories.py
