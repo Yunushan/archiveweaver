@@ -6,9 +6,12 @@ import copy
 import hashlib
 import importlib.util
 import json
+import runpy
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +143,122 @@ class StagingSeedAuthorizationTests(unittest.TestCase):
             self.assertEqual(seed.main([str(SCRIPT), str(path), "f" * 64, auth_digest, *ARGS]), 1)
         finally:
             seed._read_stable_bytes = original
+
+    def test_timestamp_must_be_a_real_calendar_value(self) -> None:
+        self.assertIsNone(seed._timestamp("not-a-timestamp"))
+        self.assertIsNone(seed._timestamp("2026-13-45T99:99:99Z"))
+
+    def test_invalid_binding_values_are_rejected_before_the_digest(self) -> None:
+        value = manifest()
+        authorization = value["staging_seed_authorization"]
+        assert isinstance(authorization, dict)
+        digest = seed.authorization_digest(authorization)
+        for replacement in ("not-a-digest", "REPLACE_WITH_DIGEST", " " + "a" * 63):
+            with self.subTest(replacement=replacement):
+                changed = list(ARGS)
+                changed[0] = replacement
+                self.assertEqual(
+                    seed.validate_authorization(value, digest, *changed, now=NOW),
+                    ["invalid source revision binding"],
+                )
+
+    def test_approval_ticket_must_differ_from_the_change_ticket(self) -> None:
+        value = manifest()
+        authorization = value["staging_seed_authorization"]
+        assert isinstance(authorization, dict)
+        digest = seed.authorization_digest(authorization)
+        changed = list(ARGS)
+        changed[-1] = "CHG-1234"
+        self.assertEqual(
+            seed.validate_authorization(value, digest, *changed, now=NOW),
+            ["approval ticket must be independent of the change ticket"],
+        )
+
+    def test_manifest_must_be_an_object_with_an_authorization(self) -> None:
+        value = manifest()
+        authorization = value["staging_seed_authorization"]
+        assert isinstance(authorization, dict)
+        digest = seed.authorization_digest(authorization)
+        self.assertEqual(
+            seed.validate_authorization("text", digest, *ARGS, now=NOW),
+            ["readiness manifest must be an object"],
+        )
+        self.assertEqual(
+            seed.validate_authorization({}, digest, *ARGS, now=NOW),
+            ["staging seed authorization is missing or has an invalid shape"],
+        )
+
+    def test_protected_digest_mismatch_is_reported(self) -> None:
+        value = manifest()
+        authorization = value["staging_seed_authorization"]
+        assert isinstance(authorization, dict)
+        digest = seed.authorization_digest(authorization)
+        authorization["approval_ticket"] = "APR-OTHER"
+        self.assertEqual(
+            seed.validate_authorization(value, digest, *ARGS, now=NOW),
+            ["staging seed authorization does not match the protected digest"],
+        )
+
+    def test_service_identity_must_stay_on_the_staging_target(self) -> None:
+        value = manifest()
+        service = value["service"]
+        authorization = value["staging_seed_authorization"]
+        assert isinstance(service, dict) and isinstance(authorization, dict)
+        service["environment"] = "production"
+        authorized_service = authorization["service"]
+        assert isinstance(authorized_service, dict)
+        authorized_service["environment"] = "production"
+        self.assertEqual(
+            check(value), ["staging seed service identity does not match the staging target"]
+        )
+
+    def test_cli_usage_and_input_errors_are_reported(self) -> None:
+        self.assertEqual(seed.main([str(SCRIPT)]), 2)
+        path = ROOT / "deploy/ansible/staging-seed-authorization.example.json"
+        self.assertEqual(seed.main([str(SCRIPT), str(path), "INVALID", "0" * 64, *ARGS]), 2)
+        absent = ROOT / "deploy/ansible/staging-seed-authorization.absent.json"
+        self.assertEqual(seed.main([str(SCRIPT), str(absent), "0" * 64, "0" * 64, *ARGS]), 1)
+
+    def test_cli_fails_closed_on_unreadable_manifests(self) -> None:
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("boom")
+
+        path = ROOT / "deploy/ansible/staging-seed-authorization.example.json"
+        original = seed._read_stable_bytes
+        try:
+            seed._read_stable_bytes = explode
+            self.assertEqual(seed.main([str(SCRIPT), str(path), "0" * 64, "0" * 64, *ARGS]), 1)
+        finally:
+            seed._read_stable_bytes = original
+
+    def test_cli_reports_authorization_failures(self) -> None:
+        value = manifest()
+        authorization = value["staging_seed_authorization"]
+        assert isinstance(authorization, dict)
+        current = datetime.now(timezone.utc)
+        authorization["issued_at"] = (current - timedelta(hours=1)).isoformat()
+        authorization["expires_at"] = (current + timedelta(hours=1)).isoformat()
+        authorization["purpose"] = "first-production-apply"
+        governance = value["governance"]
+        assert isinstance(governance, dict)
+        governance["approved_at"] = (current - timedelta(days=1)).isoformat()
+        governance["valid_until"] = (current + timedelta(days=1)).isoformat()
+        payload = json.dumps(value).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        auth_digest = seed.authorization_digest(authorization)
+        path = ROOT / "deploy/ansible/staging-seed-authorization.example.json"
+        original = seed._read_stable_bytes
+        try:
+            seed._read_stable_bytes = lambda *_args, **_kwargs: (payload, digest)
+            self.assertEqual(seed.main([str(SCRIPT), str(path), digest, auth_digest, *ARGS]), 1)
+        finally:
+            seed._read_stable_bytes = original
+
+    def test_main_guard_exits_with_the_usage_code(self) -> None:
+        with mock.patch.object(sys, "argv", [str(SCRIPT)]):
+            with self.assertRaises(SystemExit) as caught:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+        self.assertEqual(caught.exception.code, 2)
 
 
 if __name__ == "__main__":
