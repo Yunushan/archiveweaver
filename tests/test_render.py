@@ -162,8 +162,8 @@ class RenderTests(unittest.TestCase):
             underlying_mode="rke2",
         )
         self.assertEqual(plan["underlying_mode"], "rke2")
-        self.assertIn('archiveweaver_ansible_core_version: "2.21.4"', content)
-        self.assertIn('archiveweaver_ansible_lint_version: "26.8.0"', content)
+        self.assertIn('archiveweaver_ansible_core_version: "2.21.5"', content)
+        self.assertIn('archiveweaver_ansible_lint_version: "26.9.0"', content)
         self.assertIn('archiveweaver_ansible_runner_version: "2.4.3"', content)
         self.assertIn('archiveweaver_execution_environment_digest: ""', content)
         self.assertIn('archiveweaver_runtime: "rke2"', content)

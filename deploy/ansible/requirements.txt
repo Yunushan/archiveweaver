@@ -3,34 +3,32 @@
 # Approved artifact scope: CPython 3.13 and 3.14 on Linux x86_64,
 # binary wheels only. Install with --require-hashes and --only-binary=:all:.
 #
-ansible-compat==26.8.0 \
-    --hash=sha256:cf23f3353c3b4179530eb589a0f6fb1c674d2b69660c14841de89f3688e0530a
+ansible-compat==26.10.0 \
+    --hash=sha256:700f0778fbb348daf6ee58941871e8ca77a987702993e8bf7895761d036d6450
     # via ansible-lint
 ansible-core==2.21.5 \
-    --hash=sha256:08886f9f3e23d129aa98a01271c4a47833516e1cb7c737a246788cb474f41222 \
-    --hash=sha256:65bb3148c58ebb843cd5074004c805f404f152114d98476dd823324616c9c6cb
+    --hash=sha256:08886f9f3e23d129aa98a01271c4a47833516e1cb7c737a246788cb474f41222
     # via
-    #   -r requirements.in
+    #   -r deploy/ansible/requirements.in
     #   ansible-compat
     #   ansible-lint
 ansible-lint==26.9.0 \
-    --hash=sha256:4d01903fca9c42f7ce2b366ea5503d0701a27b3c6fdf684276a72888eea57f50 \
-    --hash=sha256:cb3265888f30815de0dcf0964d34768b45c98bb4361eea7eb42c0342e81b51b4
-    # via -r requirements.in
+    --hash=sha256:4d01903fca9c42f7ce2b366ea5503d0701a27b3c6fdf684276a72888eea57f50
+    # via -r deploy/ansible/requirements.in
 ansible-runner==2.4.3 \
     --hash=sha256:cdac6daa151a50084ffda710e769db23fa975fc0507796191d7708831b286e37
-    # via -r requirements.in
+    # via -r deploy/ansible/requirements.in
 attrs==26.1.0 \
     --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
     # via
     #   jsonschema
     #   referencing
-black==26.5.1 \
-    --hash=sha256:ea8d16dc41655aa113cd64665e7219446cd7e4ff2248d7178eaa905190c86b18 \
-    --hash=sha256:ecb3e624844c798144e9bd986954e0adc81d8911a1f30f375e1252fe26e8c294
+black==26.10.1 \
+    --hash=sha256:03c0ddd93bb392e71209903a691767eb366fe1a76deb9509ccbaae9e1f14bb52 \
+    --hash=sha256:289282aa2e09d3162312a3be1788ff21b08e9ea9cc4a81e656024728b32428fb
     # via ansible-lint
-bracex==3.0.1 \
-    --hash=sha256:6523ad83aeb5098a4ee597cff0f964442ff74e460bd3fafaffab6a013ff2288c
+bracex==3.1 \
+    --hash=sha256:52002b8455658c21f3b6e5eb0f662b57ec9085f42709e58bc86eeab5bc4c37d7
     # via wcmatch
 cffi==2.1.1 \
     --hash=sha256:a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2 \
@@ -41,8 +39,8 @@ cffi==2.1.1 \
 click==8.5.0 \
     --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360
     # via black
-cryptography==50.0.1 \
-    --hash=sha256:51593d180cf6d179bde5c5d065bed81386b1f381656ae7d042b7ffc87a9895ad
+cryptography==50.0.2 \
+    --hash=sha256:4061c0079120205fb760c58acab6443e217307dcf05e3702cf970e0689972856
     # via
     #   ansible-core
     #   ansible-lint
@@ -51,10 +49,9 @@ distro==1.9.0 \
     # via ansible-lint
 dumb-init==1.2.5.post1 \
     --hash=sha256:5d6b1fe9b8efcdbbdcb670efe7a55f9117251ee9648d35ffd0c487fd79515ea5
-    # via -r requirements.in
-filelock==4.0.1 \
-    --hash=sha256:481a321a27bef441e23c53371c6abc8d7d16e26b97090074ba44f7538a3fd55a \
-    --hash=sha256:fdefc3f3e87716d855ae2b732c1cfd521dd99799ef2b4d00e8c0d4dcdc7cc94b
+    # via -r deploy/ansible/requirements.in
+filelock==4.2.2 \
+    --hash=sha256:1851d2f14ca2901e98069d68333b33ad7409f56904e17b48cc0c32a0db8ed73a
     # via ansible-lint
 jinja2==3.1.6 \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -70,9 +67,9 @@ jsonschema-specifications==2025.9.1 \
 lockfile==0.12.2 \
     --hash=sha256:6c3cb24f344923d30b2785d5ad75182c8ea7ac1b6171b08657258ec7429d50fa
     # via python-daemon
-markupsafe==3.0.3 \
-    --hash=sha256:457a69a9577064c05a97c41f4e65148652db078a3a509039e64d3467b9e7ef97 \
-    --hash=sha256:ccfcd093f13f0f0b7fdd0f198b90053bf7b2f02a3927a30e63f3ccc9df56b676
+markupsafe==3.0.4 \
+    --hash=sha256:434139499bb20b502ed3baa1f169e618f924a97e7a777fea1a49446d80106cf6 \
+    --hash=sha256:a8e9f292fcda89b324f2f5c91d13f1424a153e40fc2756f38ee23b15835ff300
     # via jinja2
 mypy-extensions==1.1.0 \
     --hash=sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505
@@ -94,15 +91,14 @@ pathspec==1.1.1 \
 pexpect==4.9.0 \
     --hash=sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523
     # via ansible-runner
-platformdirs==4.11.12 \
-    --hash=sha256:b1ba966ac76153d9985a0787ffab951e7c18416189873d4e4ddb2c8a04a0a254 \
-    --hash=sha256:e8dc1cb58f1153fd7f61db1374317770baababec2480b37b8f01c6cc25b45267
+platformdirs==4.13.4 \
+    --hash=sha256:502ce08e9d36cf90579ee44e1e764838842fa658e4975ef47344fd053011d2c8
     # via black
 ptyprocess==0.7.0 \
     --hash=sha256:4b41f3967fce3af57cc7e94b888626c18bf37a083e3651ca8feeb66d492fef35
     # via pexpect
-pycparser==3.0 \
-    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pycparser==3.11 \
+    --hash=sha256:51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80
     # via cffi
 python-daemon==3.1.2 \
     --hash=sha256:b906833cef63502994ad48e2eab213259ed9bb18d54fa8774dcba2ff7864cec6
@@ -115,7 +111,7 @@ pyyaml==6.0.3 \
     --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
     --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
     # via
-    #   -r requirements.in
+    #   -r deploy/ansible/requirements.in
     #   ansible-compat
     #   ansible-core
     #   ansible-lint
@@ -130,9 +126,9 @@ referencing==0.37.0 \
 resolvelib==1.2.1 \
     --hash=sha256:fb06b66c8da04172d9e72a21d7d06186d8919e32ae5ab5cdf5b9d920be805ac2
     # via ansible-core
-rpds-py==2026.6.3 \
-    --hash=sha256:acac386b453c2516111b50985d60ce46e7fadb5ea71ae7b25f4c946935bf27cf \
-    --hash=sha256:dc319e5a1de4b6913aac94bf6a2f9e847371e0a140a43dd4991db1a09bc2d504
+rpds-py==2026.9.1 \
+    --hash=sha256:7868b85224291c6cb6759f9b5adb9745f486d226f62b16a614dd5a2a5ab2b35b \
+    --hash=sha256:eac2f5dbafd585dfe31f86a23ebf0d3ba480a9d49ebc87947267b5608d4ea0cd
     # via
     #   jsonschema
     #   referencing
@@ -142,14 +138,14 @@ ruamel-yaml==0.19.1 \
 ruamel-yaml-clib==0.2.15 \
     --hash=sha256:2812ff359ec1f30129b62372e5f22a52936fac13d5d21e70373dbca5d64bb97c \
     --hash=sha256:4d1032919280ebc04a80e4fb1e93f7a738129857eaec9448310e638c8bccefcf
-    # via -r requirements.in
+    # via -r deploy/ansible/requirements.in
 subprocess-tee==0.4.2 \
     --hash=sha256:21942e976715af4a19a526918adb03a8a27a8edab959f2d075b777e3d78f532d
     # via
     #   ansible-compat
     #   ansible-lint
-wcmatch==11.0.1 \
-    --hash=sha256:fd149ecddb9f0a88ea780017d6dde17c994e494e7f7303d4e3c9d6251f978f4b
+wcmatch==11.1 \
+    --hash=sha256:2863afee97a7dd62e64f7feada864848c1a5e31cb331b3aa530fa1300d2d5d3c
     # via ansible-lint
 yamllint==1.38.0 \
     --hash=sha256:fc394a5b3be980a4062607b8fdddc0843f4fa394152b6da21722f5d59013c220

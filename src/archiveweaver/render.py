@@ -298,8 +298,8 @@ def render_ansible(
         archiveweaver_os_id: {_yaml_string(os_id)}
         archiveweaver_namespace: {_yaml_string(namespace)}
         archiveweaver_app_port: {port}
-        archiveweaver_ansible_core_version: "2.21.4"
-        archiveweaver_ansible_lint_version: "26.8.0"
+        archiveweaver_ansible_core_version: "2.21.5"
+        archiveweaver_ansible_lint_version: "26.9.0"
         archiveweaver_ansible_runner_version: "2.4.3"
         archiveweaver_execution_environment_digest: ""
         archiveweaver_environment: "production"

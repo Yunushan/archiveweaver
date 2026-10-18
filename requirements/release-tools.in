@@ -4,10 +4,10 @@
 bandit==1.9.4
 build==1.6.1
 coverage==7.16.2
-filelock==4.0.11
+filelock==4.2.2
 mypy==2.4.0
 pip-audit==2.10.1
-platformdirs==4.12.3
+platformdirs==4.13.4
 PyYAML==6.0.3
 ruff==0.16.10
 setuptools==84.0.0

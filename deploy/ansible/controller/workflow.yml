@@ -118,8 +118,8 @@ execution_environment:
   image: REPLACE_WITH_APPROVED_EXECUTION_ENVIRONMENT_IMAGE@sha256:REPLACE_WITH_64_HEX_DIGEST
   digest: sha256:REPLACE_WITH_64_HEX_DIGEST
   controller_identity_env: ARCHIVEWEAVER_EXECUTION_ENVIRONMENT_DIGEST
-  ansible_core: 2.21.4
-  ansible_lint: 26.8.0
+  ansible_core: 2.21.5
+  ansible_lint: 26.9.0
   ansible_runner: 2.4.3
 rbac:
   project_readers: archive-platform-readers
