@@ -36,15 +36,17 @@ spec:
                     app.kubernetes.io/name: archiveweaver-app
       containers:
         - name: app
-          # Replace this with an approved immutable product image.
-          image: registry.example.invalid/replace-me/product@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          # Kustomize image name. The operator maps it to an approved digest-pinned image
+          # through an images: entry in the overlay; the renderer also requires a digest.
+          image: archiveweaver-app
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
           env:
             - name: ARCHIVEWEAVER_SOLUTION_ID
-              value: replace-me
+              # Operator sets the catalog solution id in the overlay.
+              value: ""
           readinessProbe:
             httpGet:
               path: /

@@ -720,6 +720,10 @@ class ReleasePublisherTests(unittest.TestCase):
         ):
             self.publisher["_hash_asset"](Path("x.whl"))
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows os.open raises PermissionError for directories instead of reporting a regular-file mismatch",
+    )
     def test_hash_asset_requires_a_regular_file(self) -> None:
         directory = Path("asset-directory")
         directory.mkdir()

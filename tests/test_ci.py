@@ -788,9 +788,11 @@ class CIWorkflowTests(unittest.TestCase):
         self.assertIn("bash -n scripts/*.sh tests/*.sh", workflow)
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn(
-            "test: validate controller-validate yaml-validate release-tools-check",
+            "test: validate controller-validate yaml-validate placeholder-check release-tools-check",
             makefile,
         )
+        self.assertIn("make placeholder-check", workflow)
+        self.assertIn("python3 scripts/verify-placeholder-free-deploy.py", makefile)
         self.assertIn("python3 scripts/validate-yaml.py", makefile)
         self.assertIn("python3 scripts/generate-ansible-sbom.py", makefile)
         self.assertIn("python3 scripts/compile-release-tools-lock.py --check", makefile)

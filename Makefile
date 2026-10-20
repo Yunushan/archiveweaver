@@ -1,4 +1,4 @@
-.PHONY: help generate validate test lint quality smoke upstream-audit github-audit yaml-validate ansible-lock ansible-sbom release-tools-lock release-tools-check ansible-validate controller-validate lint-tools shell-lint workflow-lint container-lint
+.PHONY: help generate validate test lint quality smoke upstream-audit github-audit yaml-validate placeholder-check ansible-lock ansible-sbom release-tools-lock release-tools-check ansible-validate controller-validate lint-tools shell-lint workflow-lint container-lint
 
 LINT_BIN := $(or $(ARCHIVEWEAVER_LINT_TOOL_DIR),$(HOME)/.cache/archiveweaver-lint)/bin
 
@@ -14,6 +14,7 @@ help:
 	              'make upstream-audit - verify cataloged GitHub repositories online' \
 	              'make github-audit - read and verify hosted production controls' \
 	              'make yaml-validate - strictly parse all repository YAML' \
+	              'make placeholder-check - reject unallowlisted placeholders under deploy/' \
 	              'make ansible-lock - regenerate the complete controller dependency lock' \
 	              'make ansible-sbom - generate its SPDX SBOM (requires SOURCE_DATE_EPOCH)' \
 	              'make release-tools-lock - regenerate the release validation dependency lock' \
@@ -28,7 +29,7 @@ validate: generate
 	PYTHONPATH=src python3 -m archiveweaver validate-catalog --json
 	python3 -m compileall -q src scripts tests fuzz deploy/ansible/filter_plugins
 
-test: validate controller-validate yaml-validate release-tools-check
+test: validate controller-validate yaml-validate placeholder-check release-tools-check
 	bash -n scripts/*.sh tests/*.sh
 	bash tests/test-operational-runner.sh
 	bash tests/test-execution-environment.sh
@@ -61,6 +62,9 @@ github-audit:
 
 yaml-validate:
 	python3 scripts/validate-yaml.py
+
+placeholder-check:
+	python3 scripts/verify-placeholder-free-deploy.py
 
 ansible-lock:
 	python3 scripts/compile-ansible-lock.py

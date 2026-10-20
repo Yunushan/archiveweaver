@@ -30,6 +30,7 @@ MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_MODEL_BYTES = 16 * 1024 * 1024
 MAX_DOCUMENTS = 1000
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+ALL_ZERO_DIGEST = "sha256:" + "0" * 64
 NAME_SEGMENT = re.compile(r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*\Z")
 REGISTRY_SEGMENT = re.compile(r"[a-z0-9][a-z0-9.-]*(?::[1-9][0-9]*)?\Z")
 DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\Z")
@@ -83,7 +84,7 @@ def _immutable_image(ref: str) -> bool:
     if not ref or PLACEHOLDER.search(ref) or ref.count("@") != 1:
         return False
     repository, digest = ref.split("@", 1)
-    if not IMAGE_DIGEST.fullmatch(digest):
+    if not IMAGE_DIGEST.fullmatch(digest) or digest == ALL_ZERO_DIGEST:
         return False
     segments = repository.split("/")
     if len(segments) < 2 or REGISTRY_SEGMENT.fullmatch(segments[0]) is None:

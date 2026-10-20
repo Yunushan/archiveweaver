@@ -60,6 +60,16 @@ class ProviderImageCoverageTests(unittest.TestCase):
             with self.subTest(ref=ref):
                 self.assertFalse(coverage._immutable_image(ref))
 
+    def test_all_zero_digest_is_rejected_as_placeholder(self) -> None:
+        zero = "registry.example.org/docs/paperless@sha256:" + "0" * 64
+        self.assertFalse(coverage._immutable_image(zero))
+        resource = deployment(("web", zero))
+        with patch.object(coverage, "_load_yaml", return_value=[resource]):
+            with self.assertRaisesRegex(coverage.CoverageFailure, "missing or mutable image"):
+                coverage.verify(manifest(PAPERLESS), "kubernetes", b"rendered")
+        with self.assertRaisesRegex(coverage.CoverageFailure, "invalid OCI image reference"):
+            coverage._manifest_images(manifest(zero))
+
     def test_kubernetes_all_containers_and_init_containers_are_covered(self) -> None:
         resource = deployment(("web", PAPERLESS))
         resource["spec"]["template"]["spec"]["initContainers"] = [

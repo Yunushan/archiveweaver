@@ -69,6 +69,8 @@ jobs:
           -r requirements/ci-yaml.txt
       - name: Strictly parse repository YAML
         run: python scripts/validate-yaml.py
+      - name: Placeholder-free deploy gate
+        run: make placeholder-check
       - name: Shell syntax
         run: bash -n scripts/*.sh tests/*.sh
       - name: Shell static analysis
