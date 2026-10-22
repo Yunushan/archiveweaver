@@ -9,15 +9,16 @@ ansible-compat==26.10.0 \
 ansible-core==2.21.5 \
     --hash=sha256:08886f9f3e23d129aa98a01271c4a47833516e1cb7c737a246788cb474f41222
     # via
-    #   -r deploy/ansible/requirements.in
+    #   -r requirements.in
     #   ansible-compat
     #   ansible-lint
-ansible-lint==26.9.0 \
-    --hash=sha256:4d01903fca9c42f7ce2b366ea5503d0701a27b3c6fdf684276a72888eea57f50
-    # via -r deploy/ansible/requirements.in
+ansible-lint==26.10.1 \
+    --hash=sha256:a746c6f3cb5719d1c202bc14e956ef3b0eca704025d1aa92707a27fc73ed73ea \
+    --hash=sha256:cc26d405ee38c3390e80ec18c4137b5685c36d03ce7d4d8233b0470d9a0e21e9
+    # via -r requirements.in
 ansible-runner==2.4.3 \
     --hash=sha256:cdac6daa151a50084ffda710e769db23fa975fc0507796191d7708831b286e37
-    # via -r deploy/ansible/requirements.in
+    # via -r requirements.in
 attrs==26.1.0 \
     --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
     # via
@@ -49,7 +50,7 @@ distro==1.9.0 \
     # via ansible-lint
 dumb-init==1.2.5.post1 \
     --hash=sha256:5d6b1fe9b8efcdbbdcb670efe7a55f9117251ee9648d35ffd0c487fd79515ea5
-    # via -r deploy/ansible/requirements.in
+    # via -r requirements.in
 filelock==4.2.2 \
     --hash=sha256:1851d2f14ca2901e98069d68333b33ad7409f56904e17b48cc0c32a0db8ed73a
     # via ansible-lint
@@ -111,7 +112,7 @@ pyyaml==6.0.3 \
     --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
     --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
     # via
-    #   -r deploy/ansible/requirements.in
+    #   -r requirements.in
     #   ansible-compat
     #   ansible-core
     #   ansible-lint
@@ -138,7 +139,7 @@ ruamel-yaml==0.19.1 \
 ruamel-yaml-clib==0.2.15 \
     --hash=sha256:2812ff359ec1f30129b62372e5f22a52936fac13d5d21e70373dbca5d64bb97c \
     --hash=sha256:4d1032919280ebc04a80e4fb1e93f7a738129857eaec9448310e638c8bccefcf
-    # via -r deploy/ansible/requirements.in
+    # via -r requirements.in
 subprocess-tee==0.4.2 \
     --hash=sha256:21942e976715af4a19a526918adb03a8a27a8edab959f2d075b777e3d78f532d
     # via
