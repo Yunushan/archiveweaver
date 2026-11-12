@@ -6,18 +6,20 @@
 ansible-compat==26.10.0 \
     --hash=sha256:700f0778fbb348daf6ee58941871e8ca77a987702993e8bf7895761d036d6450
     # via ansible-lint
-ansible-core==2.21.5 \
-    --hash=sha256:08886f9f3e23d129aa98a01271c4a47833516e1cb7c737a246788cb474f41222
+ansible-core==2.22.0 \
+    --hash=sha256:8285d4cc81c3e3eb2d954e75531724fe0ae154d228475638123451f034a74657 \
+    --hash=sha256:bf50b4a0cfa985e30585c7ba301897ea7050d224ca49d2816cab10e33a160e1c
     # via
-    #   -r deploy/ansible/requirements.in
+    #   -r requirements.in
     #   ansible-compat
     #   ansible-lint
-ansible-lint==26.9.0 \
-    --hash=sha256:4d01903fca9c42f7ce2b366ea5503d0701a27b3c6fdf684276a72888eea57f50
-    # via -r deploy/ansible/requirements.in
+ansible-lint==26.11.0 \
+    --hash=sha256:74813203aa5450d720c3d86b9d0d4ddc51d30e36ac69e1f0d9f7650f5a3b5dd3 \
+    --hash=sha256:b778ea87fa873384b373e8c3fe53a06b3acc7b72ac283e2d2070f76fdf9f8358
+    # via -r requirements.in
 ansible-runner==2.4.3 \
     --hash=sha256:cdac6daa151a50084ffda710e769db23fa975fc0507796191d7708831b286e37
-    # via -r deploy/ansible/requirements.in
+    # via -r requirements.in
 attrs==26.1.0 \
     --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
     # via
@@ -49,7 +51,7 @@ distro==1.9.0 \
     # via ansible-lint
 dumb-init==1.2.5.post1 \
     --hash=sha256:5d6b1fe9b8efcdbbdcb670efe7a55f9117251ee9648d35ffd0c487fd79515ea5
-    # via -r deploy/ansible/requirements.in
+    # via -r requirements.in
 filelock==4.2.2 \
     --hash=sha256:1851d2f14ca2901e98069d68333b33ad7409f56904e17b48cc0c32a0db8ed73a
     # via ansible-lint
@@ -111,7 +113,7 @@ pyyaml==6.0.3 \
     --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
     --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
     # via
-    #   -r deploy/ansible/requirements.in
+    #   -r requirements.in
     #   ansible-compat
     #   ansible-core
     #   ansible-lint
@@ -138,7 +140,7 @@ ruamel-yaml==0.19.1 \
 ruamel-yaml-clib==0.2.15 \
     --hash=sha256:2812ff359ec1f30129b62372e5f22a52936fac13d5d21e70373dbca5d64bb97c \
     --hash=sha256:4d1032919280ebc04a80e4fb1e93f7a738129857eaec9448310e638c8bccefcf
-    # via -r deploy/ansible/requirements.in
+    # via -r requirements.in
 subprocess-tee==0.4.2 \
     --hash=sha256:21942e976715af4a19a526918adb03a8a27a8edab959f2d075b777e3d78f532d
     # via
